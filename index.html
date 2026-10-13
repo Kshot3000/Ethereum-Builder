@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ethereum Builder — build and fix code on Ethereum and its Layer 2s</title>
+<meta name="description" content="Ethereum Builder by @kshot9000: an independent builder hub for Ethereum L1 and its Layer 2s — Base, Unichain, and Robinhood Chain — with exact, browser-local developer tools.">
+<link rel="stylesheet" href="styles.css?v=1">
+</head>
+<body>
+<header class="hero">
+  <p class="kicker">◆ Ethereum Builder</p>
+  <h1>Ethereum Builder — build and fix code on Ethereum and its Layer 2s</h1>
+  <p class="lede">I'm Kyle (<a href="https://x.com/kshot9000">@kshot9000</a>), an independent builder. This hub is my home base for building and fixing code on <strong>Ethereum L1</strong> and its Layer 2s — <strong>Base</strong>, <strong>Unichain</strong>, and <strong>Robinhood Chain</strong> — with tested, honest, browser-local tools.</p>
+  <p class="honesty">Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Tools run locally in your browser; nothing here is live chain data, and nothing here is financial advice.</p>
+</header>
+
+<main>
+  <section aria-labelledby="explainer-h">
+    <h2 id="explainer-h">Ethereum in 30 seconds</h2>
+    <p><strong>Ethereum L1</strong> is the settlement layer: a global computer where smart contracts run and every transaction is secured by the full network. It is powerful but capacity-limited, so most everyday activity moves to <strong>Layer 2 rollups</strong> — chains that execute transactions cheaply off L1 and post proofs/data back to Ethereum, inheriting its security. Since EIP-1559, every L1 transaction burns a <em>base fee</em> that floats with demand, plus an optional <em>priority fee</em> (tip) — the estimator below models exactly that.</p>
+    <p><strong>Base</strong> is Coinbase's L2, built on the OP Stack / Superchain. <strong>Unichain</strong> is Uniswap's L2, built for DeFi and cross-chain liquidity. <strong>Robinhood Chain</strong> is Robinhood's permissionless L2 for onchain finance and tokenized real-world assets, built on Arbitrum technology with ETH as its gas token — live per its <a href="https://docs.robinhood.com/chain">official documentation</a>. Same EVM, same Solidity, same tooling (viem, ethers.js, Foundry) across all of them — which is why one builder hub can cover all four.</p>
+  </section>
+
+  <section aria-labelledby="catalogue-h">
+    <h2 id="catalogue-h">Catalogue</h2>
+    <div class="filters" role="group" aria-label="Filter catalogue">
+      <button data-filter="all" class="active">All</button>
+      <button data-filter="l1">L1</button>
+      <button data-filter="base">Base</button>
+      <button data-filter="unichain">Unichain</button>
+      <button data-filter="robinhood">Robinhood Chain</button>
+      <button data-filter="kyle">Kyle's work</button>
+    </div>
+    <div class="grid">
+      <article class="card" data-cat="l1">
+        <h3><a href="https://ethereum.org">ethereum.org</a></h3>
+        <p>The official Ethereum portal — protocol docs, developer resources, and the ecosystem entry point. Team: <a href="https://github.com/ethereum">@ethereum</a> on GitHub, <a href="https://x.com/ethereum">@ethereum</a> on X.</p>
+      </article>
+      <article class="card" data-cat="l1 kyle">
+        <h3><a href="https://github.com/wevm/viem">viem (wevm)</a></h3>
+        <p>TypeScript interface for Ethereum. My record here: PR <a href="https://github.com/wevm/viem/pull/5176">#5176</a> merged 2026-10-04 and PR <a href="https://github.com/wevm/viem/pull/5196">#5196</a> merged 2026-10-11 — both concurrent-wait observer fixes. Docs at <a href="https://viem.sh">viem.sh</a>.</p>
+      </article>
+      <article class="card" data-cat="l1 kyle">
+        <h3><a href="https://github.com/paradigmxyz/reth">reth</a></h3>
+        <p>Paradigm's Rust Ethereum execution client. I keep a fork under <a href="https://github.com/Kshot3000/reth">Kshot3000/reth</a> for upstream work.</p>
+      </article>
+      <article class="card" data-cat="l1 kyle">
+        <h3><a href="https://github.com/ChainSafe/lodestar">Lodestar</a></h3>
+        <p>ChainSafe's TypeScript Ethereum consensus client. Fork: <a href="https://github.com/Kshot3000/lodestar">Kshot3000/lodestar</a>.</p>
+      </article>
+      <article class="card" data-cat="l1 kyle">
+        <h3><a href="https://github.com/OffchainLabs/prysm">Prysm</a></h3>
+        <p>Go Ethereum consensus client (Offchain Labs). Fork: <a href="https://github.com/Kshot3000/prysm">Kshot3000/prysm</a>.</p>
+      </article>
+      <article class="card" data-cat="l1 base kyle">
+        <h3><a href="https://github.com/ethereum-optimism/optimism">Optimism monorepo</a></h3>
+        <p>The OP Stack that Base is built on. Fork: <a href="https://github.com/Kshot3000/optimism">Kshot3000/optimism</a>.</p>
+      </article>
+      <article class="card" data-cat="l1 kyle">
+        <h3><a href="https://github.com/ethers-io/ethers.js">ethers.js</a></h3>
+        <p>The classic complete Ethereum library and wallet implementation in JavaScript. Fork: <a href="https://github.com/Kshot3000/ethers.js">Kshot3000/ethers.js</a>.</p>
+      </article>
+      <article class="card" data-cat="l1 kyle">
+        <h3><a href="https://github.com/ethereum/ERCs">Ethereum ERCs</a></h3>
+        <p>The Ethereum Request for Comments repository — where token and interface standards live. Fork: <a href="https://github.com/Kshot3000/ERCs">Kshot3000/ERCs</a>.</p>
+      </article>
+      <article class="card" data-cat="base">
+        <h3><a href="https://www.base.org">Base</a></h3>
+        <p>Coinbase's Ethereum L2. Team: <a href="https://github.com/base">@base</a> on GitHub, <a href="https://x.com/base">@base</a> on X. Developer docs: <a href="https://docs.base.org">docs.base.org</a>.</p>
+      </article>
+      <article class="card" data-cat="base kyle">
+        <h3><a href="https://github.com/pearl-research-labs/pearl/issues/347">wPRL on Base Sepolia (testnet proposal)</a></h3>
+        <p>My wrapped-Pearl bridge proposal: a custodial wPRL ERC-20 MVP scoped to the Base Sepolia <em>testnet only</em> — no mainnet, no real funds. Filed as pearl-research-labs/pearl#347 and watch-only since.</p>
+      </article>
+      <article class="card" data-cat="unichain">
+        <h3><a href="https://www.unichain.org">Unichain</a></h3>
+        <p>Uniswap's Ethereum L2, designed for DeFi. Team: <a href="https://github.com/Uniswap">@Uniswap</a> on GitHub, <a href="https://x.com/Uniswap">@Uniswap</a> and <a href="https://x.com/unichain">@unichain</a> on X.</p>
+      </article>
+      <article class="card" data-cat="robinhood">
+        <h3><a href="https://robinhood.com/us/en/chain/">Robinhood Chain</a></h3>
+        <p>Robinhood's permissionless Ethereum L2 for onchain finance and tokenized real-world assets, built on Arbitrum technology — live per its official sources. Docs: <a href="https://docs.robinhood.com/chain">docs.robinhood.com/chain</a>. Team: <a href="https://github.com/robinhood">@robinhood</a> on GitHub, <a href="https://x.com/RobinhoodApp">@RobinhoodApp</a> on X.</p>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="tools-h">
+    <h2 id="tools-h">Tools — exact, local, offline</h2>
+
+    <div class="tool">
+      <h3>Wei converter (ETH ⇄ gwei ⇄ wei)</h3>
+      <p>Exact BigInt conversion — no floating point, ever. 1 ETH = 10<sup>9</sup> gwei = 10<sup>18</sup> wei.</p>
+      <label for="conv-value">Amount</label>
+      <input id="conv-value" type="text" inputmode="decimal" value="1.5">
+      <label for="conv-from">From</label>
+      <select id="conv-from"><option value="eth">ETH</option><option value="gwei">gwei</option><option value="wei">wei</option></select>
+      <label for="conv-to">To</label>
+      <select id="conv-to"><option value="eth">ETH</option><option value="gwei" selected>gwei</option><option value="wei">wei</option></select>
+      <button id="conv-btn" type="button">Convert</button>
+      <p id="conv-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
+      <h3>EIP-55 address inspector</h3>
+      <p>Paste an address to validate its form and EIP-55 checksum (Keccak-256 computed locally in your browser). Try mine: <code>0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a</code></p>
+      <label for="addr-input">Address</label>
+      <input id="addr-input" type="text" spellcheck="false" placeholder="0x…">
+      <button id="addr-btn" type="button">Inspect</button>
+      <p id="addr-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
+      <h3>EIP-1559 gas cost estimator</h3>
+      <p>A wallet-convention model, not live data: expected cost uses base + priority fee; max cost uses maxFeePerGas = 2×base + priority. A simple transfer is 21,000 gas.</p>
+      <label for="gas-units">Gas units</label>
+      <input id="gas-units" type="text" inputmode="numeric" value="21000">
+      <label for="gas-base">Base fee (gwei)</label>
+      <input id="gas-base" type="text" inputmode="decimal" value="12">
+      <label for="gas-priority">Priority fee (gwei)</label>
+      <input id="gas-priority" type="text" inputmode="decimal" value="1.5">
+      <button id="gas-btn" type="button">Estimate</button>
+      <p id="gas-out" class="out" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <section aria-labelledby="start-h">
+    <h2 id="start-h">Start building</h2>
+    <p>See the <a href="guides/getting-started.md">getting-started guide</a> for verified official resources for Ethereum L1, Base, Unichain, and Robinhood Chain, and the <a href="https://github.com/Kshot3000/Ethereum-Builder">GitHub repo</a> for the code and the launch digest in issue #1.</p>
+  </section>
+</main>
+
+<footer>
+  <p>Built by Kyle Cox — <a href="https://x.com/kshot9000">@kshot9000</a> · <a href="https://github.com/Kshot3000">github.com/Kshot3000</a></p>
+  <p>Support my Ethereum work — ETH donations: <code id="donation">0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a</code></p>
+  <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
+  <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
+</footer>
+<script src="app.js?v=1"></script>
+</body>
+</html>

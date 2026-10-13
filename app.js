@@ -1,0 +1,233 @@
+"use strict";
+/* Ethereum Builder — browser-local tools. All math is exact: decimal strings
+   are parsed to BigInt-scaled integers, never floats. Keccak-256 below is a
+   pure-JS implementation (original Keccak padding, as used by Ethereum /
+   EIP-55 — not SHA-3's 0x06 domain byte). */
+
+/* ---------- exact decimal helpers ---------- */
+const UNIT_DECIMALS = { wei: 0, gwei: 9, eth: 18 };
+
+/* Parse a non-negative decimal string into a BigInt scaled by 10^decimals.
+   Returns null on invalid input or too many decimal places. */
+function parseScaled(str, decimals) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  if (!/^\d+(\.\d+)?$/.test(s)) return null;
+  const [intPart, fracPart = ""] = s.split(".");
+  if (fracPart.length > decimals) return null;
+  const fracPadded = (fracPart + "0".repeat(decimals)).slice(0, decimals);
+  return BigInt(intPart) * 10n ** BigInt(decimals) + BigInt(fracPadded || "0");
+}
+
+/* Format a BigInt scaled by 10^decimals as a plain decimal string. */
+function formatScaled(value, decimals) {
+  const neg = value < 0n;
+  const v = neg ? -value : value;
+  const base = 10n ** BigInt(decimals);
+  const intPart = v / base;
+  const fracPart = v % base;
+  let out = intPart.toString();
+  if (decimals > 0 && fracPart !== 0n) {
+    out += "." + fracPart.toString().padStart(decimals, "0").replace(/0+$/, "");
+  }
+  return (neg ? "-" : "") + out;
+}
+
+/* Convert a decimal amount between wei / gwei / eth, exactly. */
+function convertUnit(valueStr, fromUnit, toUnit) {
+  if (!(fromUnit in UNIT_DECIMALS) || !(toUnit in UNIT_DECIMALS)) return null;
+  const wei = parseScaled(valueStr, UNIT_DECIMALS[fromUnit]);
+  if (wei === null) return null;
+  return formatScaled(wei, UNIT_DECIMALS[toUnit]);
+}
+
+/* ---------- Keccak-256 (pure JS, BigInt lanes) ---------- */
+const MASK64 = (1n << 64n) - 1n;
+const KECCAK_RC = [
+  0x0000000000000001n, 0x0000000000008082n, 0x800000000000808an, 0x8000000080008000n,
+  0x000000000000808bn, 0x0000000080000001n, 0x8000000080008081n, 0x8000000000008009n,
+  0x000000000000008an, 0x0000000000000088n, 0x0000000080008009n, 0x000000008000000an,
+  0x000000008000808bn, 0x800000000000008bn, 0x8000000000008089n, 0x8000000000008003n,
+  0x8000000000008002n, 0x8000000000000080n, 0x000000000000800an, 0x800000008000000an,
+  0x8000000080008081n, 0x8000000000008080n, 0x0000000080000001n, 0x8000000080008008n
+];
+const KECCAK_ROT = [
+  0, 1, 62, 28, 27,
+  36, 44, 6, 55, 20,
+  3, 10, 43, 25, 39,
+  41, 45, 15, 21, 8,
+  18, 2, 61, 56, 14
+];
+function rotl64(x, n) {
+  if (n === 0) return x & MASK64;
+  const b = BigInt(n);
+  return ((x << b) | (x >> (64n - b))) & MASK64;
+}
+function keccakF1600(state) {
+  for (let round = 0; round < 24; round++) {
+    /* theta */
+    const c = [], d = [];
+    for (let x = 0; x < 5; x++) {
+      c[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20];
+    }
+    for (let x = 0; x < 5; x++) {
+      d[x] = c[(x + 4) % 5] ^ rotl64(c[(x + 1) % 5], 1);
+    }
+    for (let y = 0; y < 5; y++) {
+      for (let x = 0; x < 5; x++) state[x + 5 * y] ^= d[x];
+    }
+    /* rho + pi */
+    const b = new Array(25).fill(0n);
+    for (let y = 0; y < 5; y++) {
+      for (let x = 0; x < 5; x++) {
+        b[y + 5 * ((2 * x + 3 * y) % 5)] = rotl64(state[x + 5 * y], KECCAK_ROT[x + 5 * y]);
+      }
+    }
+    /* chi */
+    for (let y = 0; y < 5; y++) {
+      for (let x = 0; x < 5; x++) {
+        state[x + 5 * y] = b[x + 5 * y] ^ ((~b[((x + 1) % 5) + 5 * y]) & b[((x + 2) % 5) + 5 * y]);
+      }
+    }
+    /* iota */
+    state[0] ^= KECCAK_RC[round];
+    for (let i = 0; i < 25; i++) state[i] &= MASK64;
+  }
+}
+/* Keccak-256 of an ASCII string, returned as lowercase hex (no 0x). */
+function keccak256(ascii) {
+  const RATE = 136; /* bytes: (1600 - 512) / 8 */
+  const bytes = [];
+  for (let i = 0; i < ascii.length; i++) bytes.push(ascii.charCodeAt(i) & 0xff);
+  /* Keccak pad10*1: 0x01 ... 0x80 within the final rate block */
+  bytes.push(0x01);
+  while (bytes.length % RATE !== RATE - 1) bytes.push(0x00);
+  bytes.push(0x80);
+  const state = new Array(25).fill(0n);
+  for (let block = 0; block < bytes.length; block += RATE) {
+    for (let lane = 0; lane < RATE / 8; lane++) {
+      let v = 0n;
+      for (let j = 7; j >= 0; j--) {
+        v = (v << 8n) | BigInt(bytes[block + lane * 8 + j]);
+      }
+      state[lane] ^= v;
+    }
+    keccakF1600(state);
+  }
+  let out = "";
+  for (let lane = 0; lane < 4; lane++) {
+    let v = state[lane];
+    for (let j = 0; j < 8; j++) {
+      out += (v & 0xffn).toString(16).padStart(2, "0");
+      v >>= 8n;
+    }
+  }
+  return out;
+}
+
+/* ---------- EIP-55 address inspector ---------- */
+function toChecksumAddress(addr) {
+  if (typeof addr !== "string") return null;
+  const m = /^0x([0-9a-fA-F]{40})$/.exec(addr.trim());
+  if (!m) return null;
+  const lower = m[1].toLowerCase();
+  const hash = keccak256(lower);
+  let out = "0x";
+  for (let i = 0; i < 40; i++) {
+    out += parseInt(hash[i], 16) >= 8 ? lower[i].toUpperCase() : lower[i];
+  }
+  return out;
+}
+function inspectAddress(addr) {
+  if (typeof addr !== "string") return { valid: false };
+  const trimmed = addr.trim();
+  const m = /^0x([0-9a-fA-F]{40})$/.exec(trimmed);
+  if (!m) return { valid: false };
+  const checksum = toChecksumAddress(trimmed);
+  const hasMixedCase = /[a-f]/.test(m[1]) && /[A-F]/.test(m[1]);
+  return {
+    valid: true,
+    checksum,
+    lowercase: "0x" + m[1].toLowerCase(),
+    checksumValid: hasMixedCase ? trimmed === checksum : null,
+    isAllLowerOrUpper: !hasMixedCase
+  };
+}
+
+/* ---------- EIP-1559 gas cost estimator (model, not live data) ---------- */
+function gasEstimate(gasUnitsStr, baseFeeGweiStr, priorityFeeGweiStr) {
+  const gas = parseScaled(String(gasUnitsStr).trim(), 0);
+  const baseWei = parseScaled(String(baseFeeGweiStr).trim(), 9);
+  const priorityWei = parseScaled(String(priorityFeeGweiStr).trim(), 9);
+  if (gas === null || baseWei === null || priorityWei === null) return null;
+  const effectiveWei = baseWei + priorityWei;
+  const maxFeeWei = 2n * baseWei + priorityWei;
+  return {
+    effectiveGwei: formatScaled(effectiveWei, 9),
+    maxFeeGwei: formatScaled(maxFeeWei, 9),
+    expectedEth: formatScaled(gas * effectiveWei, 18),
+    maxEth: formatScaled(gas * maxFeeWei, 18)
+  };
+}
+
+/* ---------- browser wiring ---------- */
+if (typeof document !== "undefined") {
+  document.addEventListener("DOMContentLoaded", () => {
+    /* catalogue filter */
+    const buttons = document.querySelectorAll("[data-filter]");
+    const cards = document.querySelectorAll("[data-cat]");
+    buttons.forEach(btn => btn.addEventListener("click", () => {
+      buttons.forEach(x => x.classList.toggle("active", x === btn));
+      const f = btn.getAttribute("data-filter");
+      cards.forEach(card => {
+        card.style.display = (f === "all" || card.getAttribute("data-cat").split(" ").includes(f)) ? "" : "none";
+      });
+    }));
+
+    /* wei converter */
+    const convBtn = document.getElementById("conv-btn");
+    if (convBtn) convBtn.addEventListener("click", () => {
+      const v = document.getElementById("conv-value").value;
+      const from = document.getElementById("conv-from").value;
+      const to = document.getElementById("conv-to").value;
+      const out = convertUnit(v, from, to);
+      document.getElementById("conv-out").textContent =
+        out === null ? "Enter a valid non-negative amount (check decimal places for the unit)." : `${v} ${from} = ${out} ${to}`;
+    });
+
+    /* EIP-55 inspector */
+    const addrBtn = document.getElementById("addr-btn");
+    if (addrBtn) addrBtn.addEventListener("click", () => {
+      const input = document.getElementById("addr-input").value;
+      const r = inspectAddress(input);
+      const el = document.getElementById("addr-out");
+      if (!r.valid) {
+        el.textContent = "Not a well-formed Ethereum address — expected 0x followed by 40 hex characters.";
+        return;
+      }
+      let msg = `Well-formed address. EIP-55 checksummed form: ${r.checksum}`;
+      if (r.checksumValid === true) msg += " The checksum in your input is valid.";
+      else if (r.checksumValid === false) msg += " Warning: your input is mixed-case but its checksum does NOT match — treat it as suspect.";
+      else msg += " Your input is single-case, so it carries no checksum to verify.";
+      el.textContent = msg;
+    });
+
+    /* EIP-1559 estimator */
+    const gasBtn = document.getElementById("gas-btn");
+    if (gasBtn) gasBtn.addEventListener("click", () => {
+      const r = gasEstimate(
+        document.getElementById("gas-units").value,
+        document.getElementById("gas-base").value,
+        document.getElementById("gas-priority").value
+      );
+      const el = document.getElementById("gas-out");
+      el.textContent = r === null
+        ? "Enter valid numbers: gas units (whole), base fee and priority fee in gwei (up to 9 decimals)."
+        : `Effective gas price: ${r.effectiveGwei} gwei → expected cost ${r.expectedEth} ETH. Max fee per gas (2×base + priority): ${r.maxFeeGwei} gwei → max cost ${r.maxEth} ETH. Model only — not live network data.`;
+    });
+  });
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, toChecksumAddress, inspectAddress, gasEstimate, UNIT_DECIMALS };
+}

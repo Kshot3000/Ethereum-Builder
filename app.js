@@ -170,6 +170,31 @@ function gasEstimate(gasUnitsStr, baseFeeGweiStr, priorityFeeGweiStr) {
   };
 }
 
+/* ---------- Function selector / event topic (Keccak-256) ----------
+   A function selector is the first 4 bytes of Keccak-256 of the canonical
+   signature, e.g. transfer(address,uint256) -> 0xa9059cbb. An event topic0
+   is the full 32-byte hash, e.g. Transfer(address,address,uint256). */
+function normalizeSignature(sig) {
+  if (typeof sig !== "string") return null;
+  /* Canonical signatures carry no whitespace; users often type it, so strip it. */
+  const s = sig.trim().replace(/\s+/g, "");
+  if (!/^[A-Za-z_][A-Za-z0-9_]*\([A-Za-z0-9_,\[\]]*\)$/.test(s)) return null;
+  /* Reject empty type slots such as "f(address,,uint256)" or "f(,)" */
+  const params = s.slice(s.indexOf("(") + 1, -1);
+  if (params !== "" && params.split(",").some(p => p === "" || p === "[]")) return null;
+  return s;
+}
+function functionSelector(sig) {
+  const s = normalizeSignature(sig);
+  if (s === null) return null;
+  return "0x" + keccak256(s).slice(0, 8);
+}
+function eventTopic(sig) {
+  const s = normalizeSignature(sig);
+  if (s === null) return null;
+  return "0x" + keccak256(s);
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -212,6 +237,23 @@ if (typeof document !== "undefined") {
       el.textContent = msg;
     });
 
+    /* Function selector / event topic */
+    const sigBtn = document.getElementById("sig-btn");
+    if (sigBtn) sigBtn.addEventListener("click", () => {
+      const input = document.getElementById("sig-input").value;
+      const sel = functionSelector(input);
+      const el = document.getElementById("sig-out");
+      if (sel === null) {
+        el.textContent = "Enter a canonical signature like transfer(address,uint256) — a name, then comma-separated types in parentheses, no return types.";
+        return;
+      }
+      el.textContent = `Function selector: ${sel} · Event topic0: ${eventTopic(input)} (both Keccak-256 of "${normalizeSignature(input)}", computed locally).`;
+    });
+    const sigPreset = document.getElementById("sig-preset");
+    if (sigPreset) sigPreset.addEventListener("change", () => {
+      if (sigPreset.value) document.getElementById("sig-input").value = sigPreset.value;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -229,5 +271,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, toChecksumAddress, inspectAddress, gasEstimate, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, UNIT_DECIMALS };
 }

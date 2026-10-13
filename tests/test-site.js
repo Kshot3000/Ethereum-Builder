@@ -43,9 +43,9 @@ for (const x of ["https://x.com/ethereum", "https://x.com/base", "https://x.com/
 check("exactly one <h1>", (html.match(/<h1[ >]/g) || []).length === 1);
 check("has <main> landmark", /<main[\s>]/.test(html));
 check("all tool controls labelled",
-  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority"]
+  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset"]
     .every(id => html.includes(`for="${id}"`)));
-check("cache keys ?v=1", html.includes("styles.css?v=1") && html.includes("app.js?v=1"));
+check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=2"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -116,6 +116,33 @@ check("gas: max 21000*25.5gwei = 0.0005355 ETH", g1 && g1.maxEth === "0.0005355"
 const g2 = app.gasEstimate("100000", "30", "2");
 check("gas: 100k at 32 gwei = 0.0032 ETH", g2 && g2.expectedEth === "0.0032");
 check("gas: invalid input rejected", app.gasEstimate("x", "12", "1") === null && app.gasEstimate("21000", "12.1234567891", "1") === null);
+
+/* function selectors — canonical ERC-20 / ERC-721 vectors */
+for (const [sig, sel] of [
+  ["transfer(address,uint256)", "0xa9059cbb"],
+  ["transferFrom(address,address,uint256)", "0x23b872dd"],
+  ["approve(address,uint256)", "0x095ea7b3"],
+  ["balanceOf(address)", "0x70a08231"],
+  ["allowance(address,address)", "0xdd62ed3e"],
+  ["totalSupply()", "0x18160ddd"],
+  ["name()", "0x06fdde03"],
+  ["symbol()", "0x95d89b41"],
+  ["decimals()", "0x313ce567"]
+]) {
+  check("selector " + sig, app.functionSelector(sig) === sel);
+}
+check("selector tolerates user whitespace", app.functionSelector("transfer(address, uint256)") === "0xa9059cbb");
+check("event topic Transfer", app.eventTopic("Transfer(address,address,uint256)") === "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
+check("event topic Approval", app.eventTopic("Approval(address,address,uint256)") === "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925");
+check("selector is topic prefix", app.eventTopic("transfer(address,uint256)").startsWith(app.functionSelector("transfer(address,uint256)")));
+check("bad signatures rejected",
+  app.functionSelector("") === null &&
+  app.functionSelector("transfer") === null &&
+  app.functionSelector("transfer(") === null &&
+  app.functionSelector("transfer(address,,uint256)") === null &&
+  app.functionSelector("transfer(address,uint256) returns (bool)") === null &&
+  app.eventTopic("9lives(address)") === null);
+check("array types accepted", app.functionSelector("batch(address[],uint256[])") !== null);
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

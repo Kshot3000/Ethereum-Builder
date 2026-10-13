@@ -110,6 +110,27 @@
     </div>
 
     <div class="tool">
+      <h3>Function selector &amp; event topic calculator</h3>
+      <p>Type a canonical function or event signature — the 4-byte function selector (used in calldata) and the 32-byte event topic0 (used in logs) are both Keccak-256 hashes of it, computed locally. Works for any contract on Ethereum, Base, Unichain, or Robinhood Chain — the EVM is the same everywhere.</p>
+      <label for="sig-preset">Common ERC-20 signatures</label>
+      <select id="sig-preset">
+        <option value="">— pick a preset or type your own below —</option>
+        <option value="transfer(address,uint256)">transfer(address,uint256)</option>
+        <option value="transferFrom(address,address,uint256)">transferFrom(address,address,uint256)</option>
+        <option value="approve(address,uint256)">approve(address,uint256)</option>
+        <option value="balanceOf(address)">balanceOf(address)</option>
+        <option value="allowance(address,address)">allowance(address,address)</option>
+        <option value="totalSupply()">totalSupply()</option>
+        <option value="Transfer(address,address,uint256)">Transfer(address,address,uint256) — event</option>
+        <option value="Approval(address,address,uint256)">Approval(address,address,uint256) — event</option>
+      </select>
+      <label for="sig-input">Signature</label>
+      <input id="sig-input" type="text" spellcheck="false" value="transfer(address,uint256)">
+      <button id="sig-btn" type="button">Calculate</button>
+      <p id="sig-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>EIP-1559 gas cost estimator</h3>
       <p>A wallet-convention model, not live data: expected cost uses base + priority fee; max cost uses maxFeePerGas = 2×base + priority. A simple transfer is 21,000 gas.</p>
       <label for="gas-units">Gas units</label>
@@ -135,6 +156,6 @@
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=1"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>

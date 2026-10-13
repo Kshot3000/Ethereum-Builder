@@ -17,6 +17,7 @@ I'm Kyle Cox (@kshot9000), an independent builder. This repo is my home base for
 1. **Wei converter** — ETH ⇄ gwei ⇄ wei with BigInt decimal-string parsing. No floats.
 2. **EIP-55 address inspector** — pure-JS Keccak-256 verifies and produces checksummed addresses; passes the official EIP-55 test vectors (covered in `tests/test-site.js`).
 3. **EIP-1559 gas cost estimator** — gas × (base + priority) expected cost, and max cost at maxFeePerGas = 2×base + priority. Clearly a wallet-convention model, not live data.
+4. **Function selector & event topic calculator** — Keccak-256 of a canonical signature gives the 4-byte calldata selector and the 32-byte event topic0; verified in the tests against the canonical ERC-20 selectors (`transfer(address,uint256)` → `0xa9059cbb`) and the Transfer/Approval topic hashes.
 
 ## Scope
 

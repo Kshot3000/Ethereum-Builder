@@ -43,9 +43,9 @@ for (const x of ["https://x.com/ethereum", "https://x.com/base", "https://x.com/
 check("exactly one <h1>", (html.match(/<h1[ >]/g) || []).length === 1);
 check("has <main> landmark", /<main[\s>]/.test(html));
 check("all tool controls labelled",
-  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset"]
+  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init"]
     .every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=2"));
+check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=3"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -143,6 +143,31 @@ check("bad signatures rejected",
   app.functionSelector("transfer(address,uint256) returns (bool)") === null &&
   app.eventTopic("9lives(address)") === null);
 check("array types accepted", app.functionSelector("batch(address[],uint256[])") !== null);
+
+/* CREATE2 — all seven official EIP-1014 examples, expected results verbatim from the EIP */
+const ZERO32 = "0x" + "00".repeat(32);
+for (const [label, deployer, salt, init, expected] of [
+  ["example 0", "0x0000000000000000000000000000000000000000", ZERO32, "0x00", "0x4D1A2e2bB4F88F0250f26Ffff098B0b30B26BF38"],
+  ["example 1", "0xdeadbeef00000000000000000000000000000000", ZERO32, "0x00", "0xB928f69Bb1D91Cd65274e3c79d8986362984fDA3"],
+  ["example 2", "0xdeadbeef00000000000000000000000000000000", "0x000000000000000000000000feed000000000000000000000000000000000000", "0x00", "0xD04116cDd17beBE565EB2422F2497E06cC1C9833"],
+  ["example 3", "0x0000000000000000000000000000000000000000", ZERO32, "0xdeadbeef", "0x70f2b2914A2a4b783FaEFb75f459A580616Fcb5e"],
+  ["example 4", "0x00000000000000000000000000000000deadbeef", "0x00000000000000000000000000000000000000000000000000000000cafebabe", "0xdeadbeef", "0x60f3f640a8508fC6a86d45DF051962668E1e8AC7"],
+  ["example 5", "0x00000000000000000000000000000000deadbeef", "0x00000000000000000000000000000000000000000000000000000000cafebabe", "0x" + "deadbeef".repeat(11), "0x1d8bfDC5D46DC4f61D6b6115972536eBE6A8854C"],
+  ["example 6 (empty init code)", "0x0000000000000000000000000000000000000000", ZERO32, "0x", "0xE33C0C7F7df4809055C3ebA6c09CFe4BaF1BD9e0"]
+]) {
+  check("CREATE2 EIP-1014 " + label, app.create2Address(deployer, salt, init) === expected);
+}
+check("CREATE2 result is a valid checksummed address", app.inspectAddress(app.create2Address("0x0000000000000000000000000000000000000000", ZERO32, "0x00")).checksumValid === true);
+check("CREATE2 rejects short deployer / short salt / odd-length init / non-hex",
+  app.create2Address("0x123", ZERO32, "0x00") === null &&
+  app.create2Address("0x0000000000000000000000000000000000000000", "0x00", "0x00") === null &&
+  app.create2Address("0x0000000000000000000000000000000000000000", ZERO32, "0x0") === null &&
+  app.create2Address("0x0000000000000000000000000000000000000000", ZERO32, "0xzz") === null);
+check("keccak256Bytes matches keccak256 on ASCII bytes",
+  app.keccak256Bytes([104, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100]) === app.keccak256("hello world"));
+check("keccak256Bytes of empty input is the empty-hash vector",
+  app.keccak256Bytes([]) === "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
+check("CREATE2 tool section present in index.html", html.includes("c2-btn") && html.includes("EIP-1014"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -131,6 +131,19 @@
     </div>
 
     <div class="tool">
+      <h3>CREATE2 address calculator (EIP-1014)</h3>
+      <p>CREATE2 deploys a contract to an address you can know in advance: the last 20 bytes of Keccak-256 of <code>0xff ++ deployer ++ salt ++ keccak256(init code)</code>. Same deployer, salt and init code → same address on Ethereum, Base, Unichain and Robinhood Chain — the basis for counterfactual wallets and cross-chain deployments. Defaults below are EIP-1014's own Example 0. This only computes the address locally; nothing is deployed.</p>
+      <label for="c2-deployer">Deployer address (20 bytes)</label>
+      <input id="c2-deployer" type="text" spellcheck="false" value="0x0000000000000000000000000000000000000000">
+      <label for="c2-salt">Salt (32 bytes)</label>
+      <input id="c2-salt" type="text" spellcheck="false" value="0x0000000000000000000000000000000000000000000000000000000000000000">
+      <label for="c2-init">Init code (hex)</label>
+      <input id="c2-init" type="text" spellcheck="false" value="0x00">
+      <button id="c2-btn" type="button">Calculate address</button>
+      <p id="c2-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>EIP-1559 gas cost estimator</h3>
       <p>A wallet-convention model, not live data: expected cost uses base + priority fee; max cost uses maxFeePerGas = 2×base + priority. A simple transfer is 21,000 gas.</p>
       <label for="gas-units">Gas units</label>
@@ -156,6 +169,6 @@
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

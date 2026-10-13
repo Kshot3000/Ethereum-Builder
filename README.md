@@ -18,6 +18,7 @@ I'm Kyle Cox (@kshot9000), an independent builder. This repo is my home base for
 2. **EIP-55 address inspector** — pure-JS Keccak-256 verifies and produces checksummed addresses; passes the official EIP-55 test vectors (covered in `tests/test-site.js`).
 3. **EIP-1559 gas cost estimator** — gas × (base + priority) expected cost, and max cost at maxFeePerGas = 2×base + priority. Clearly a wallet-convention model, not live data.
 4. **Function selector & event topic calculator** — Keccak-256 of a canonical signature gives the 4-byte calldata selector and the 32-byte event topic0; verified in the tests against the canonical ERC-20 selectors (`transfer(address,uint256)` → `0xa9059cbb`) and the Transfer/Approval topic hashes.
+5. **CREATE2 address calculator** — EIP-1014 deterministic deployment addresses from deployer + salt + init code; verified in the tests against all seven official EIP-1014 examples. Computes the address only — nothing is deployed.
 
 ## Scope
 

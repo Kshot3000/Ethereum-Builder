@@ -94,11 +94,10 @@ function keccakF1600(state) {
     for (let i = 0; i < 25; i++) state[i] &= MASK64;
   }
 }
-/* Keccak-256 of an ASCII string, returned as lowercase hex (no 0x). */
-function keccak256(ascii) {
+/* Keccak-256 digest of a byte array, returned as an array of 32 bytes. */
+function keccak256Digest(inputBytes) {
   const RATE = 136; /* bytes: (1600 - 512) / 8 */
-  const bytes = [];
-  for (let i = 0; i < ascii.length; i++) bytes.push(ascii.charCodeAt(i) & 0xff);
+  const bytes = Array.from(inputBytes);
   /* Keccak pad10*1: 0x01 ... 0x80 within the final rate block */
   bytes.push(0x01);
   while (bytes.length % RATE !== RATE - 1) bytes.push(0x00);
@@ -114,15 +113,28 @@ function keccak256(ascii) {
     }
     keccakF1600(state);
   }
-  let out = "";
+  const out = [];
   for (let lane = 0; lane < 4; lane++) {
     let v = state[lane];
     for (let j = 0; j < 8; j++) {
-      out += (v & 0xffn).toString(16).padStart(2, "0");
+      out.push(Number(v & 0xffn));
       v >>= 8n;
     }
   }
   return out;
+}
+function bytesToHex(bytes) {
+  return bytes.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+/* Keccak-256 of a byte array, returned as lowercase hex (no 0x). */
+function keccak256Bytes(bytes) {
+  return bytesToHex(keccak256Digest(bytes));
+}
+/* Keccak-256 of an ASCII string, returned as lowercase hex (no 0x). */
+function keccak256(ascii) {
+  const bytes = [];
+  for (let i = 0; i < ascii.length; i++) bytes.push(ascii.charCodeAt(i) & 0xff);
+  return keccak256Bytes(bytes);
 }
 
 /* ---------- EIP-55 address inspector ---------- */
@@ -195,6 +207,32 @@ function eventTopic(sig) {
   return "0x" + keccak256(s);
 }
 
+/* ---------- CREATE2 address calculator (EIP-1014) ----------
+   address = last 20 bytes of keccak256(0xff ++ deployer(20B) ++ salt(32B)
+   ++ keccak256(init_code)). Deterministic deployment: the same deployer,
+   salt and init code give the same address on every EVM chain. */
+/* Parse a hex string (optional 0x prefix, even length) into bytes.
+   expectedLen, when given, must match exactly. Returns null on bad input. */
+function parseHexBytes(str, expectedLen) {
+  if (typeof str !== "string") return null;
+  let s = str.trim();
+  if (s.startsWith("0x") || s.startsWith("0X")) s = s.slice(2);
+  if (s.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(s)) return null;
+  if (expectedLen !== undefined && s.length !== expectedLen * 2) return null;
+  const out = [];
+  for (let i = 0; i < s.length; i += 2) out.push(parseInt(s.slice(i, i + 2), 16));
+  return out;
+}
+function create2Address(deployer, salt, initCode) {
+  const deployerBytes = parseHexBytes(deployer, 20);
+  const saltBytes = parseHexBytes(salt, 32);
+  const initBytes = parseHexBytes(initCode);
+  if (deployerBytes === null || saltBytes === null || initBytes === null) return null;
+  const preimage = [0xff, ...deployerBytes, ...saltBytes, ...keccak256Digest(initBytes)];
+  const digest = keccak256Digest(preimage);
+  return toChecksumAddress("0x" + bytesToHex(digest.slice(12)));
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -254,6 +292,20 @@ if (typeof document !== "undefined") {
       if (sigPreset.value) document.getElementById("sig-input").value = sigPreset.value;
     });
 
+    /* CREATE2 calculator */
+    const c2Btn = document.getElementById("c2-btn");
+    if (c2Btn) c2Btn.addEventListener("click", () => {
+      const r = create2Address(
+        document.getElementById("c2-deployer").value,
+        document.getElementById("c2-salt").value,
+        document.getElementById("c2-init").value
+      );
+      const el = document.getElementById("c2-out");
+      el.textContent = r === null
+        ? "Check the inputs: deployer must be a 20-byte address (0x + 40 hex), salt a 32-byte value (0x + 64 hex), and init code even-length hex (0x… may be empty)."
+        : `CREATE2 address: ${r} (EIP-55 checksummed). The same deployer, salt and init code produce this address on Ethereum, Base, Unichain and Robinhood Chain — computed locally, nothing deployed.`;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -271,5 +323,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, UNIT_DECIMALS };
 }

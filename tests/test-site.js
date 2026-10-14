@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=21"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=22"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -941,6 +941,43 @@ check("basefee calculator refuses out-of-protocol and malformed inputs",
   app.nextBaseFee("12", "18446744073709551616", "18446744073709551616") === null);
 check("basefee tool section present in index.html", html.includes("basefee-btn") && html.includes("Next-block base fee calculator"));
 check("EIP-1559 linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-1559"));
+
+/* SHA-256 & EIP-4844 blob versioned hash — the hash function is anchored
+   on the published FIPS 180-4 example digests; the versioned hashes come
+   from an independent Python hashlib transcription of EIP-4844's
+   kzg_to_versioned_hash (0x01 || sha256(commitment)[1:]), whose hashlib
+   was itself validated against the same FIPS vectors first */
+const sha256HexOf = bytes => app.sha256Bytes(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+const asciiBytesOf = s => Array.from(s, c => c.charCodeAt(0));
+check("vhash controls labelled",
+  ["vhash-commitment"].every(id => html.includes(`for="${id}"`)));
+check("sha256 matches the published FIPS 180-4 vectors",
+  sha256HexOf([]) === "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" &&
+  sha256HexOf(asciiBytesOf("abc")) === "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" &&
+  sha256HexOf(asciiBytesOf("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")) === "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1" &&
+  sha256HexOf(new Array(1000000).fill(97)) === "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+check("blob versioned hash matches the Python hashlib oracle",
+  app.blobVersionedHash("0x" + "00".repeat(48)) === "0x01b0761f87b081d5cf10757ccc89f12be355c70e2e29df288b65b30710dcbcd1" &&
+  app.blobVersionedHash("0xc0" + "00".repeat(47)) === "0x010657f37554c781402a22917dee2f75def7ab966d7b770905398eba3c444014" &&
+  app.blobVersionedHash("0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f") === "0x01bdc2b2b62cb00749785bc84202236dbc3777d74660611b8e58812f0cfde6c3" &&
+  app.blobVersionedHash("0xfffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0dfdedddcdbdad9d8d7d6d5d4d3d2d1d0") === "0x010897da37c9d7a1204474cceff52fce21d87e104801246ca755e84022c77003" &&
+  app.blobVersionedHash("0x941f39fb8c32e7d8ad471b89b3894049bc5f6dff797c6a03849c2520d0cacd52d387a3f3e5c0aebd3847c2dde0a248dd") === "0x018318778b5bd0a2dca21ce65b8e9b1e2d2238480e8e2369e2f310b5f28d650d");
+check("blob versioned hash accepts bare and uppercase hex, output starts with the 0x01 KZG version byte",
+  app.blobVersionedHash("00".repeat(48)) === "0x01b0761f87b081d5cf10757ccc89f12be355c70e2e29df288b65b30710dcbcd1" &&
+  app.blobVersionedHash(("0x" + "ab".repeat(48)).toUpperCase()) === app.blobVersionedHash("0x" + "ab".repeat(48)) &&
+  app.blobVersionedHash("0x" + "ab".repeat(48)).startsWith("0x01"));
+check("prefilled vhash commitment is 48 bytes and hashes to the point-at-infinity vector",
+  (() => { const m = /id="vhash-commitment"[^>]*value="([^"]+)"/.exec(html); return m !== null && m[1].length === 98 && app.blobVersionedHash(m[1]) === "0x010657f37554c781402a22917dee2f75def7ab966d7b770905398eba3c444014"; })());
+check("blob versioned hash refuses anything that is not exactly 48 bytes of hex",
+  app.blobVersionedHash("") === null &&
+  app.blobVersionedHash("0x") === null &&
+  app.blobVersionedHash("0x" + "00".repeat(47)) === null &&
+  app.blobVersionedHash("0x" + "00".repeat(49)) === null &&
+  app.blobVersionedHash("0x" + "00".repeat(32)) === null &&
+  app.blobVersionedHash("0xzz" + "00".repeat(47)) === null &&
+  app.blobVersionedHash("0x" + "0".repeat(95)) === null &&
+  app.blobVersionedHash(null) === null);
+check("vhash tool section present in index.html", html.includes("vhash-btn") && html.includes("Blob versioned hash calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

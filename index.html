@@ -386,6 +386,15 @@ dave</textarea>
       <button id="blob-btn" type="button">Calculate blob base fee</button>
       <p id="blob-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Blob versioned hash calculator (EIP-4844)</h3>
+      <p>A blob transaction never carries a blob itself — it names each blob by a 32-byte <em>versioned hash</em>, the value the decoder above checks for the <code>0x01</code> first byte and the <code>BLOBHASH</code> opcode returns. <a href="https://eips.ethereum.org/EIPS/eip-4844">EIP-4844</a> defines it from the blob's 48-byte KZG commitment (the compressed BLS G1 point in the blob sidecar) in one step: <code>0x01 ‖ SHA-256(commitment)[1:]</code> — the version byte replaces the first byte of the commitment's SHA-256. Note the hash here is SHA-256, not Ethereum's usual Keccak-256 — the one place in the transaction format where the other hash appears, kept forward-compatible with the sharding design it was borrowed from. The prefilled commitment is the BLS point at infinity (<code>0xc0</code> followed by 47 zero bytes — the identity point EIP-4844's commitment check explicitly allows), whose versioned hash is <code>0x010657f3…</code>. Honest scope: this derives the hash from a commitment only — it does not compute the commitment from blob data (that is KZG/BLS cryptography needing a trusted-setup library), it does not verify any KZG proof, and it cannot check that the 48 bytes are a valid curve point, only that there are 48 of them. Derived locally — nothing is sent and no chain is queried.</p>
+      <label for="vhash-commitment">KZG commitment (48 bytes)</label>
+      <input id="vhash-commitment" type="text" spellcheck="false" value="0xc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000">
+      <button id="vhash-btn" type="button">Calculate versioned hash</button>
+      <p id="vhash-out" class="out" aria-live="polite"></p>
+    </div>
   </section>
 
   <section aria-labelledby="start-h">
@@ -400,6 +409,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=21"></script>
+<script src="app.js?v=22"></script>
 </body>
 </html>

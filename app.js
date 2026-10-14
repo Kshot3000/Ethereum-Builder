@@ -764,6 +764,96 @@ function uniswapV3Tick(mode, valueStr) {
   return { tick: String(tick), sqrtPriceX96: sqrt.toString(), price };
 }
 
+/* ---------- Uniswap V3 liquidity amounts calculator ----------
+   A V3 position is liquidity L held between sqrt ratios A (lower tick)
+   and B (upper tick) at the pool's current sqrt ratio C. The periphery
+   library LiquidityAmounts, over the core library SqrtPriceMath, fixes
+   the token amounts in exact integer arithmetic (all divisions floor):
+     amount0 between prices a<b = ((L<<96) × (b−a) / b) / a
+     amount1 between prices a<b = L × (b−a) / 2^96
+   getAmountsForLiquidity (amounts rounded DOWN, as the periphery
+   library computes them): at or below the range the position is all
+   token0 over [A,B]; inside it, token0 over [C,B] and token1 over
+   [A,C]; at or above it, all token1 over [A,B].
+   getLiquidityForAmounts inverts it:
+     L from amount0 over [a,b] = amount0 × ((a×b)/2^96) / (b−a)
+     L from amount1 over [a,b] = amount1 × 2^96 / (b−a)
+   taking the single-sided formula outside the range and the minimum of
+   the two inside it. The range and current price are entered as ticks
+   and converted with the TickMath code above, so every sqrt ratio is
+   one a real pool can actually hold. Liquidity is a uint128 in the
+   contracts: an L at or above 2^128 is refused, as is a computed L of
+   0 (the desired amounts are too small to mint any liquidity at this
+   range). Amounts are in each token's base units. User-supplied values
+   only: a real position's ticks, liquidity and the pool's current tick
+   are chain state this page does not read. */
+const V3_Q96 = 1n << 96n;
+function v3ParseTick(str) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  if (!/^-?\d+$/.test(s) || s.length > 7) return null;
+  const t = Number(BigInt(s));
+  return t < V3_MIN_TICK || t > V3_MAX_TICK ? null : t;
+}
+function v3ParseUint(str, maxDigits) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  if (!/^\d+$/.test(s) || s.length > maxDigits) return null;
+  return BigInt(s);
+}
+function v3Amount0Delta(a, b, liq) { return ((liq << 96n) * (b - a) / b) / a; }
+function v3Amount1Delta(a, b, liq) { return liq * (b - a) / V3_Q96; }
+function v3AmountsForLiquidity(cur, a, b, liq) {
+  if (cur <= a) return [v3Amount0Delta(a, b, liq), 0n];
+  if (cur < b) return [v3Amount0Delta(cur, b, liq), v3Amount1Delta(a, cur, liq)];
+  return [0n, v3Amount1Delta(a, b, liq)];
+}
+function v3LiquidityForAmount0(a, b, amount0) {
+  const intermediate = a * b / V3_Q96;
+  return amount0 * intermediate / (b - a);
+}
+function v3LiquidityForAmount1(a, b, amount1) { return amount1 * V3_Q96 / (b - a); }
+function uniswapV3Liquidity(mode, lowerStr, upperStr, currentStr, liquidityStr, amount0Str, amount1Str) {
+  if (mode !== "amounts" && mode !== "liquidity") return null;
+  const tickLower = v3ParseTick(lowerStr);
+  const tickUpper = v3ParseTick(upperStr);
+  const tickCurrent = v3ParseTick(currentStr);
+  if (tickLower === null || tickUpper === null || tickCurrent === null) return null;
+  if (tickLower >= tickUpper) return null;
+  const sqrtA = v3SqrtRatioAtTick(tickLower);
+  const sqrtB = v3SqrtRatioAtTick(tickUpper);
+  const sqrtC = v3SqrtRatioAtTick(tickCurrent);
+  const base = {
+    mode,
+    tickLower: String(tickLower), tickUpper: String(tickUpper), tickCurrent: String(tickCurrent),
+    sqrtLower: sqrtA.toString(), sqrtUpper: sqrtB.toString(), sqrtCurrent: sqrtC.toString()
+  };
+  if (mode === "amounts") {
+    const liq = v3ParseUint(liquidityStr, 39);
+    if (liq === null || liq === 0n || liq >= (1n << 128n)) return null;
+    const [amount0, amount1] = v3AmountsForLiquidity(sqrtC, sqrtA, sqrtB, liq);
+    return { ...base, liquidity: liq.toString(), amount0: amount0.toString(), amount1: amount1.toString() };
+  }
+  const amount0 = v3ParseUint(amount0Str, 78);
+  const amount1 = v3ParseUint(amount1Str, 78);
+  if (amount0 === null || amount1 === null) return null;
+  if (amount0 >= (1n << 256n) || amount1 >= (1n << 256n)) return null;
+  let liq;
+  if (sqrtC <= sqrtA) liq = v3LiquidityForAmount0(sqrtA, sqrtB, amount0);
+  else if (sqrtC < sqrtB) {
+    const liq0 = v3LiquidityForAmount0(sqrtC, sqrtB, amount0);
+    const liq1 = v3LiquidityForAmount1(sqrtA, sqrtC, amount1);
+    liq = liq0 < liq1 ? liq0 : liq1;
+  } else liq = v3LiquidityForAmount1(sqrtA, sqrtB, amount1);
+  if (liq === 0n || liq >= (1n << 128n)) return null;
+  const [used0, used1] = v3AmountsForLiquidity(sqrtC, sqrtA, sqrtB, liq);
+  return {
+    ...base, liquidity: liq.toString(),
+    amount0: used0.toString(), amount1: used1.toString(),
+    desiredAmount0: amount0.toString(), desiredAmount1: amount1.toString()
+  };
+}
+
 /* ---------- CREATE address calculator ----------
    The original deployment opcode derives the contract address from the
    creator alone: address = last 20 bytes of keccak256(rlp([sender,
@@ -2181,6 +2271,29 @@ if (typeof document !== "undefined") {
       el.textContent = `Tick ${r.tick} · sqrtPriceX96 ${r.sqrtPriceX96} · raw price (token1 per token0) ${r.price}. Converted locally with TickMath's exact integer math from the value you gave — not live pool data: a real pool's tick and sqrtPriceX96 are its slot0. The raw price ignores token decimals; scale by 10^(decimals of token0 − decimals of token1) for a human price.`;
     });
 
+    /* Uniswap V3 liquidity amounts calculator */
+    const v3lBtn = document.getElementById("v3l-btn");
+    if (v3lBtn) v3lBtn.addEventListener("click", () => {
+      const mode = document.getElementById("v3l-mode").value;
+      const r = uniswapV3Liquidity(
+        mode,
+        document.getElementById("v3l-lower").value,
+        document.getElementById("v3l-upper").value,
+        document.getElementById("v3l-current").value,
+        document.getElementById("v3l-liquidity").value,
+        document.getElementById("v3l-amount0").value,
+        document.getElementById("v3l-amount1").value
+      );
+      const el = document.getElementById("v3l-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: ticks must be whole numbers from −887272 to 887272 with the lower tick below the upper tick; in amounts mode the liquidity must be a whole number from 1 to below 2^128; in liquidity mode the desired amounts must be whole numbers of 0 or more in base units (the side of the range the current price sits on must be non-zero), must mint a liquidity of at least 1 and below 2^128, and each must be below 2^256.";
+        return;
+      }
+      el.textContent = r.mode === "amounts"
+        ? `Position amounts: liquidity ${r.liquidity} between ticks ${r.tickLower} and ${r.tickUpper} at current tick ${r.tickCurrent} holds ${r.amount0} base units of token0 and ${r.amount1} base units of token1 (amounts rounded down, as LiquidityAmounts computes them; a side that is 0 means the current price is at or beyond that end of the range, or the amount floors to 0 at this liquidity). Computed locally with LiquidityAmounts / SqrtPriceMath from the values you gave — not live pool data: a real position's ticks and liquidity and the pool's current tick are chain state.`
+        : `Liquidity: depositing at most ${r.desiredAmount0} base units of token0 and ${r.desiredAmount1} base units of token1 between ticks ${r.tickLower} and ${r.tickUpper} at current tick ${r.tickCurrent} mints liquidity ${r.liquidity}, which actually uses ${r.amount0} base units of token0 and ${r.amount1} base units of token1 — the desired amount on the non-limiting side is only partly used, and even the limiting side can leave a few base units of rounding dust. Computed locally with LiquidityAmounts / SqrtPriceMath from the values you gave — not live pool data and not financial advice.`;
+    });
+
     /* CREATE calculator */
     const createBtn = document.getElementById("create-btn");
     if (createBtn) createBtn.addEventListener("click", () => {
@@ -2513,5 +2626,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV3Tick, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV3Tick, uniswapV3Liquidity, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

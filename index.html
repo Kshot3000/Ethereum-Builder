@@ -189,6 +189,27 @@
     </div>
 
     <div class="tool">
+      <h3>Uniswap V3 liquidity amounts calculator</h3>
+      <p>Built a position with the converter above? This calculator works out what a concentrated-liquidity position actually holds, with the exact integer math of <a href="https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/LiquidityAmounts.sol">LiquidityAmounts</a> in v3-periphery over <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/SqrtPriceMath.sol">SqrtPriceMath</a> in v3-core (both divisions floor). A position is liquidity L between a lower and an upper tick at the pool's current tick: at or below the range it is entirely token0, inside it it holds token0 over the part of the range above the current price and token1 over the part below, and at or above the range it is entirely token1. Amounts mode takes L and returns the two token amounts (rounded down, as the library computes position amounts); liquidity mode takes desired token amounts and returns the L they mint — the single-sided formula outside the range, the minimum of the two sides inside it — plus the amounts that L actually uses. The ticks are converted with TickMath, so every price is one a real pool can hold; liquidity is a uint128 in the contracts, so an L at or above 2<sup>128</sup> is refused, as is a desired-amount pair too small to mint L of 1. Amounts are in each token's base units. The prefilled range (−1000 to 1000 at current tick 0, L = 1000000) holds exactly 48768 base units of each token. Honest scope: the ticks and amounts are values <em>you</em> supply — a real position's ticks and liquidity and the pool's current tick are chain state, which this page does not read, so this is the libraries' formula applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is deposited and no chain is queried.</p>
+      <label for="v3l-mode">Mode</label>
+      <select id="v3l-mode"><option value="amounts" selected>Amounts for liquidity — I have L, show the token amounts</option><option value="liquidity">Liquidity for amounts — I have token amounts, show the L they mint</option></select>
+      <label for="v3l-lower">Lower tick</label>
+      <input id="v3l-lower" type="text" inputmode="numeric" spellcheck="false" value="-1000">
+      <label for="v3l-upper">Upper tick</label>
+      <input id="v3l-upper" type="text" inputmode="numeric" spellcheck="false" value="1000">
+      <label for="v3l-current">Current tick</label>
+      <input id="v3l-current" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="v3l-liquidity">Liquidity L (amounts mode)</label>
+      <input id="v3l-liquidity" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="v3l-amount0">Desired amount of token0, base units (liquidity mode)</label>
+      <input id="v3l-amount0" type="text" inputmode="numeric" spellcheck="false" value="10000">
+      <label for="v3l-amount1">Desired amount of token1, base units (liquidity mode)</label>
+      <input id="v3l-amount1" type="text" inputmode="numeric" spellcheck="false" value="10000">
+      <button id="v3l-btn" type="button">Calculate position</button>
+      <p id="v3l-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>CREATE address calculator</h3>
       <p>The classic deployment opcode derives a contract's address from the creator alone: the last 20 bytes of Keccak-256 of the RLP encoding of <code>[sender, nonce]</code>. Know an account's nonce and you know the address its next deployment lands at — the same on Ethereum, Base, Unichain and Robinhood Chain. (CREATE2 above is the salt-based alternative.) Defaults below are the long-published worked example for this formula, so you can reproduce its known nonce-0 address. This only computes the address locally; nothing is deployed.</p>
       <label for="create-sender">Sender / deployer address (20 bytes)</label>
@@ -471,6 +492,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=26"></script>
+<script src="app.js?v=27"></script>
 </body>
 </html>

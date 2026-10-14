@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=26"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=27"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1227,6 +1227,83 @@ check("v3t converter refuses out-of-range and malformed inputs",
   app.uniswapV3Tick("tick", null) === null);
 check("v3t tool section present in index.html", html.includes("v3t-btn") && html.includes("Uniswap V3 tick"));
 check("TickMath linked from index.html", html.includes("https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol"));
+
+/* Uniswap V3 liquidity amounts — vectors from an independent pure-Python
+   transcription of LiquidityAmounts + SqrtPriceMath (floor rounding),
+   with sqrt ratios taken from the TickMath verified above. */
+check("v3l controls labelled in index.html",
+  ["v3l-mode", "v3l-lower", "v3l-upper", "v3l-current", "v3l-liquidity", "v3l-amount0", "v3l-amount1"]
+    .every(id => html.includes(`for="${id}"`)));
+check("v3l: amounts for liquidity match the Python oracle",
+  [[-1000, 1000, 0, "1000000", "48768", "48768"],
+   [-1000, 1000, -1000, "1000000", "100036", "0"],
+   [-1000, 1000, 1000, "1000000", "0", "100036"],
+   [-1000, 1000, -2000, "123456789", "12350205", "0"],
+   [-1000, 1000, 5000, "987654321", "0", "98801645"],
+   [-10000, 10000, 100, "1000000000000000000", "388466905771416146", "398466447465216445"],
+   [0, 100, 50, "1", "0", "0"],
+   [-100, 0, -50, "7777777", "19467", "19370"],
+   [-100000, 100000, 0, "555", "551", "551"],
+   [-887272, 887272, 0, "1000", "999", "999"],
+   [-1000, 1000, 999, "170141183460469231731687303715884105728", "8091982935921660856338047221399851", "17011414203158618009553105060947296256"],
+   [-1000, 1000, -999, "3", "0", "0"]]
+    .every(([lo, hi, cur, liq, a0, a1]) => {
+      const r = app.uniswapV3Liquidity("amounts", String(lo), String(hi), String(cur), liq, "0", "0");
+      return r !== null && r.amount0 === a0 && r.amount1 === a1 && r.liquidity === liq;
+    }));
+check("v3l: liquidity for amounts matches the Python oracle (L and amounts actually used)",
+  [[-1000, 1000, 0, "10000", "10000", "205051", "9999", "9999"],
+   [-1000, 1000, 0, "500", "100000", "10252", "499", "499"],
+   [-1000, 1000, -2000, "12345", "99999", "123404", "12344", "0"],
+   [-1000, 1000, 5000, "99999", "54321", "543010", "0", "54320"],
+   [-1000, 1000, -1000, "1000", "1000", "9996", "999", "0"],
+   [-1000, 1000, 1000, "1000", "1000", "9996", "0", "999"],
+   [-10000, 10000, 100, "1000000000000", "1000000000000", "2509621591382", "974904934261", "999999999999"],
+   [0, 100, 50, "123456", "654321", "49570387", "123455", "124074"]]
+    .every(([lo, hi, cur, d0, d1, liq, u0, u1]) => {
+      const r = app.uniswapV3Liquidity("liquidity", String(lo), String(hi), String(cur), "0", d0, d1);
+      return r !== null && r.liquidity === liq && r.amount0 === u0 && r.amount1 === u1 &&
+        r.desiredAmount0 === d0 && r.desiredAmount1 === d1;
+    }));
+check("v3l: round trip amounts → liquidity never exceeds the original L and is exact on the oracle cases",
+  [[-1000, 1000, 0, "1000000", "999995"],
+   [-1000, 1000, -1000, "1000000", "999993"],
+   [-1000, 1000, 1000, "1000000", "999993"],
+   [-10000, 10000, 100, "1000000000000000000", "999999999999999998"]]
+    .every(([lo, hi, cur, liq, liq2]) => {
+      const a = app.uniswapV3Liquidity("amounts", String(lo), String(hi), String(cur), liq, "0", "0");
+      const back = a && app.uniswapV3Liquidity("liquidity", String(lo), String(hi), String(cur), "0", a.amount0, a.amount1);
+      return back !== null && back.liquidity === liq2 && BigInt(back.liquidity) <= BigInt(liq);
+    }));
+check("v3l: sqrt ratios in the result are the TickMath ratios of the three ticks",
+  (() => { const r = app.uniswapV3Liquidity("amounts", "-1000", "1000", "0", "1000000", "0", "0");
+    return r !== null && r.sqrtLower === "75364347830767020784054125655" &&
+      r.sqrtUpper === "83290069058676223003182343270" && r.sqrtCurrent === "79228162514264337593543950336"; })());
+check("v3l: prefilled page values reproduce the oracle's 48768 / 48768",
+  (() => { const g = id => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = g("v3l-lower") !== null && app.uniswapV3Liquidity("amounts", g("v3l-lower"), g("v3l-upper"), g("v3l-current"), g("v3l-liquidity"), "0", "0");
+    return r !== null && r !== false && r.amount0 === "48768" && r.amount1 === "48768"; })());
+check("v3l calculator refuses invalid ranges, bounds and malformed inputs",
+  app.uniswapV3Liquidity("amounts", "1000", "-1000", "0", "100", "0", "0") === null &&
+  app.uniswapV3Liquidity("amounts", "1000", "1000", "0", "100", "0", "0") === null &&
+  app.uniswapV3Liquidity("amounts", "-887273", "1000", "0", "100", "0", "0") === null &&
+  app.uniswapV3Liquidity("amounts", "-1000", "1000", "887273", "100", "0", "0") === null &&
+  app.uniswapV3Liquidity("amounts", "-1000", "1000", "0", "0", "0", "0") === null &&
+  app.uniswapV3Liquidity("amounts", "-1000", "1000", "0", "340282366920938463463374607431768211456", "0", "0") === null &&
+  app.uniswapV3Liquidity("amounts", "-1000", "1000", "0", "1.5", "0", "0") === null &&
+  app.uniswapV3Liquidity("amounts", "-1000", "1000", "0", "-5", "0", "0") === null &&
+  app.uniswapV3Liquidity("amounts", "-1000", "1000", "1.5", "100", "0", "0") === null &&
+  app.uniswapV3Liquidity("liquidity", "-1000", "1000", "0", "0", "0", "0") === null &&
+  app.uniswapV3Liquidity("liquidity", "-1000", "1000", "-2000", "0", "0", "99999") === null &&
+  app.uniswapV3Liquidity("liquidity", "-1000", "1000", "5000", "0", "99999", "0") === null &&
+  app.uniswapV3Liquidity("liquidity", "-1000", "1000", "0", "0", "1", "1") === null &&
+  app.uniswapV3Liquidity("liquidity", "-1000", "1000", "0", "0", "-1", "100") === null &&
+  app.uniswapV3Liquidity("liquidity", "-1000", "1000", "0", "0", "1".repeat(79), "100") === null &&
+  app.uniswapV3Liquidity("swap", "-1000", "1000", "0", "100", "0", "0") === null &&
+  app.uniswapV3Liquidity("amounts", "-1000", "1000", "0", null, "0", "0") === null);
+check("v3l tool section present in index.html", html.includes("v3l-btn") && html.includes("Uniswap V3 liquidity amounts"));
+check("LiquidityAmounts linked from index.html", html.includes("https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/LiquidityAmounts.sol"));
+check("SqrtPriceMath linked from index.html", html.includes("https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/SqrtPriceMath.sol"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

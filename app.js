@@ -491,6 +491,69 @@ function create2Address(deployer, salt, initCode) {
   return toChecksumAddress("0x" + bytesToHex(digest.slice(12)));
 }
 
+/* ---------- Uniswap V2 pair / V3 pool address (CREATE2) ----------
+   Uniswap's factories deploy pairs/pools with CREATE2, so the address
+   is computable offline from the factory, the two tokens and a fixed
+   init code hash — the derivation Uniswap's own developer docs (V2)
+   and the v3-periphery PoolAddress library (V3) publish:
+     V2: salt = keccak256(token0 ++ token1), the two 20-byte addresses
+         packed (40 bytes); canonical init code hash 0x96e8ac42…
+     V3: salt = keccak256(abi.encode(token0, token1, fee)), three
+         32-byte words; canonical init code hash 0xe34f199b…
+   In both, token0 is the numerically smaller token address: the
+   factories sort the pair themselves and refuse identical or
+   zero-address tokens, so those inputs are refused here too. A V3
+   fee must be a non-zero uint24 (the factory must also have that
+   tier enabled, which is chain state this tool does not read).
+   Factory and init code hash are inputs, not constants, because
+   deployments on other chains (Base, Unichain) use their own factory
+   and a differently compiled fork has a different init code hash;
+   the canonical Ethereum-mainnet values are the page's defaults.
+   Computes the address only: whether a pair/pool actually exists at
+   it is a chain query (the factory's getPair/getPool), which this
+   tool does not make. Verified against the canonical mainnet
+   pairs/pools in the tests. */
+const UNISWAP_V2_FACTORY = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f";
+const UNISWAP_V3_FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
+const UNISWAP_V2_INIT_CODE_HASH = "0x96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f";
+const UNISWAP_V3_INIT_CODE_HASH = "0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54";
+
+function uniswapPoolAddress(protocol, factory, tokenA, tokenB, feeStr, initCodeHash) {
+  if (protocol !== "v2" && protocol !== "v3") return null;
+  const factoryBytes = parseHexBytes(factory, 20);
+  const aBytes = parseHexBytes(tokenA, 20);
+  const bBytes = parseHexBytes(tokenB, 20);
+  const initHashBytes = parseHexBytes(initCodeHash, 32);
+  if (factoryBytes === null || aBytes === null || bBytes === null || initHashBytes === null) return null;
+  const isZero = (bs) => bs.every((b) => b === 0);
+  if (isZero(aBytes) || isZero(bBytes)) return null;
+  let cmp = 0;
+  for (let i = 0; i < 20 && cmp === 0; i++) cmp = aBytes[i] - bBytes[i];
+  if (cmp === 0) return null;
+  const t0 = cmp < 0 ? aBytes : bBytes;
+  const t1 = cmp < 0 ? bBytes : aBytes;
+  let salt;
+  if (protocol === "v2") {
+    salt = keccak256Digest([...t0, ...t1]);
+  } else {
+    if (typeof feeStr !== "string" || !/^\d+$/.test(feeStr.trim())) return null;
+    const fee = BigInt(feeStr.trim());
+    if (fee === 0n || fee >= (1n << 24n)) return null;
+    const word = (bs) => [...new Array(12).fill(0), ...bs];
+    const feeWord = [];
+    let v = fee;
+    for (let i = 0; i < 32; i++) { feeWord.unshift(Number(v & 0xffn)); v >>= 8n; }
+    salt = keccak256Digest([...word(t0), ...word(t1), ...feeWord]);
+  }
+  const digest = keccak256Digest([0xff, ...factoryBytes, ...salt, ...initHashBytes]);
+  return {
+    address: toChecksumAddress("0x" + bytesToHex(digest.slice(12))),
+    token0: toChecksumAddress("0x" + bytesToHex(t0)),
+    token1: toChecksumAddress("0x" + bytesToHex(t1)),
+    salt: "0x" + bytesToHex(salt)
+  };
+}
+
 /* ---------- CREATE address calculator ----------
    The original deployment opcode derives the contract address from the
    creator alone: address = last 20 bytes of keccak256(rlp([sender,
@@ -1839,6 +1902,39 @@ if (typeof document !== "undefined") {
         : `CREATE2 address: ${r} (EIP-55 checksummed). The same deployer, salt and init code produce this address on Ethereum, Base, Unichain and Robinhood Chain — computed locally, nothing deployed.`;
     });
 
+    /* Uniswap V2 pair / V3 pool address calculator */
+    const poolProto = document.getElementById("pool-protocol");
+    if (poolProto) poolProto.addEventListener("change", () => {
+      /* Keep the canonical factory/init-hash defaults paired with the
+         protocol: swap a field only while it still holds one of the
+         two canonical mainnet values, never over a user's own entry. */
+      const factoryEl = document.getElementById("pool-factory");
+      const initEl = document.getElementById("pool-init");
+      const isV3 = poolProto.value === "v3";
+      if ([UNISWAP_V2_FACTORY.toLowerCase(), UNISWAP_V3_FACTORY.toLowerCase()].includes(factoryEl.value.trim().toLowerCase()))
+        factoryEl.value = isV3 ? UNISWAP_V3_FACTORY : UNISWAP_V2_FACTORY;
+      if ([UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH].includes(initEl.value.trim().toLowerCase()))
+        initEl.value = isV3 ? UNISWAP_V3_INIT_CODE_HASH : UNISWAP_V2_INIT_CODE_HASH;
+    });
+    const poolBtn = document.getElementById("pool-btn");
+    if (poolBtn) poolBtn.addEventListener("click", () => {
+      const protocol = document.getElementById("pool-protocol").value;
+      const r = uniswapPoolAddress(
+        protocol,
+        document.getElementById("pool-factory").value,
+        document.getElementById("pool-token-a").value,
+        document.getElementById("pool-token-b").value,
+        document.getElementById("pool-fee").value,
+        document.getElementById("pool-init").value
+      );
+      const el = document.getElementById("pool-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: factory and both tokens must be 20-byte addresses (0x + 40 hex), the two tokens must differ and neither may be the zero address, the init code hash must be 32 bytes (0x + 64 hex), and a V3 fee must be a whole number from 1 to 16777215 — the tier must also be enabled on that factory.";
+        return;
+      }
+      el.textContent = `Uniswap ${protocol === "v3" ? "V3 pool" : "V2 pair"} address: ${r.address} · token0 ${r.token0} · token1 ${r.token1} · salt ${r.salt}. Derived locally with CREATE2 from the factory, the sorted tokens and the init code hash you gave. Whether a ${protocol === "v3" ? "pool" : "pair"} actually exists at this address is a chain query (the factory's ${protocol === "v3" ? "getPool" : "getPair"}) that this page does not make — nothing deployed, no chain queried.`;
+    });
+
     /* CREATE calculator */
     const createBtn = document.getElementById("create-btn");
     if (createBtn) createBtn.addEventListener("click", () => {
@@ -2171,5 +2267,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

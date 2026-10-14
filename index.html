@@ -144,6 +144,25 @@
     </div>
 
     <div class="tool">
+      <h3>Uniswap V2 pair &amp; V3 pool address calculator</h3>
+      <p>Uniswap's factories deploy every pair and pool with CREATE2, so the address is fixed before the pair exists — by the factory, the two tokens, and the pair/pool bytecode's init code hash. This calculator runs that derivation locally, exactly as <a href="https://developers.uniswap.org/docs/protocols/v2/guides/getting-pair-addresses">Uniswap's developer docs</a> (V2) and the <a href="https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/PoolAddress.sol">v3-periphery PoolAddress library</a> (V3) publish it: the tokens are sorted so the numerically smaller address is token0 (the factories refuse identical or zero-address tokens, and so does this tool), the V2 salt is Keccak-256 of the two token addresses <em>packed</em> (40 bytes), while the V3 salt is Keccak-256 of <code>abi.encode(token0, token1, fee)</code> (three 32-byte words). The defaults are the canonical Ethereum-mainnet deployment, and the prefilled V3 example reproduces the well-known USDC/WETH 0.3% pool. Switching protocol swaps the factory and init code hash defaults to that protocol's — unless you have typed your own, which is never overwritten: on Base, Unichain, or a fork, enter that deployment's factory (and its init code hash, if it was compiled differently). A V3 fee must be a tier the factory has enabled, which is chain state. Honest scope: this computes where a pair/pool <em>would</em> live — whether one actually exists there is the factory's <code>getPair</code>/<code>getPool</code> chain query, which this page does not make. Computed locally; nothing is deployed and no chain is queried.</p>
+      <label for="pool-protocol">Protocol</label>
+      <select id="pool-protocol"><option value="v3" selected>Uniswap V3 — pool (token0, token1, fee)</option><option value="v2">Uniswap V2 — pair (token0, token1)</option></select>
+      <label for="pool-factory">Factory address</label>
+      <input id="pool-factory" type="text" spellcheck="false" value="0x1F98431c8aD98523631AE4a59f267346ea31F984">
+      <label for="pool-token-a">Token A address</label>
+      <input id="pool-token-a" type="text" spellcheck="false" value="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48">
+      <label for="pool-token-b">Token B address</label>
+      <input id="pool-token-b" type="text" spellcheck="false" value="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2">
+      <label for="pool-fee">Fee tier (V3 only, in hundredths of a bip — 3000 = 0.3%; ignored for V2)</label>
+      <input id="pool-fee" type="text" inputmode="numeric" spellcheck="false" value="3000">
+      <label for="pool-init">Init code hash (32 bytes)</label>
+      <input id="pool-init" type="text" spellcheck="false" value="0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54">
+      <button id="pool-btn" type="button">Calculate pool address</button>
+      <p id="pool-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>CREATE address calculator</h3>
       <p>The classic deployment opcode derives a contract's address from the creator alone: the last 20 bytes of Keccak-256 of the RLP encoding of <code>[sender, nonce]</code>. Know an account's nonce and you know the address its next deployment lands at — the same on Ethereum, Base, Unichain and Robinhood Chain. (CREATE2 above is the salt-based alternative.) Defaults below are the long-published worked example for this formula, so you can reproduce its known nonce-0 address. This only computes the address locally; nothing is deployed.</p>
       <label for="create-sender">Sender / deployer address (20 bytes)</label>
@@ -426,6 +445,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=23"></script>
+<script src="app.js?v=24"></script>
 </body>
 </html>

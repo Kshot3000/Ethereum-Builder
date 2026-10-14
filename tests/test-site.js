@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=23"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=24"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1027,6 +1027,56 @@ check("ig calculator refuses invalid, out-of-protocol and malformed inputs",
 check("ig tool section present in index.html", html.includes("ig-btn") && html.includes("Intrinsic gas calculator"));
 check("EIP-7623 linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-7623"));
 check("EIP-3860 linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-3860"));
+
+/* Uniswap V2 pair / V3 pool addresses — canonical Ethereum-mainnet pairs
+   and pools (the addresses the factories' getPair/getPool return), plus
+   the Uniswap V2 docs worked example. Expected values were reproduced by
+   an independent pure-Python Keccak-256 + CREATE2 oracle written from
+   Uniswap's published derivations (V2: salt over the packed token pair;
+   V3: salt over abi.encode(token0, token1, fee)) before being anchored
+   on these published addresses. */
+const POOL_USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+const POOL_WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+const POOL_DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
+const POOL_USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+const POOL_WBTC = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599";
+check("pool controls labelled in index.html",
+  html.includes('for="pool-factory"') && html.includes('for="pool-token-a"') &&
+  html.includes('for="pool-token-b"') && html.includes('for="pool-fee"') &&
+  html.includes('for="pool-init"') && html.includes('for="pool-protocol"'));
+check("pool: canonical V2 pairs reproduced",
+  app.uniswapPoolAddress("v2", app.UNISWAP_V2_FACTORY, POOL_USDC, POOL_WETH, null, app.UNISWAP_V2_INIT_CODE_HASH).address === "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc" &&
+  app.uniswapPoolAddress("v2", app.UNISWAP_V2_FACTORY, POOL_DAI, POOL_WETH, null, app.UNISWAP_V2_INIT_CODE_HASH).address === "0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11" &&
+  app.uniswapPoolAddress("v2", app.UNISWAP_V2_FACTORY, POOL_WBTC, POOL_WETH, null, app.UNISWAP_V2_INIT_CODE_HASH).address === "0xBb2b8038a1640196FbE3e38816F3e67Cba72D940");
+check("pool: V2 docs worked example (CAFE/F00D) reproduced",
+  app.uniswapPoolAddress("v2", app.UNISWAP_V2_FACTORY, "0xCAFE000000000000000000000000000000000000", "0xF00D000000000000000000000000000000000000", null, app.UNISWAP_V2_INIT_CODE_HASH).address === "0x4D5B55aE12922Cd1F53a8593507A491723C01E00");
+check("pool: canonical V3 pools reproduced at both fee tiers",
+  app.uniswapPoolAddress("v3", app.UNISWAP_V3_FACTORY, POOL_USDC, POOL_WETH, "3000", app.UNISWAP_V3_INIT_CODE_HASH).address === "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8" &&
+  app.uniswapPoolAddress("v3", app.UNISWAP_V3_FACTORY, POOL_USDC, POOL_WETH, "500", app.UNISWAP_V3_INIT_CODE_HASH).address === "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640" &&
+  app.uniswapPoolAddress("v3", app.UNISWAP_V3_FACTORY, POOL_WETH, POOL_USDT, "3000", app.UNISWAP_V3_INIT_CODE_HASH).address === "0x4e68Ccd3E89f51C3074ca5072bbAC773960dFa36" &&
+  app.uniswapPoolAddress("v3", app.UNISWAP_V3_FACTORY, POOL_DAI, POOL_WETH, "3000", app.UNISWAP_V3_INIT_CODE_HASH).address === "0xC2e9F25Be6257c210d7Adf0D4Cd6E3E881ba25f8");
+check("pool: token order is normalised (sorted token0/token1, same address either way in)",
+  (() => { const r = app.uniswapPoolAddress("v3", app.UNISWAP_V3_FACTORY, POOL_WETH, POOL_USDC, "3000", app.UNISWAP_V3_INIT_CODE_HASH);
+    return r.address === "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8" && r.token0 === POOL_USDC && r.token1 === POOL_WETH &&
+      /^0x[0-9a-f]{64}$/.test(r.salt); })() &&
+  app.uniswapPoolAddress("v2", app.UNISWAP_V2_FACTORY, POOL_WETH, POOL_USDC, null, app.UNISWAP_V2_INIT_CODE_HASH).address === "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+check("pool: prefilled page values reproduce the canonical USDC/WETH 0.3% pool",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.uniswapPoolAddress("v3", g("pool-factory"), g("pool-token-a"), g("pool-token-b"), g("pool-fee"), g("pool-init"));
+    return r !== null && r.address === "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"; })());
+check("pool calculator refuses factory-invalid and malformed inputs",
+  app.uniswapPoolAddress("v3", app.UNISWAP_V3_FACTORY, POOL_USDC, POOL_USDC, "3000", app.UNISWAP_V3_INIT_CODE_HASH) === null &&
+  app.uniswapPoolAddress("v2", app.UNISWAP_V2_FACTORY, "0x0000000000000000000000000000000000000000", POOL_WETH, null, app.UNISWAP_V2_INIT_CODE_HASH) === null &&
+  app.uniswapPoolAddress("v2", "0x123", POOL_USDC, POOL_WETH, null, app.UNISWAP_V2_INIT_CODE_HASH) === null &&
+  app.uniswapPoolAddress("v2", app.UNISWAP_V2_FACTORY, POOL_USDC, POOL_WETH, null, "0x96e8") === null &&
+  app.uniswapPoolAddress("v3", app.UNISWAP_V3_FACTORY, POOL_USDC, POOL_WETH, "0", app.UNISWAP_V3_INIT_CODE_HASH) === null &&
+  app.uniswapPoolAddress("v3", app.UNISWAP_V3_FACTORY, POOL_USDC, POOL_WETH, "16777216", app.UNISWAP_V3_INIT_CODE_HASH) === null &&
+  app.uniswapPoolAddress("v3", app.UNISWAP_V3_FACTORY, POOL_USDC, POOL_WETH, "abc", app.UNISWAP_V3_INIT_CODE_HASH) === null &&
+  app.uniswapPoolAddress("v4", app.UNISWAP_V3_FACTORY, POOL_USDC, POOL_WETH, "3000", app.UNISWAP_V3_INIT_CODE_HASH) === null &&
+  app.uniswapPoolAddress("v3", app.UNISWAP_V3_FACTORY, null, POOL_WETH, "3000", app.UNISWAP_V3_INIT_CODE_HASH) === null);
+check("pool tool section present in index.html", html.includes("pool-btn") && html.includes("Uniswap V2 pair"));
+check("Uniswap V2 pair-address docs linked from index.html", html.includes("https://developers.uniswap.org/docs/protocols/v2/guides/getting-pair-addresses"));
+check("v3-periphery PoolAddress linked from index.html", html.includes("https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/PoolAddress.sol"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

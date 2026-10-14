@@ -1124,6 +1124,86 @@ function decodeRawTransaction(input) {
   } catch (e) { return null; }
 }
 
+/* ---------- Signature recovery (ecrecover) ----------
+   Given the 32-byte digest that was signed and the signature's v / r / s,
+   recover the signer's address exactly as the EVM's ecrecover precompile
+   does: find the curve point R with x = r and y-parity from v, then
+   Q = r^-1 (s·R − e·G) on secp256k1, and the address is the last 20 bytes
+   of keccak256(Qx ‖ Qy). v is accepted as 0/1, 27/28, or an EIP-155 value
+   (>= 35; the chain ID is implied and the parity is (v − 35) mod 2).
+   Strict about the signature itself: r and s must lie in [1, n − 1] and
+   s must be in the lower half of the curve order (the EIP-2 canonical
+   form every client enforces — the malleable high-s twin is rejected
+   rather than recovered). Recovers an address from a signature; it does
+   not create one and needs no private key. */
+const SECP256K1_P = (1n << 256n) - (1n << 32n) - 977n;
+const SECP256K1_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const SECP256K1_G = [
+  0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n,
+  0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n
+];
+function secpMod(a) { const r = a % SECP256K1_P; return r < 0n ? r + SECP256K1_P : r; }
+function secpModPow(base, exp, mod) {
+  let result = 1n, b = ((base % mod) + mod) % mod, e = exp;
+  while (e > 0n) { if (e & 1n) result = (result * b) % mod; b = (b * b) % mod; e >>= 1n; }
+  return result;
+}
+function secpAdd(p1, p2) {
+  if (p1 === null) return p2;
+  if (p2 === null) return p1;
+  const [x1, y1] = p1, [x2, y2] = p2;
+  let lam;
+  if (x1 === x2) {
+    if (secpMod(y1 + y2) === 0n) return null;
+    lam = secpMod(3n * x1 * x1 * secpModPow(2n * y1, SECP256K1_P - 2n, SECP256K1_P));
+  } else {
+    lam = secpMod((y2 - y1) * secpModPow(x2 - x1, SECP256K1_P - 2n, SECP256K1_P));
+  }
+  const x3 = secpMod(lam * lam - x1 - x2);
+  return [x3, secpMod(lam * (x1 - x3) - y1)];
+}
+function secpMul(k, point) {
+  let result = null, addend = point, scalar = k;
+  while (scalar > 0n) {
+    if (scalar & 1n) result = secpAdd(result, addend);
+    addend = secpAdd(addend, addend);
+    scalar >>= 1n;
+  }
+  return result;
+}
+function bytesToBigInt(bytes) {
+  return bytes.reduce((a, b) => (a << 8n) | BigInt(b), 0n);
+}
+function recoverAddress(hashHex, vStr, rHex, sHex) {
+  const hashBytes = parseHexBytes(hashHex, 32);
+  const rBytes = parseHexBytes(rHex, 32);
+  const sBytes = parseHexBytes(sHex, 32);
+  if (hashBytes === null || rBytes === null || sBytes === null) return null;
+  if (typeof vStr !== "string" || !/^\d+$/.test(vStr.trim())) return null;
+  const v = BigInt(vStr.trim());
+  let recId;
+  if (v === 0n || v === 1n) recId = Number(v);
+  else if (v === 27n || v === 28n) recId = Number(v - 27n);
+  else if (v >= 35n) recId = Number((v - 35n) % 2n);
+  else return null;
+  const r = bytesToBigInt(rBytes);
+  const s = bytesToBigInt(sBytes);
+  if (r < 1n || r >= SECP256K1_N || s < 1n || s > SECP256K1_N / 2n) return null;
+  const alpha = secpMod(r * r * r + 7n);
+  const beta = secpModPow(alpha, (SECP256K1_P + 1n) / 4n, SECP256K1_P);
+  if (secpMod(beta * beta) !== alpha) return null;
+  const y = Number(beta & 1n) === recId ? beta : SECP256K1_P - beta;
+  const e = bytesToBigInt(hashBytes);
+  const rInv = secpModPow(r, SECP256K1_N - 2n, SECP256K1_N);
+  const sR = secpMul(s, [r, y]);
+  const eG = secpMul(e % SECP256K1_N, SECP256K1_G);
+  const negEG = eG === null ? null : [eG[0], secpMod(-eG[1])];
+  const q = secpMul(rInv, secpAdd(sR, negEG));
+  if (q === null) return null;
+  const pubHex = keccak256Bytes([...bigIntToBytes32(q[0]), ...bigIntToBytes32(q[1])]);
+  return toChecksumAddress("0x" + pubHex.slice(24));
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -1340,6 +1420,21 @@ if (typeof document !== "undefined") {
       el.textContent = msg;
     });
 
+    /* Signature recovery (ecrecover) */
+    const recBtn = document.getElementById("rec-btn");
+    if (recBtn) recBtn.addEventListener("click", () => {
+      const el = document.getElementById("rec-out");
+      const addr = recoverAddress(
+        document.getElementById("rec-hash").value,
+        document.getElementById("rec-v").value,
+        document.getElementById("rec-r").value,
+        document.getElementById("rec-s").value
+      );
+      el.textContent = addr === null
+        ? "That does not recover — check the digest and r / s are complete 32-byte hex values, r and s are between 1 and the curve order − 1, s is in the lower half of the order (the canonical EIP-2 form), and v is 0/1, 27/28, or an EIP-155 value (35 or more)."
+        : `Signer address: ${addr}. Recovered locally from the digest and signature alone — no private key involved, nothing signed, and no chain queried. The same recovery applies on Ethereum, Base, Unichain and Robinhood Chain.`;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -1357,5 +1452,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, recoverAddress, UNIT_DECIMALS };
 }

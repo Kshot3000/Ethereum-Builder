@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=12"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=13"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -569,6 +569,50 @@ check("transaction decoder rejects malformed and non-canonical input",
   app.decodeRawTransaction(TYPE2_TX.replace("0301a0", "0302a0")) === null &&
   app.decodeRawTransaction(null) === null);
 check("raw transaction tool section present in index.html", html.includes("txd-btn") && html.includes("Raw transaction decoder"));
+check("signature recovery controls labelled",
+  ["rec-hash", "rec-v", "rec-r", "rec-s"].every(id => html.includes(`for="${id}"`)));
+
+/* signature recovery — three independent anchors: (1) EIP-155's published
+   signing hash + v/r/s recover the address an independent pure-Python
+   secp256k1 oracle derives from the private key the EIP itself prints;
+   (2) EIP-712's printed eth_signTypedData signature recovers its published
+   signing account over the spec digest the mail tool computes; (3) two
+   Python-oracle sign/recover vectors with fixed keys (incl. private key 1) */
+const EIP155_SENDER = app.toChecksumAddress("0x9d8a62f656a8d1615c1294fd71e9cfb3e4855a4f");
+check("EIP-155 example signature recovers the sender (Python oracle from the EIP's printed key)",
+  app.recoverAddress(tx155.signingHash, "37", tx155.r, tx155.s) === EIP155_SENDER &&
+  app.recoverAddress(tx155.signingHash, "0", tx155.r, tx155.s) === EIP155_SENDER);
+const MAIL_DIGEST = md.digest;
+const COW_CHECKSUM = app.toChecksumAddress(COW);
+const SIG712_R = "0x4355c47d63924e8a72e509b65029052eb6c299d53a04e167c5775fd466751c9d";
+const SIG712_S = "0x07299936d304c153f6443dfa05f40ff007d72911b6f72307f996231605b91562";
+check("EIP-712 printed signature recovers its published signing account (Cow)",
+  app.recoverAddress(MAIL_DIGEST, "28", SIG712_R, SIG712_S) === COW_CHECKSUM &&
+  app.recoverAddress(MAIL_DIGEST, "1", SIG712_R, SIG712_S) === COW);
+check("wrong parity recovers a different address, not an error",
+  app.recoverAddress(MAIL_DIGEST, "27", SIG712_R, SIG712_S) !== null &&
+  app.recoverAddress(MAIL_DIGEST, "27", SIG712_R, SIG712_S) !== COW_CHECKSUM);
+check("signature recovery matches the Python-oracle sign/recover vectors",
+  app.recoverAddress("0xcd3a6e5d1a81ab6a1c73f0d6f07431edc7457102fcfb52eb0fed7db0382a11d6", "28",
+    "0xf01d6b9018ab421dd410404cb869072065522bf85734008f105cf385a023a80f",
+    "0x40e190a372d8af9f109bf439ac41a1569bfea45c368bfb5dc7995ec6afea69bc") ===
+    app.toChecksumAddress("0x7e5f4552091a69125d5dfcb7b8c2659029395bdf") &&
+  app.recoverAddress("0xb3c7d7d387fbd6b5220b5866df14be4bef6ce2d973ceed8a7cfb1ca7a2a88587", "28",
+    "0x5ad2703f5b4f4b9dea4c28fa30d86d3781d28e09dd51aae1208de80bb6155bee",
+    "0x1ed36f4e38a79389d012b6ccf4ae80cb7eb7c974ff336d93ecdd40c9721dea4d") ===
+    app.toChecksumAddress("0x1be31a94361a391bbafb2a4ccd704f57dc04d4bb"));
+check("signature recovery rejects malformed and non-canonical signatures",
+  app.recoverAddress(MAIL_DIGEST, "28", "0x" + "00".repeat(32), SIG712_S) === null &&
+  app.recoverAddress(MAIL_DIGEST, "28", SIG712_R, "0x" + "00".repeat(32)) === null &&
+  app.recoverAddress(MAIL_DIGEST, "28", "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", SIG712_S) === null &&
+  app.recoverAddress(MAIL_DIGEST, "27", SIG712_R, "0xf8d666c92cfb3eac09bbc205fa0bf00eb2d7b3d4f8517d33c63c3b76ca7d2bdf") === null &&
+  app.recoverAddress(MAIL_DIGEST, "29", SIG712_R, SIG712_S) === null &&
+  app.recoverAddress(MAIL_DIGEST, "2", SIG712_R, SIG712_S) === null &&
+  app.recoverAddress(MAIL_DIGEST, "0x1c", SIG712_R, SIG712_S) === null &&
+  app.recoverAddress("0xbe60", "28", SIG712_R, SIG712_S) === null &&
+  app.recoverAddress(MAIL_DIGEST, "28", SIG712_R, SIG712_S.slice(0, -1)) === null &&
+  app.recoverAddress(null, "28", SIG712_R, SIG712_S) === null);
+check("signature recovery tool section present in index.html", html.includes("rec-btn") && html.includes("Signature recovery"));
 check("EIP-155 source linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-155"));
 check("OpenZeppelin MerkleProof source linked from index.html",
   html.includes("https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/utils/cryptography/MerkleProof.sol"));

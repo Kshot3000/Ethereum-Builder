@@ -276,6 +276,21 @@ dave</textarea>
       <button id="txd-btn" type="button">Decode transaction</button>
       <p id="txd-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Signature recovery (ecrecover) calculator</h3>
+      <p>Every Ethereum signature names its signer — given the 32-byte digest that was signed and the signature's <code>v</code>, <code>r</code> and <code>s</code>, the signer's address is recoverable with the same secp256k1 math the EVM's <code>ecrecover</code> precompile runs, no private key involved. That is how a contract checks who authorised an action, and how you check which account a signature in a bug report really came from. The prefilled example is again <a href="https://eips.ethereum.org/EIPS/eip-155">EIP-155</a>'s published transaction: its signing hash with v 37 (chain ID 1, parity 0) and its published r and s recover the account of the private key the EIP prints, <code>0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F</code>. Paste any digest and signature — from the transaction decoder above, a typed-data digest, or a signed message — in any <code>v</code> form: 0/1, 27/28, or an EIP-155 value of 35 or more. Strict on purpose: <code>r</code> and <code>s</code> must be in range and <code>s</code> must sit in the lower half of the curve order — the canonical EIP-2 form every client enforces — so the malleable high-<code>s</code> twin of a signature is refused rather than recovered. Recovers an address from a signature only: nothing is signed, no key is used or asked for, and no chain is queried.</p>
+      <label for="rec-hash">Digest that was signed (32-byte hex)</label>
+      <input id="rec-hash" type="text" spellcheck="false" value="0xdaf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53">
+      <label for="rec-v">v (decimal: 0/1, 27/28, or EIP-155 value)</label>
+      <input id="rec-v" type="text" inputmode="numeric" spellcheck="false" value="37">
+      <label for="rec-r">r (32-byte hex)</label>
+      <input id="rec-r" type="text" spellcheck="false" value="0x28ef61340bd939bc2195fe537567866003e1a15d3c71ff63e1590620aa636276">
+      <label for="rec-s">s (32-byte hex)</label>
+      <input id="rec-s" type="text" spellcheck="false" value="0x67cbe9d8997f761aecb703304b3800ccf555c9f3dc64214b297fb1966a3b6d83">
+      <button id="rec-btn" type="button">Recover signer address</button>
+      <p id="rec-out" class="out" aria-live="polite"></p>
+    </div>
   </section>
 
   <section aria-labelledby="start-h">
@@ -290,6 +305,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=12"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

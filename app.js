@@ -1023,6 +1023,119 @@ function rlpEncodeItem(item) {
   while (len > 0) { lenBytes.unshift(len & 0xff); len >>= 8; }
   return [0xf7 + lenBytes.length, ...lenBytes, ...payload];
 }
+/* ---------- Standalone RLP encoder / decoder ----------
+   RLP (Recursive Length Prefix) is Ethereum's canonical serialization:
+   the CREATE calculator, the EIP-7702 digest and the transaction
+   decoder above all build on the codec in this file, but until now a
+   visitor could not use it directly. This tool exposes it in both
+   directions. Input syntax for the encoder: a value is a "quoted
+   string" (its UTF-8 bytes), a bare word (also its UTF-8 bytes), a
+   0x hex value (those raw bytes), a decimal integer (encoded as the
+   minimal big-endian byte string, so 0 is the empty string), or a
+   [list, of, values] nested to any depth, with commas or whitespace
+   as separators. Decoding is the strict decoder the transaction
+   tool uses — non-canonical forms (a 0x81-prefixed small byte, the
+   long length form for a short payload, a length with a leading
+   zero), truncated input and trailing bytes are refused rather than
+   tolerated — and the decoded value must re-encode to exactly the
+   input bytes. Decoded byte strings render as 0x hex, with their
+   text shown alongside when every byte is printable ASCII. Verified
+   in the tests against the worked examples published in the
+   ethereum.org RLP specification (the string "dog", ["cat","dog"],
+   the empty string and list, the integers 0 and 1024, the nested
+   set-theoretic list, and the 56-byte Lorem ipsum string in its long
+   length form) plus vectors from an independent pure-Python RLP
+   encoder written from the same rules. Encodes and decodes data
+   only — nothing is sent and no chain is queried. */
+function rlpTokenizeInput(str) {
+  if (typeof str !== "string") return null;
+  const tokens = [];
+  let i = 0;
+  while (i < str.length) {
+    const c = str[i];
+    if (c === " " || c === "\t" || c === "\n" || c === "\r" || c === ",") { i++; continue; }
+    if (c === "[") { tokens.push({ t: "open" }); i++; continue; }
+    if (c === "]") { tokens.push({ t: "close" }); i++; continue; }
+    if (c === "\"") {
+      let j = i + 1, out = "", closed = false;
+      while (j < str.length) {
+        const d = str[j];
+        if (d === "\\" && j + 1 < str.length && (str[j + 1] === "\"" || str[j + 1] === "\\")) { out += str[j + 1]; j += 2; continue; }
+        if (d === "\"") { closed = true; j++; break; }
+        out += d; j++;
+      }
+      if (!closed) return null;
+      tokens.push({ t: "bytes", bytes: utf8Bytes(out) });
+      i = j; continue;
+    }
+    if (c === "0" && (str[i + 1] === "x" || str[i + 1] === "X")) {
+      let j = i + 2, hex = "";
+      while (j < str.length && /[0-9a-fA-F]/.test(str[j])) { hex += str[j]; j++; }
+      if (hex.length % 2 !== 0) return null;
+      const bytes = [];
+      for (let k = 0; k < hex.length; k += 2) bytes.push(parseInt(hex.slice(k, k + 2), 16));
+      tokens.push({ t: "bytes", bytes });
+      i = j; continue;
+    }
+    if (/[0-9]/.test(c)) {
+      let j = i, num = "";
+      while (j < str.length && /[0-9]/.test(str[j])) { num += str[j]; j++; }
+      tokens.push({ t: "bytes", bytes: bigIntToMinBytes(BigInt(num)) });
+      i = j; continue;
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      let j = i, word = "";
+      while (j < str.length && /[A-Za-z0-9_.\-]/.test(str[j])) { word += str[j]; j++; }
+      tokens.push({ t: "bytes", bytes: utf8Bytes(word) });
+      i = j; continue;
+    }
+    return null;
+  }
+  return tokens;
+}
+function rlpParseTokens(tokens, pos) {
+  if (pos >= tokens.length) throw new Error("unexpected end of input");
+  const tk = tokens[pos];
+  if (tk.t === "bytes") return { value: { bytes: tk.bytes }, next: pos + 1 };
+  if (tk.t === "open") {
+    const items = [];
+    let p = pos + 1;
+    while (p < tokens.length && tokens[p].t !== "close") { const r = rlpParseTokens(tokens, p); items.push(r.value); p = r.next; }
+    if (p >= tokens.length) throw new Error("unclosed list");
+    return { value: { list: items }, next: p + 1 };
+  }
+  throw new Error("unexpected ]");
+}
+function rlpEncodeInput(str) {
+  const tokens = rlpTokenizeInput(str);
+  if (tokens === null || tokens.length === 0) return null;
+  try {
+    const r = rlpParseTokens(tokens, 0);
+    if (r.next !== tokens.length) return null;
+    return "0x" + bytesToHex(rlpEncodeItem(r.value));
+  } catch (e) { return null; }
+}
+function rlpRenderValue(item) {
+  if (item.bytes !== undefined) {
+    let s = "0x" + bytesToHex(item.bytes);
+    if (item.bytes.length > 0 && item.bytes.every(b => b >= 0x20 && b < 0x7f)) {
+      s += " (\"" + item.bytes.map(b => { const ch = String.fromCharCode(b); return (ch === "\"" || ch === "\\") ? "\\" + ch : ch; }).join("") + "\")";
+    }
+    return s;
+  }
+  return "[" + item.list.map(rlpRenderValue).join(", ") + "]";
+}
+function rlpDecodeInput(str) {
+  const bytes = txHexToBytes(str);
+  if (bytes === null) return null;
+  try {
+    const r = rlpDecodeItem(bytes, 0);
+    if (r.next !== bytes.length) return null;
+    const re = rlpEncodeItem(r.value);
+    if (re.length !== bytes.length || re.some((b, idx) => b !== bytes[idx])) return null;
+    return rlpRenderValue(r.value);
+  } catch (e) { return null; }
+}
 function txIntField(item, name) {
   if (item.bytes === undefined) throw new Error(name + " must be a string");
   const bs = item.bytes;
@@ -1592,6 +1705,24 @@ if (typeof document !== "undefined") {
     });
 
     /* Raw transaction decoder */
+    const rlpEncBtn = document.getElementById("rlp-enc-btn");
+    if (rlpEncBtn) rlpEncBtn.addEventListener("click", () => {
+      const input = document.getElementById("rlp-enc-input").value;
+      const r = rlpEncodeInput(input);
+      const el = document.getElementById("rlp-enc-out");
+      el.textContent = r === null
+        ? "That value could not be encoded — use a \"quoted string\", a bare word, a 0x hex value, a decimal integer, or a [list, of, values] with balanced brackets, and exactly one top-level value."
+        : `RLP encoding (${(r.length - 2) / 2} bytes): ${r}. Encoded locally — nothing is sent and no chain is queried.`;
+    });
+    const rlpDecBtn = document.getElementById("rlp-dec-btn");
+    if (rlpDecBtn) rlpDecBtn.addEventListener("click", () => {
+      const input = document.getElementById("rlp-dec-input").value;
+      const r = rlpDecodeInput(input);
+      const el = document.getElementById("rlp-dec-out");
+      el.textContent = r === null
+        ? "That hex does not strictly decode as one canonical RLP value — check it is complete (no truncation), canonical (no 0x81-prefixed small byte, no long length form for a short payload, no leading-zero lengths), and has no trailing bytes after the value."
+        : `Decoded value: ${r}. Byte strings are shown as 0x hex, with their text alongside when every byte is printable ASCII. Decoded locally — nothing is sent and no chain is queried.`;
+    });
     const txdBtn = document.getElementById("txd-btn");
     if (txdBtn) txdBtn.addEventListener("click", () => {
       const r = decodeRawTransaction(document.getElementById("txd-raw").value);
@@ -1717,5 +1848,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, UNIT_DECIMALS };
 }

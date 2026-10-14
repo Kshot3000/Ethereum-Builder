@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=18"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=19"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -801,6 +801,57 @@ check("sender recovery refuses unsigned, malleable, and malformed transactions",
   app.recoverTransactionSender("0xzz") === null &&
   app.recoverTransactionSender(null) === null);
 check("transaction sender tool section present in index.html", html.includes("txs-btn") && html.includes("Transaction sender recovery"));
+
+/* standalone RLP encoder / decoder — worked examples published in the
+   ethereum.org RLP specification, plus vectors from an independent
+   pure-Python RLP encoder written from the same rules (long-list form,
+   2^256-1, nested empties, the complex nested example) */
+check("RLP controls labelled",
+  ["rlp-enc-input", "rlp-dec-input"].every(id => html.includes(`for="${id}"`)));
+check("RLP encoder reproduces the specification's published examples",
+  app.rlpEncodeInput("\"dog\"") === "0x83646f67" &&
+  app.rlpEncodeInput("dog") === "0x83646f67" &&
+  app.rlpEncodeInput("[\"cat\", \"dog\"]") === "0xc88363617483646f67" &&
+  app.rlpEncodeInput("\"\"") === "0x80" &&
+  app.rlpEncodeInput("[]") === "0xc0" &&
+  app.rlpEncodeInput("0") === "0x80" &&
+  app.rlpEncodeInput("15") === "0x0f" &&
+  app.rlpEncodeInput("1024") === "0x820400" &&
+  app.rlpEncodeInput("0x0400") === "0x820400" &&
+  app.rlpEncodeInput("[[], [[]], [[], [[]]]]") === "0xc7c0c1c0c3c0c1c0" &&
+  app.rlpEncodeInput("\"Lorem ipsum dolor sit amet, consectetur adipisicing elit\"") === "0xb8384c6f72656d20697073756d20646f6c6f722073697420616d65742c20636f6e7365637465747572206164697069736963696e6720656c6974");
+check("RLP encoder matches the independent Python oracle on further vectors",
+  app.rlpEncodeInput("[\"cat\", [\"puppy\", \"cow\"], \"horse\", [[]], \"pig\", [\"\"], \"sheep\"]") === "0xe383636174ca85707570707983636f7785686f727365c1c083706967c180857368656570" &&
+  app.rlpEncodeInput("[\"aaaaaaaaaaaaaaaaaaaa\", \"bbbbbbbbbbbbbbbbbbbb\", \"cccccccccccccccccccc\"]") === "0xf83f946161616161616161616161616161616161616161946262626262626262626262626262626262626262946363636363636363636363636363636363636363" &&
+  app.rlpEncodeInput("115792089237316195423570985008687907853269984665640564039457584007913129639935") === "0xa0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" &&
+  app.rlpEncodeInput("[\"\", [\"\"], 0]") === "0xc480c18080");
+check("RLP decoder renders the specification's examples back",
+  app.rlpDecodeInput("0xc88363617483646f67") === "[0x636174 (\"cat\"), 0x646f67 (\"dog\")]" &&
+  app.rlpDecodeInput("0x80") === "0x" &&
+  app.rlpDecodeInput("0xc0") === "[]" &&
+  app.rlpDecodeInput("0xc7c0c1c0c3c0c1c0") === "[[], [[]], [[], [[]]]]" &&
+  app.rlpDecodeInput("0x820400") === "0x0400" &&
+  app.rlpDecodeInput("0x0f") === "0x0f" &&
+  app.rlpDecodeInput(app.rlpEncodeInput("[\"cat\", [\"puppy\", \"cow\"], \"horse\", [[]], \"pig\", [\"\"], \"sheep\"]")) === "[0x636174 (\"cat\"), [0x7075707079 (\"puppy\"), 0x636f77 (\"cow\")], 0x686f727365 (\"horse\"), [[]], 0x706967 (\"pig\"), [0x], 0x7368656570 (\"sheep\")]");
+check("RLP decoder refuses non-canonical, truncated, and trailing data",
+  app.rlpDecodeInput("0x8100") === null &&
+  app.rlpDecodeInput("0xb80161") === null &&
+  app.rlpDecodeInput("0x83646f67ff") === null &&
+  app.rlpDecodeInput("0x83646f") === null &&
+  app.rlpDecodeInput("") === null &&
+  app.rlpDecodeInput("0x") === null &&
+  app.rlpDecodeInput(null) === null);
+check("RLP encoder refuses malformed values",
+  app.rlpEncodeInput("\"dog") === null &&
+  app.rlpEncodeInput("[1, 2") === null &&
+  app.rlpEncodeInput("0x123") === null &&
+  app.rlpEncodeInput("]") === null &&
+  app.rlpEncodeInput("   ") === null &&
+  app.rlpEncodeInput("1 2") === null &&
+  app.rlpEncodeInput("{dog}") === null &&
+  app.rlpEncodeInput(null) === null);
+check("RLP tool section present in index.html", html.includes("rlp-enc-btn") && html.includes("rlp-dec-btn") && html.includes("RLP encoder &amp; decoder"));
+check("RLP specification linked from index.html", html.includes("https://ethereum.org/en/developers/docs/data-structures-and-encoding/rlp/"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

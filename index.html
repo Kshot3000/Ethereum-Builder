@@ -291,6 +291,19 @@ dave</textarea>
       <button id="rec-btn" type="button">Recover signer address</button>
       <p id="rec-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Signed message verification (EIP-191 personal_sign)</h3>
+      <p>When a wallet pops up “sign this message”, it does not sign the message itself: <a href="https://eips.ethereum.org/EIPS/eip-191">EIP-191</a>'s <code>personal_sign</code> signs the digest <code>keccak256("\x19Ethereum Signed Message:\n" ‖ length ‖ message)</code> — the prefix guarantees the payload can never double as a transaction, and the length is the length in <em>bytes</em>, so a multibyte character counts more than once. Paste a message and the 65-byte signature a wallet returned and this tool rebuilds that digest and recovers the signer — the check behind “prove you control this address”, done with no key and no chain query. The defaults are a worked example whose signer (<code>0x7E5F…5Bdf</code>, the widely published address of private key 1) you can check the recovery against. Strict in the same way as the recovery tool above: the signature must be exactly 65 bytes and <code>s</code> must be the canonical low-<code>s</code> form, or it is refused rather than half-verified. Verifies a signature only: nothing is signed, no key is used or asked for.</p>
+      <label for="msg-message">Message (exactly as signed)</label>
+      <textarea id="msg-message" rows="2" spellcheck="false">Hello, Bob!</textarea>
+      <label for="msg-sig">Signature (65 bytes: r ‖ s ‖ v, 0x hex)</label>
+      <textarea id="msg-sig" rows="3" spellcheck="false">0xa64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa91027b99dd94df68e33797cfdf9872561f556c8589e91d66ef16ed9884ed1f8e544b1b</textarea>
+      <label for="msg-expect">Expected signer (optional — leave blank to just recover)</label>
+      <input id="msg-expect" type="text" spellcheck="false" value="0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf">
+      <button id="msg-btn" type="button">Verify signature</button>
+      <p id="msg-out" class="out" aria-live="polite"></p>
+    </div>
   </section>
 
   <section aria-labelledby="start-h">
@@ -305,6 +318,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=13"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>

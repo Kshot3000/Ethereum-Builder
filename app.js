@@ -1204,6 +1204,43 @@ function recoverAddress(hashHex, vStr, rHex, sHex) {
   return toChecksumAddress("0x" + pubHex.slice(24));
 }
 
+/* ---------- Signed message verification (EIP-191 personal_sign) ----------
+   Wallets sign plain messages with personal_sign, which does NOT sign the
+   message itself: it signs the EIP-191 version-0x45 digest
+   keccak256("\x19Ethereum Signed Message:\n" ‖ decimal byte length ‖
+   message bytes) — the 0x19 prefix guarantees the payload can never be a
+   valid RLP transaction, and the length is the length in BYTES (a
+   multibyte UTF-8 character counts as more than one), written as a
+   decimal string. Given the message and the 65-byte signature r ‖ s ‖ v
+   a wallet returns, this tool rebuilds that digest and recovers the
+   signer with the ecrecover math above. Strict in the same way: the
+   signature must be exactly 65 bytes and s must be in the lower half of
+   the curve order (the EIP-2 canonical form wallets produce). It
+   verifies a signature locally; it never asks for a key and signs
+   nothing. Verified in the tests against an independent pure-Python
+   Keccak-256 + secp256k1 oracle written from the specifications,
+   anchored on the published Keccak vectors and the published addresses
+   of private key 1 and the EIP-155 example key. */
+function eip191Digest(message) {
+  if (typeof message !== "string") return null;
+  const msgBytes = utf8Bytes(message);
+  const prefix = "\x19Ethereum Signed Message:\n" + String(msgBytes.length);
+  const prefixBytes = [];
+  for (let i = 0; i < prefix.length; i++) prefixBytes.push(prefix.charCodeAt(i) & 0xff);
+  return "0x" + keccak256Bytes([...prefixBytes, ...msgBytes]);
+}
+function verifyPersonalSignature(message, signature) {
+  const digest = eip191Digest(message);
+  if (digest === null || typeof signature !== "string") return null;
+  const sigBytes = parseHexBytes(signature, 65);
+  if (sigBytes === null) return null;
+  const r = "0x" + bytesToHex(sigBytes.slice(0, 32));
+  const s = "0x" + bytesToHex(sigBytes.slice(32, 64));
+  const signer = recoverAddress(digest, String(sigBytes[64]), r, s);
+  if (signer === null) return null;
+  return { digest, signer };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -1435,6 +1472,30 @@ if (typeof document !== "undefined") {
         : `Signer address: ${addr}. Recovered locally from the digest and signature alone — no private key involved, nothing signed, and no chain queried. The same recovery applies on Ethereum, Base, Unichain and Robinhood Chain.`;
     });
 
+    /* Signed message verification (EIP-191 personal_sign) */
+    const msgBtn = document.getElementById("msg-btn");
+    if (msgBtn) msgBtn.addEventListener("click", () => {
+      const el = document.getElementById("msg-out");
+      const r = verifyPersonalSignature(
+        document.getElementById("msg-message").value,
+        document.getElementById("msg-sig").value
+      );
+      if (r === null) {
+        el.textContent = "That does not verify — check the signature is the complete 65-byte hex value a wallet returns (0x + 130 hex characters: r, s, then v), with s in the lower half of the curve order, and that the message is exactly what was signed, character for character (whitespace and line breaks count).";
+        return;
+      }
+      let msg = `Signer: ${r.signer} · EIP-191 digest signed: ${r.digest}.`;
+      const expectRaw = document.getElementById("msg-expect").value.trim();
+      if (expectRaw !== "") {
+        const exp = inspectAddress(expectRaw);
+        if (!exp.valid) msg += " The expected address you gave is not a well-formed address, so no comparison was made.";
+        else if (exp.checksum === r.signer) msg += ` ✓ Matches the expected address${exp.checksumValid === false ? " (but the expected address's own checksum is wrong — compare with care)" : ""}.`;
+        else msg += ` ✗ Does NOT match the expected address ${exp.checksum} — this signature was made by a different account, or over a different message.`;
+      }
+      msg += " Verified locally — no key involved, nothing signed, and no chain queried.";
+      el.textContent = msg;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -1452,5 +1513,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, recoverAddress, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, UNIT_DECIMALS };
 }

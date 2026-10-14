@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=13"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=14"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -616,6 +616,46 @@ check("signature recovery tool section present in index.html", html.includes("re
 check("EIP-155 source linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-155"));
 check("OpenZeppelin MerkleProof source linked from index.html",
   html.includes("https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/utils/cryptography/MerkleProof.sol"));
+check("signed message controls labelled",
+  ["msg-message", "msg-sig", "msg-expect"].every(id => html.includes(`for="${id}"`)));
+
+/* signed message verification (EIP-191 personal_sign) — digests, signatures
+   and recovered signers produced by an independent pure-Python Keccak-256 +
+   secp256k1 oracle written from the specifications (Keccak anchored on the
+   published '' / 'hello world' vectors checked above; the oracle's address
+   derivation anchored on the published addresses of private key 1 and of
+   the private key EIP-155 prints). NOT produced by this file's own code. */
+const KEY1_ADDR = app.toChecksumAddress("0x7e5f4552091a69125d5dfcb7b8c2659029395bdf");
+const SIG_HELLO = "0xa64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa91027b99dd94df68e33797cfdf9872561f556c8589e91d66ef16ed9884ed1f8e544b1b";
+check("EIP-191 digest of 'Hello, Bob!' (Python oracle)",
+  app.eip191Digest("Hello, Bob!") === "0xaf0a369c7440ada5f06e224551e765ad1acc4ec60aa08944e72415249fa9213e");
+check("EIP-191 digest of the empty message signs the prefix with length 0 (Python oracle)",
+  app.eip191Digest("") === "0x5f35dce98ba4fba25530a026ed80b2cecdaa31091ba4958b99b52ea1d068adad");
+check("EIP-191 length counts UTF-8 bytes, not characters ('héllo wörld' is 13 bytes, Python oracle)",
+  app.eip191Digest("héllo wörld") === "0xc0e106c473d00fbb6310fe337d41489c46889c4cc6ca39b76702ce7d90d62983" &&
+  app.eip191Digest("héllo wörld") !== app.eip191Digest("hello world"));
+check("personal_sign signature over 'Hello, Bob!' verifies to private key 1's published address",
+  (() => { const r = app.verifyPersonalSignature("Hello, Bob!", SIG_HELLO); return r !== null && r.signer === KEY1_ADDR && r.digest === app.eip191Digest("Hello, Bob!"); })());
+check("personal_sign empty-message signature verifies (Python oracle)",
+  app.verifyPersonalSignature("", "0x5d45cb81aa765d69ca52e3869491ecf0e8fdf6a63d64e65b5213647ee4973ae552b36fdde9cb77dd21c418accf0dd92f274880ffb8ddb3fcde661547c6a624801b")?.signer === KEY1_ADDR);
+check("personal_sign UTF-8 message signature verifies to the EIP-155 example key's address",
+  app.verifyPersonalSignature("héllo wörld", "0xfd36a0a17d8af5e97e75083e9607dee24f03356908077b1987270a20aa3eea6238fc471132b4f8ef2b4662f294a61587bc147aeb0e827b4fa1a7ff00fa2d2df61c")?.signer === EIP155_SENDER);
+check("personal_sign accepts v in 0/1 form as well as 27/28",
+  app.verifyPersonalSignature("Hello, Bob!", SIG_HELLO.slice(0, -2) + "00")?.signer === KEY1_ADDR &&
+  app.verifyPersonalSignature("héllo wörld", "0xfd36a0a17d8af5e97e75083e9607dee24f03356908077b1987270a20aa3eea6238fc471132b4f8ef2b4662f294a61587bc147aeb0e827b4fa1a7ff00fa2d2df61c".slice(0, -2) + "01")?.signer === EIP155_SENDER);
+check("personal_sign over a tampered message recovers a different signer, not the expected one",
+  (() => { const r = app.verifyPersonalSignature("Hello, Bob?", SIG_HELLO); return r !== null && r.signer !== KEY1_ADDR; })());
+check("personal_sign rejects malformed signatures and non-canonical forms",
+  app.verifyPersonalSignature("Hello, Bob!", "0x1234") === null &&
+  app.verifyPersonalSignature("Hello, Bob!", SIG_HELLO.slice(0, -2)) === null &&
+  app.verifyPersonalSignature("Hello, Bob!", SIG_HELLO + "0") === null &&
+  app.verifyPersonalSignature("Hello, Bob!", SIG_HELLO.slice(0, -2) + "1d") === null &&
+  app.verifyPersonalSignature("Hello, Bob!", "0x" + "00".repeat(32) + SIG_HELLO.slice(66)) === null &&
+  app.verifyPersonalSignature("Hello, Bob!", "0xa64db41e2968c849c2a5615ba0d6e816734a6d3e6ea6ecd6f3acb7d59daa9102" + "8466226b20971cc8683020678da9e0a94e2952fd91e1b124d239d99fb0a7ecf6" + "1c") === null &&
+  app.verifyPersonalSignature(null, SIG_HELLO) === null &&
+  app.eip191Digest(null) === null);
+check("signed message tool section present in index.html", html.includes("msg-btn") && html.includes("Signed message verification"));
+check("EIP-191 source linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-191"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -43,9 +43,9 @@ for (const x of ["https://x.com/ethereum", "https://x.com/base", "https://x.com/
 check("exactly one <h1>", (html.match(/<h1[ >]/g) || []).length === 1);
 check("has <main> landmark", /<main[\s>]/.test(html));
 check("all tool controls labelled",
-  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract"]
+  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "create-sender", "create-nonce", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract"]
     .every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=5"));
+check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=6"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -168,6 +168,43 @@ check("keccak256Bytes matches keccak256 on ASCII bytes",
 check("keccak256Bytes of empty input is the empty-hash vector",
   app.keccak256Bytes([]) === "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
 check("CREATE2 tool section present in index.html", html.includes("c2-btn") && html.includes("EIP-1014"));
+
+/* CREATE address — the long-published worked example for
+   keccak256(rlp([sender, nonce]))[12:]: sender 0x6ac7…dbf0, nonces 0–3.
+   Expected values verbatim (shown here in their EIP-55 checksummed form).
+   The RLP byte-string encoder is also checked against the encoding
+   examples from the RLP specification itself. */
+const CREATE_SENDER = "0x6ac7ea33f8831ea9dcc53393aaa88b25a785dbf0";
+for (const [nonce, expected] of [
+  ["0", "0xcd234A471b72ba2F1Ccf0A70FCABA648a5eeCD8d"],
+  ["1", "0x343c43A37D37dfF08AE8C4A11544c718AbB4fCF8"],
+  ["2", "0xf778B86FA74E846c4f0a1fBd1335FE81c00a0C91"],
+  ["3", "0xffFd933A0bC612844eaF0C6Fe3E5b8E9B6C1d19c"]
+]) {
+  check("CREATE published vector nonce " + nonce, app.createAddress(CREATE_SENDER, nonce) === expected);
+}
+check("CREATE result is a valid checksummed address", app.inspectAddress(app.createAddress(CREATE_SENDER, "0")).checksumValid === true);
+check("CREATE sender is case-insensitive", app.createAddress(CREATE_SENDER.toUpperCase().replace("0X", "0x"), "0") === app.createAddress(CREATE_SENDER, "0"));
+check("CREATE nonce trims whitespace and accepts leading zeros",
+  app.createAddress(CREATE_SENDER, " 007 ") === app.createAddress(CREATE_SENDER, "7"));
+check("CREATE address changes with nonce",
+  app.createAddress(CREATE_SENDER, "4") !== app.createAddress(CREATE_SENDER, "5"));
+check("CREATE accepts a large in-range nonce (2^255)",
+  app.createAddress(CREATE_SENDER, (2n ** 255n).toString()) !== null);
+check("CREATE rejects bad senders / bad nonces",
+  app.createAddress("0x123", "0") === null &&
+  app.createAddress("not-an-address", "0") === null &&
+  app.createAddress(CREATE_SENDER, "") === null &&
+  app.createAddress(CREATE_SENDER, "-1") === null &&
+  app.createAddress(CREATE_SENDER, "1.5") === null &&
+  app.createAddress(CREATE_SENDER, "0x10") === null &&
+  app.createAddress(CREATE_SENDER, (2n ** 256n).toString()) === null);
+check("RLP spec example: 'dog' encodes to 0x83646f67",
+  app.rlpEncodeBytes([0x64, 0x6f, 0x67]).map(b => b.toString(16).padStart(2, "0")).join("") === "83646f67");
+check("RLP spec example: 1024 encodes to 0x820400, empty string to 0x80",
+  app.rlpEncodeBytes([0x04, 0x00]).map(b => b.toString(16).padStart(2, "0")).join("") === "820400" &&
+  app.rlpEncodeBytes([]).map(b => b.toString(16).padStart(2, "0")).join("") === "80");
+check("CREATE tool section present in index.html", html.includes("create-btn") && html.includes("CREATE address calculator"));
 
 /* ENS namehash — official EIP-137 test vectors, verbatim */
 check("namehash('') is the root node", app.namehash("") === "0x0000000000000000000000000000000000000000000000000000000000000000");

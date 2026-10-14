@@ -22,6 +22,7 @@ I'm Kyle Cox (@kshot9000), an independent builder. This repo is my home base for
 6. **ENS namehash calculator** — EIP-137 namehash (and the trailing label's labelhash) for a name, folded right-to-left with Keccak-256; verified in the tests against the official EIP-137 vectors (`''`, `eth`, `foo.eth`). ASCII labels only: internationalised names need full UTS-46 normalisation, so they are rejected rather than mis-hashed. Computes the identifier only — no name or resolver is looked up.
 
 7. **EIP-712 domain separator calculator** — the `DOMAIN_SEPARATOR` for the canonical four-field `EIP712Domain` (name, version, chain ID, verifying contract), ABI-word encoded and hashed with Keccak-256; verified in the tests against the EIP-712 specification's own Ether Mail example (type hash `0x8b73c3c6…` and separator `0xf2cee375…`). Domains that omit fields or add a salt are out of scope rather than guessed at. Computes the separator only — nothing is signed.
+8. **CREATE address calculator** — the classic deployment address, `keccak256(rlp([sender, nonce]))[12:]`, with a from-spec RLP encoder; verified in the tests against the long-published worked example for this formula (sender `0x6ac7…dbf0`, nonces 0–3) and the RLP specification's own encoding examples. Computes the address only — nothing is deployed.
 
 ## Scope
 

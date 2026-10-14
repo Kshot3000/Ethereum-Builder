@@ -233,6 +233,45 @@ function create2Address(deployer, salt, initCode) {
   return toChecksumAddress("0x" + bytesToHex(digest.slice(12)));
 }
 
+/* ---------- CREATE address calculator ----------
+   The original deployment opcode derives the contract address from the
+   creator alone: address = last 20 bytes of keccak256(rlp([sender,
+   nonce])). The nonce is RLP-encoded as an integer (0 is the empty
+   string, no leading zero bytes), which is why the same account deploys
+   to a predictable sequence of addresses on every EVM chain. Computes
+   the address locally; nothing is deployed. */
+function rlpEncodeBytes(bytes) {
+  if (bytes.length === 1 && bytes[0] < 0x80) return bytes.slice();
+  if (bytes.length <= 55) return [0x80 + bytes.length, ...bytes];
+  const lenBytes = [];
+  let len = bytes.length;
+  while (len > 0) { lenBytes.unshift(len & 0xff); len >>= 8; }
+  return [0xb7 + lenBytes.length, ...lenBytes, ...bytes];
+}
+function createAddress(sender, nonceStr) {
+  const senderBytes = parseHexBytes(sender, 20);
+  if (senderBytes === null) return null;
+  const n = String(nonceStr).trim();
+  if (!/^\d+$/.test(n)) return null;
+  const nonce = BigInt(n);
+  if (nonce >= (1n << 256n)) return null;
+  const nonceBytes = [];
+  let v = nonce;
+  while (v > 0n) { nonceBytes.unshift(Number(v & 0xffn)); v >>= 8n; }
+  const payload = [...rlpEncodeBytes(senderBytes), ...rlpEncodeBytes(nonceBytes)];
+  let listPrefix;
+  if (payload.length <= 55) {
+    listPrefix = [0xc0 + payload.length];
+  } else {
+    const lenBytes = [];
+    let len = payload.length;
+    while (len > 0) { lenBytes.unshift(len & 0xff); len >>= 8; }
+    listPrefix = [0xf7 + lenBytes.length, ...lenBytes];
+  }
+  const digest = keccak256Digest([...listPrefix, ...payload]);
+  return toChecksumAddress("0x" + bytesToHex(digest.slice(12)));
+}
+
 /* ---------- ENS namehash (EIP-137) ----------
    namehash folds labels right-to-left: node starts as 32 zero bytes, and
    for each label from the rightmost, node = keccak256(node ++
@@ -383,6 +422,19 @@ if (typeof document !== "undefined") {
         : `CREATE2 address: ${r} (EIP-55 checksummed). The same deployer, salt and init code produce this address on Ethereum, Base, Unichain and Robinhood Chain — computed locally, nothing deployed.`;
     });
 
+    /* CREATE calculator */
+    const createBtn = document.getElementById("create-btn");
+    if (createBtn) createBtn.addEventListener("click", () => {
+      const r = createAddress(
+        document.getElementById("create-sender").value,
+        document.getElementById("create-nonce").value
+      );
+      const el = document.getElementById("create-out");
+      el.textContent = r === null
+        ? "Check the inputs: sender must be a 20-byte address (0x + 40 hex) and nonce a whole number of 0 or more."
+        : `CREATE address: ${r} (EIP-55 checksummed). An account deploying with this nonce gets this address on Ethereum, Base, Unichain and Robinhood Chain — computed locally, nothing deployed.`;
+    });
+
     /* ENS namehash */
     const ensBtn = document.getElementById("ens-btn");
     if (ensBtn) ensBtn.addEventListener("click", () => {
@@ -431,5 +483,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, UNIT_DECIMALS };
 }

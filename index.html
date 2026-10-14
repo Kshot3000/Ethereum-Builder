@@ -144,6 +144,17 @@
     </div>
 
     <div class="tool">
+      <h3>CREATE address calculator</h3>
+      <p>The classic deployment opcode derives a contract's address from the creator alone: the last 20 bytes of Keccak-256 of the RLP encoding of <code>[sender, nonce]</code>. Know an account's nonce and you know the address its next deployment lands at — the same on Ethereum, Base, Unichain and Robinhood Chain. (CREATE2 above is the salt-based alternative.) Defaults below are the long-published worked example for this formula, so you can reproduce its known nonce-0 address. This only computes the address locally; nothing is deployed.</p>
+      <label for="create-sender">Sender / deployer address (20 bytes)</label>
+      <input id="create-sender" type="text" spellcheck="false" value="0x6ac7ea33f8831ea9dcc53393aaa88b25a785dbf0">
+      <label for="create-nonce">Sender nonce</label>
+      <input id="create-nonce" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <button id="create-btn" type="button">Calculate address</button>
+      <p id="create-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>ENS namehash calculator (EIP-137)</h3>
       <p>Every ENS name maps to a 32-byte node: start from 32 zero bytes and fold each label in right-to-left with Keccak-256 — <code>node = keccak256(node ++ keccak256(label))</code>. Registries and resolvers key records by this node on Ethereum and every EVM L2. Honest scope: names are lowercased and must be ASCII labels — internationalised names need full UTS-46 normalisation first, which this tool does not do, so it rejects them rather than hashing them wrong. This computes the identifier locally; it does not look up any name or resolver.</p>
       <label for="ens-input">ENS name</label>
@@ -193,6 +204,6 @@
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

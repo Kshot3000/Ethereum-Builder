@@ -271,6 +271,45 @@ function namehash(name) {
   return "0x" + bytesToHex(node);
 }
 
+/* ---------- EIP-712 domain separator ----------
+   domainSeparator = hashStruct(EIP712Domain): the Keccak-256 of the ABI
+   encoding of the domain type hash, keccak256(name), keccak256(version),
+   chainId and verifyingContract, each as one 32-byte word. This is the
+   value contracts expose as DOMAIN_SEPARATOR and wallets bind typed-data
+   signatures to (EIP-2612 permits, Seaport orders, …).
+   Honest scope: this covers the canonical four-field domain only. The
+   EIP lets protocols omit fields or add a bytes32 salt, and those domains
+   hash a different type string — this tool does not guess at them. It
+   computes the separator locally; nothing is signed. */
+const EIP712_DOMAIN_TYPE = "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)";
+const EIP712_DOMAIN_TYPEHASH = "0x" + keccak256(EIP712_DOMAIN_TYPE);
+function uint256WordBytes(value) {
+  if (typeof value !== "bigint" || value < 0n || value >= (1n << 256n)) return null;
+  const out = new Array(32).fill(0);
+  let v = value;
+  for (let i = 31; i >= 0; i--) { out[i] = Number(v & 0xffn); v >>= 8n; }
+  return out;
+}
+function eip712DomainSeparator(name, version, chainIdStr, verifyingContract) {
+  if (typeof name !== "string" || typeof version !== "string") return null;
+  const n = name.trim(), ver = version.trim();
+  if (n === "" || ver === "") return null;
+  const cid = String(chainIdStr).trim();
+  if (!/^\d+$/.test(cid)) return null;
+  const chainId = BigInt(cid);
+  if (chainId < 1n || chainId >= (1n << 256n)) return null;
+  const contractBytes = parseHexBytes(verifyingContract, 20);
+  if (contractBytes === null) return null;
+  const encoded = [
+    ...parseHexBytes(EIP712_DOMAIN_TYPEHASH, 32),
+    ...keccak256Digest(utf8Bytes(n)),
+    ...keccak256Digest(utf8Bytes(ver)),
+    ...uint256WordBytes(chainId),
+    ...new Array(12).fill(0), ...contractBytes
+  ];
+  return "0x" + keccak256Bytes(encoded);
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -360,6 +399,21 @@ if (typeof document !== "undefined") {
       el.textContent = `Namehash (EIP-137): ${r}.${lh} Computed locally — a namehash is an identifier, not a lookup: no resolver is queried and no live chain data is shown.`;
     });
 
+    /* EIP-712 domain separator */
+    const domBtn = document.getElementById("dom712-btn");
+    if (domBtn) domBtn.addEventListener("click", () => {
+      const r = eip712DomainSeparator(
+        document.getElementById("dom712-name").value,
+        document.getElementById("dom712-version").value,
+        document.getElementById("dom712-chain").value,
+        document.getElementById("dom712-contract").value
+      );
+      const el = document.getElementById("dom712-out");
+      el.textContent = r === null
+        ? "Check the inputs: name and version must be non-empty, chain ID a whole number of 1 or more, and the verifying contract a 20-byte address (0x + 40 hex)."
+        : `Domain separator: ${r} · Domain type hash: ${EIP712_DOMAIN_TYPEHASH}. Computed locally for the canonical four-field EIP712Domain — nothing is signed and no wallet is involved.`;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -377,5 +431,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, utf8Bytes, labelhash, namehash, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, UNIT_DECIMALS };
 }

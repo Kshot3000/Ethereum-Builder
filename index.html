@@ -153,6 +153,21 @@
     </div>
 
     <div class="tool">
+      <h3>EIP-712 domain separator calculator</h3>
+      <p>Typed-data signatures (EIP-712 — permits, off-chain orders, gasless approvals) are bound to a <em>domain separator</em>: the Keccak-256 of the ABI-encoded <code>EIP712Domain</code> struct — its type hash, the hashed name and version, the chain ID, and the verifying contract, one 32-byte word each. It is the value contracts expose as <code>DOMAIN_SEPARATOR</code>, and it changes with the chain, which is what stops a signature made for one chain or contract replaying on another. Honest scope: this covers the canonical four-field domain only — domains that omit fields or add a salt hash a different type string, and this tool will not guess at them. Defaults below are the EIP-712 specification's own Ether Mail example, so you can reproduce its published separator. Computed locally; nothing is signed and no wallet is involved.</p>
+      <label for="dom712-name">Domain name</label>
+      <input id="dom712-name" type="text" spellcheck="false" value="Ether Mail">
+      <label for="dom712-version">Domain version</label>
+      <input id="dom712-version" type="text" spellcheck="false" value="1">
+      <label for="dom712-chain">Chain ID</label>
+      <input id="dom712-chain" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <label for="dom712-contract">Verifying contract (20 bytes)</label>
+      <input id="dom712-contract" type="text" spellcheck="false" value="0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC">
+      <button id="dom712-btn" type="button">Calculate separator</button>
+      <p id="dom712-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>EIP-1559 gas cost estimator</h3>
       <p>A wallet-convention model, not live data: expected cost uses base + priority fee; max cost uses maxFeePerGas = 2×base + priority. A simple transfer is 21,000 gas.</p>
       <label for="gas-units">Gas units</label>
@@ -178,6 +193,6 @@
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

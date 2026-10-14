@@ -43,9 +43,9 @@ for (const x of ["https://x.com/ethereum", "https://x.com/base", "https://x.com/
 check("exactly one <h1>", (html.match(/<h1[ >]/g) || []).length === 1);
 check("has <main> landmark", /<main[\s>]/.test(html));
 check("all tool controls labelled",
-  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "ens-input"]
+  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract"]
     .every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=4"));
+check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=5"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -194,6 +194,37 @@ check("namehash rejects non-ASCII labels instead of mis-hashing (no UTS-46)",
   app.namehash("exämple.eth") === null && app.labelhash("bücher") === null);
 check("utf8Bytes ASCII matches char codes", app.utf8Bytes("eth").join(",") === "101,116,104");
 check("ENS tool section present in index.html", html.includes("ens-btn") && html.includes("EIP-137"));
+
+/* EIP-712 domain separator — the spec's own Ether Mail example domain.
+   Type hash and separator are the published values for that example. */
+const MAIL_CONTRACT = "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC";
+check("EIP-712 domain type hash is the canonical constant",
+  app.EIP712_DOMAIN_TYPEHASH === "0x8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f");
+check("EIP-712 Ether Mail example domain separator",
+  app.eip712DomainSeparator("Ether Mail", "1", "1", MAIL_CONTRACT) === "0xf2cee375fa42b42143804025fc449deafd50cc031ca257e0b194a650a912090f");
+check("EIP-712 separator is checksummed-address case-insensitive",
+  app.eip712DomainSeparator("Ether Mail", "1", "1", MAIL_CONTRACT.toLowerCase()) === "0xf2cee375fa42b42143804025fc449deafd50cc031ca257e0b194a650a912090f");
+check("EIP-712 separator trims surrounding whitespace on inputs",
+  app.eip712DomainSeparator("  Ether Mail ", " 1 ", " 1 ", " " + MAIL_CONTRACT + " ") === "0xf2cee375fa42b42143804025fc449deafd50cc031ca257e0b194a650a912090f");
+check("EIP-712 separator changes with chain ID (Base 8453 differs from L1 1)",
+  app.eip712DomainSeparator("Ether Mail", "1", "8453", MAIL_CONTRACT) !== null &&
+  app.eip712DomainSeparator("Ether Mail", "1", "8453", MAIL_CONTRACT) !== app.eip712DomainSeparator("Ether Mail", "1", "1", MAIL_CONTRACT));
+check("EIP-712 accepts a very large in-range chain ID (2^255)",
+  app.eip712DomainSeparator("Ether Mail", "1", (2n ** 255n).toString(), MAIL_CONTRACT) !== null);
+check("EIP-712 rejects empty name / empty version",
+  app.eip712DomainSeparator("", "1", "1", MAIL_CONTRACT) === null &&
+  app.eip712DomainSeparator("Ether Mail", "  ", "1", MAIL_CONTRACT) === null &&
+  app.eip712DomainSeparator(null, "1", "1", MAIL_CONTRACT) === null);
+check("EIP-712 rejects bad chain IDs (0, negative, decimal, hex, >= 2^256)",
+  app.eip712DomainSeparator("Ether Mail", "1", "0", MAIL_CONTRACT) === null &&
+  app.eip712DomainSeparator("Ether Mail", "1", "-1", MAIL_CONTRACT) === null &&
+  app.eip712DomainSeparator("Ether Mail", "1", "1.5", MAIL_CONTRACT) === null &&
+  app.eip712DomainSeparator("Ether Mail", "1", "0x1", MAIL_CONTRACT) === null &&
+  app.eip712DomainSeparator("Ether Mail", "1", (2n ** 256n).toString(), MAIL_CONTRACT) === null);
+check("EIP-712 rejects a malformed verifying contract",
+  app.eip712DomainSeparator("Ether Mail", "1", "1", "0x123") === null &&
+  app.eip712DomainSeparator("Ether Mail", "1", "1", "not-an-address") === null);
+check("EIP-712 tool section present in index.html", html.includes("dom712-btn") && html.includes("EIP-712"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -43,9 +43,9 @@ for (const x of ["https://x.com/ethereum", "https://x.com/base", "https://x.com/
 check("exactly one <h1>", (html.match(/<h1[ >]/g) || []).length === 1);
 check("has <main> landmark", /<main[\s>]/.test(html));
 check("all tool controls labelled",
-  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "create-sender", "create-nonce", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract"]
+  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "create-sender", "create-nonce", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract", "m712-dname", "m712-dversion", "m712-dchain", "m712-dcontract", "m712-from-name", "m712-from-wallet", "m712-to-name", "m712-to-wallet", "m712-contents"]
     .every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=6"));
+check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=7"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -262,6 +262,41 @@ check("EIP-712 rejects a malformed verifying contract",
   app.eip712DomainSeparator("Ether Mail", "1", "1", "0x123") === null &&
   app.eip712DomainSeparator("Ether Mail", "1", "1", "not-an-address") === null);
 check("EIP-712 tool section present in index.html", html.includes("dom712-btn") && html.includes("EIP-712"));
+
+/* EIP-712 typed-data digest — the Ether Mail example from the EIP's own
+   Example.js: Mail/Person type hashes, hashStruct(Mail) and the final
+   signable digest are the published values for that example. */
+const COW = "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826";
+const BOB = "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB";
+const mailArgs = ["Ether Mail", "1", "1", MAIL_CONTRACT, "Cow", COW, "Bob", BOB, "Hello, Bob!"];
+const md = app.eip712MailDigest(...mailArgs);
+check("EIP-712 Person type hash matches the example implementation",
+  app.EIP712_PERSON_TYPEHASH === "0xb9d8c78acf9b987311de6c7b45bb6a9c8e1bf361fa7fd3467a2163f994c79500");
+check("EIP-712 Mail type hash matches the example implementation",
+  app.EIP712_MAIL_TYPEHASH === "0xa0cedeb2dc280ba39b857546d74f5549c3a1d7bdc2dd96bf881f76108e23dac2");
+check("EIP-712 hashStruct(Person Cow) appears in the published encodeData",
+  app.eip712HashPerson("Cow", COW) === "0xfc71e5fa27ff56c350aa531bc129ebdf613b772b6604664f5d8dbe21b85eb0c8");
+check("EIP-712 Ether Mail domain separator carried through",
+  md !== null && md.domainSeparator === "0xf2cee375fa42b42143804025fc449deafd50cc031ca257e0b194a650a912090f");
+check("EIP-712 Ether Mail hashStruct(Mail) published value",
+  md !== null && md.structHash === "0xc52c0ee5d84264471806290a3f2c4cecfc5490626bf912d01f240d7a274b371e");
+check("EIP-712 Ether Mail final signable digest published value",
+  md !== null && md.digest === "0xbe609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2");
+check("EIP-712 digest is wallet case-insensitive",
+  app.eip712MailDigest("Ether Mail", "1", "1", MAIL_CONTRACT, "Cow", COW.toLowerCase(), "Bob", BOB.toLowerCase(), "Hello, Bob!").digest === md.digest);
+check("EIP-712 digest changes with chain ID",
+  app.eip712MailDigest("Ether Mail", "1", "8453", MAIL_CONTRACT, "Cow", COW, "Bob", BOB, "Hello, Bob!").digest !== md.digest);
+check("EIP-712 contents are hashed verbatim (trailing space changes the digest)",
+  app.eip712MailDigest("Ether Mail", "1", "1", MAIL_CONTRACT, "Cow", COW, "Bob", BOB, "Hello, Bob! ").digest !== md.digest);
+check("EIP-712 empty contents are valid (hashed as the empty string)",
+  app.eip712MailDigest("Ether Mail", "1", "1", MAIL_CONTRACT, "Cow", COW, "Bob", BOB, "") !== null);
+check("EIP-712 mail digest rejects bad wallets / empty person names / bad domain",
+  app.eip712MailDigest("Ether Mail", "1", "1", MAIL_CONTRACT, "Cow", "0x123", "Bob", BOB, "Hello, Bob!") === null &&
+  app.eip712MailDigest("Ether Mail", "1", "1", MAIL_CONTRACT, "Cow", COW, "Bob", "not-an-address", "Hello, Bob!") === null &&
+  app.eip712MailDigest("Ether Mail", "1", "1", MAIL_CONTRACT, "  ", COW, "Bob", BOB, "Hello, Bob!") === null &&
+  app.eip712MailDigest("Ether Mail", "1", "0", MAIL_CONTRACT, "Cow", COW, "Bob", BOB, "Hello, Bob!") === null &&
+  app.eip712MailDigest("Ether Mail", "1", "1", MAIL_CONTRACT, "Cow", COW, "Bob", BOB, null) === null);
+check("EIP-712 mail tool section present in index.html", html.includes("m712-btn") && html.includes("hashStruct"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

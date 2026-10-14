@@ -349,6 +349,58 @@ function eip712DomainSeparator(name, version, chainIdStr, verifyingContract) {
   return "0x" + keccak256Bytes(encoded);
 }
 
+/* ---------- EIP-712 typed-data digest (Ether Mail schema) ----------
+   The full signable digest of an EIP-712 message is
+   keccak256(0x1901 ‖ domainSeparator ‖ hashStruct(message)), where
+   hashStruct(s) = keccak256(typeHash ‖ encodeData(s)), string members
+   encode as keccak256(their UTF-8 bytes), address members as one
+   left-padded 32-byte word, and struct members recursively as their
+   own hashStruct. This tool implements the specification's own example
+   schema — Person(string name, address wallet) and Mail(Person from,
+   Person to, string contents) — end to end, so its published example
+   values (Mail type hash, hashStruct, final digest in the EIP's
+   Example.js) serve as known-answer tests.
+   Honest scope: this is that one fixed schema, not a general
+   typed-data encoder — arbitrary schemas are out of scope rather than
+   guessed at. It computes hashes only; nothing is signed. */
+const EIP712_PERSON_TYPE = "Person(string name,address wallet)";
+const EIP712_MAIL_TYPE = "Mail(Person from,Person to,string contents)Person(string name,address wallet)";
+const EIP712_PERSON_TYPEHASH = "0x" + keccak256(EIP712_PERSON_TYPE);
+const EIP712_MAIL_TYPEHASH = "0x" + keccak256(EIP712_MAIL_TYPE);
+function eip712HashPerson(name, wallet) {
+  if (typeof name !== "string") return null;
+  const n = name.trim();
+  if (n === "") return null;
+  const walletBytes = parseHexBytes(wallet, 20);
+  if (walletBytes === null) return null;
+  const encoded = [
+    ...parseHexBytes(EIP712_PERSON_TYPEHASH, 32),
+    ...keccak256Digest(utf8Bytes(n)),
+    ...new Array(12).fill(0), ...walletBytes
+  ];
+  return "0x" + keccak256Bytes(encoded);
+}
+function eip712MailDigest(domainName, domainVersion, chainIdStr, verifyingContract,
+                          fromName, fromWallet, toName, toWallet, contents) {
+  const domainSeparator = eip712DomainSeparator(domainName, domainVersion, chainIdStr, verifyingContract);
+  if (domainSeparator === null) return null;
+  if (typeof contents !== "string") return null;
+  const fromHash = eip712HashPerson(fromName, fromWallet);
+  const toHash = eip712HashPerson(toName, toWallet);
+  if (fromHash === null || toHash === null) return null;
+  const mailEncoded = [
+    ...parseHexBytes(EIP712_MAIL_TYPEHASH, 32),
+    ...parseHexBytes(fromHash, 32),
+    ...parseHexBytes(toHash, 32),
+    ...keccak256Digest(utf8Bytes(contents))
+  ];
+  const structHash = "0x" + keccak256Bytes(mailEncoded);
+  const digest = "0x" + keccak256Bytes([
+    0x19, 0x01, ...parseHexBytes(domainSeparator, 32), ...parseHexBytes(structHash, 32)
+  ]);
+  return { domainSeparator, mailTypeHash: EIP712_MAIL_TYPEHASH, structHash, digest };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -466,6 +518,26 @@ if (typeof document !== "undefined") {
         : `Domain separator: ${r} · Domain type hash: ${EIP712_DOMAIN_TYPEHASH}. Computed locally for the canonical four-field EIP712Domain — nothing is signed and no wallet is involved.`;
     });
 
+    /* EIP-712 typed-data digest (Ether Mail schema) */
+    const mailBtn = document.getElementById("m712-btn");
+    if (mailBtn) mailBtn.addEventListener("click", () => {
+      const r = eip712MailDigest(
+        document.getElementById("m712-dname").value,
+        document.getElementById("m712-dversion").value,
+        document.getElementById("m712-dchain").value,
+        document.getElementById("m712-dcontract").value,
+        document.getElementById("m712-from-name").value,
+        document.getElementById("m712-from-wallet").value,
+        document.getElementById("m712-to-name").value,
+        document.getElementById("m712-to-wallet").value,
+        document.getElementById("m712-contents").value
+      );
+      const el = document.getElementById("m712-out");
+      el.textContent = r === null
+        ? "Check the inputs: domain name and version must be non-empty, chain ID a whole number of 1 or more, every contract/wallet a 20-byte address (0x + 40 hex), and both person names non-empty."
+        : `Signable digest: ${r.digest} · hashStruct(Mail): ${r.structHash} · Domain separator: ${r.domainSeparator} · Mail type hash: ${r.mailTypeHash}. This is the hash a wallet would sign for this message — computed locally only; nothing is signed and no wallet is involved.`;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -483,5 +555,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, UNIT_DECIMALS };
 }

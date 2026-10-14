@@ -179,6 +179,31 @@
     </div>
 
     <div class="tool">
+      <h3>EIP-712 typed-data digest calculator (Ether Mail)</h3>
+      <p>The domain separator above is only half of an EIP-712 signature. The full digest a wallet signs is <code>keccak256(0x1901 ‖ domainSeparator ‖ hashStruct(message))</code>, where the message struct is hashed field-by-field — strings as their Keccak-256, nested structs recursively as their own <code>hashStruct</code>. This tool computes that whole chain for the specification's own example schema, <code>Mail(Person from, Person to, string contents)</code> with <code>Person(string name, address wallet)</code>, so the defaults below reproduce the published Ether Mail digest from the EIP's example implementation. Honest scope: this is that one fixed schema, not a general typed-data encoder — arbitrary schemas are out of scope rather than guessed at. Contents are hashed exactly as typed (whitespace counts). Computed locally; nothing is signed and no wallet is involved.</p>
+      <label for="m712-dname">Domain name</label>
+      <input id="m712-dname" type="text" spellcheck="false" value="Ether Mail">
+      <label for="m712-dversion">Domain version</label>
+      <input id="m712-dversion" type="text" spellcheck="false" value="1">
+      <label for="m712-dchain">Chain ID</label>
+      <input id="m712-dchain" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <label for="m712-dcontract">Verifying contract (20 bytes)</label>
+      <input id="m712-dcontract" type="text" spellcheck="false" value="0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC">
+      <label for="m712-from-name">From — name</label>
+      <input id="m712-from-name" type="text" spellcheck="false" value="Cow">
+      <label for="m712-from-wallet">From — wallet (20 bytes)</label>
+      <input id="m712-from-wallet" type="text" spellcheck="false" value="0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826">
+      <label for="m712-to-name">To — name</label>
+      <input id="m712-to-name" type="text" spellcheck="false" value="Bob">
+      <label for="m712-to-wallet">To — wallet (20 bytes)</label>
+      <input id="m712-to-wallet" type="text" spellcheck="false" value="0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB">
+      <label for="m712-contents">Contents</label>
+      <input id="m712-contents" type="text" spellcheck="false" value="Hello, Bob!">
+      <button id="m712-btn" type="button">Calculate digest</button>
+      <p id="m712-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>EIP-1559 gas cost estimator</h3>
       <p>A wallet-convention model, not live data: expected cost uses base + priority fee; max cost uses maxFeePerGas = 2×base + priority. A simple transfer is 21,000 gas.</p>
       <label for="gas-units">Gas units</label>
@@ -204,6 +229,6 @@
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

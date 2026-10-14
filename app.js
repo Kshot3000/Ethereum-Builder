@@ -1241,6 +1241,30 @@ function verifyPersonalSignature(message, signature) {
   return { digest, signer };
 }
 
+/* ---------- Transaction sender recovery ----------
+   The decoder above deliberately stops at decoding, and the ecrecover
+   tool above recovers a signer from a digest handed to it — this tool
+   composes the two: strictly decode a signed raw transaction, take the
+   signing hash the decoder recomputes from the unsigned payload, and
+   recover the sender from the transaction's own v / r / s. That is the
+   sender every client derives before executing a transaction, and the
+   check behind "which account really sent this". Legacy transactions
+   pass their v through as-is (27/28 pre-EIP-155, or the EIP-155 value
+   whose parity and chain ID the decoder already split out); typed
+   transactions carry y-parity 0/1 directly. Unsigned transactions have
+   no sender and are refused, and the ecrecover strictness carries over:
+   r / s out of range, or the malleable high-s twin of a signature, is
+   refused rather than recovered. Recovers an address from a signed
+   transaction only — nothing is signed, no key is used or asked for,
+   and no chain is queried. */
+function recoverTransactionSender(input) {
+  const d = decodeRawTransaction(input);
+  if (d === null || !d.signed) return null;
+  const sender = recoverAddress(d.signingHash, d.v, d.r, d.s);
+  if (sender === null) return null;
+  return { sender, type: d.type, chainId: d.chainId, signingHash: d.signingHash, txHash: d.txHash };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -1496,6 +1520,19 @@ if (typeof document !== "undefined") {
       el.textContent = msg;
     });
 
+    /* Transaction sender recovery */
+    const txsBtn = document.getElementById("txs-btn");
+    if (txsBtn) txsBtn.addEventListener("click", () => {
+      const r = recoverTransactionSender(document.getElementById("txs-raw").value);
+      const el = document.getElementById("txs-out");
+      if (r === null) {
+        el.textContent = "That does not recover a sender — check the hex is a complete, canonical signed transaction (legacy, EIP-2930 type 1, or EIP-1559 type 2; unsigned transactions have no sender), with r and s in range and s in the lower half of the curve order (the canonical EIP-2 form). Type 3 (blob) transactions are not decoded — the tool will not guess at them.";
+        return;
+      }
+      const typeName = { legacy: "legacy", eip2930: "EIP-2930 (type 1)", eip1559: "EIP-1559 (type 2)" }[r.type];
+      el.textContent = `Sender: ${r.sender} · ${typeName} transaction · chain ID: ${r.chainId === null ? "none in the transaction (pre-EIP-155 legacy)" : r.chainId} · Signing hash: ${r.signingHash} · Transaction hash: ${r.txHash}. Recovered locally from the transaction's own signature — no private key involved, nothing signed, and no chain queried. The same recovery applies on Ethereum, Base, Unichain and Robinhood Chain.`;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -1513,5 +1550,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, recoverTransactionSender, UNIT_DECIMALS };
 }

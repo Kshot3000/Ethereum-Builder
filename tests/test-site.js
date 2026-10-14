@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=14"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=15"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -656,6 +656,42 @@ check("personal_sign rejects malformed signatures and non-canonical forms",
   app.eip191Digest(null) === null);
 check("signed message tool section present in index.html", html.includes("msg-btn") && html.includes("Signed message verification"));
 check("EIP-191 source linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-191"));
+check("transaction sender controls labelled",
+  ["txs-raw"].every(id => html.includes(`for="${id}"`)));
+
+/* transaction sender recovery — composes the strict decoder and ecrecover.
+   Anchors: (1) EIP-155's published transaction recovers the published
+   sender address; (2) type 1 / type 2 / legacy transactions signed by an
+   independent pure-Python Keccak-256 + secp256k1 oracle (written from the
+   specifications; its Keccak anchored on the published '' / 'hello world'
+   vectors, its address derivation anchored on the published addresses of
+   private key 1 and of the private key EIP-155 prints, and it reproduces
+   EIP-155's published signing hash from the EIP's signing data) with those
+   two known keys, so each recovered sender is a published address the
+   oracle derived by scalar multiplication — a different code path from
+   recovery. NOT produced by this file's own code. */
+const SENDER_T1 = "0x01f8678182038504a817c80082c3509422222222222222222222222222222222222222228080c080a06cb6084bfc440011d40dd8e7b5b150a066f98d53be746bfc62da771a33fd6577a0155a1988dac0b71fed11530d099640e06ef26e059f5716434d3a8be4b6d3f12c";
+const SENDER_T2 = "0x02f8af822105078459682f008506fc23ac00830186a094111111111111111111111111111111111111111184075bcd1584a9059cbbf838f7942222222222222222222222222222222222222222e1a0000000000000000000000000000000000000000000000000000000000000000301a0f984a588d8d9d1015297234c11be7636934485c3472b29e384090f054c7b3d11a04c146271197744cb90664d2ee14d4e488e7f78f69f0f475767f0d211bf872ba9";
+const SENDER_LEGACY_KEY1 = "0xf86c098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a76400008026a0460787a3c09748220e60d5ebf934e92be18601ddd326693df104c63f7399e7f4a0104afdbec1ff1d63c4b2d38e2722eb3a7d2adee6246c4eceefe3d13a92d44ae7";
+check("EIP-155 published transaction recovers its published sender",
+  (() => { const r = app.recoverTransactionSender(EIP155_TX); return r !== null && r.sender === EIP155_SENDER && r.type === "legacy" && r.chainId === "1" && r.signingHash === tx155.signingHash && r.txHash === tx155.txHash; })());
+check("type 1 oracle transaction (Unichain 130, EIP-155 example key) recovers that key's published address",
+  (() => { const r = app.recoverTransactionSender(SENDER_T1); return r !== null && r.sender === EIP155_SENDER && r.type === "eip2930" && r.chainId === "130" && r.signingHash === "0xcb1fdb812ec7d3978d2d7a9ec8a534e7337db0c950c93c88058486a2403e650b" && r.txHash === "0xc17f75c51328479cd3bb0a350ac03c741698db6a6d72af2552e039d895d41c0a"; })());
+check("type 2 oracle transaction (Base 8453, private key 1) recovers key 1's published address",
+  (() => { const r = app.recoverTransactionSender(SENDER_T2); return r !== null && r.sender === KEY1_ADDR && r.type === "eip1559" && r.chainId === "8453" && r.signingHash === "0x3f9a08ab00f217d6e294fb1d1cdc30c1df90641413a54a002521e2b33f34cb51" && r.txHash === "0xb0b558295d49fd3e922e93bdfd18d12102b0933f6195bb4dece6f25184a8d57a"; })());
+check("legacy oracle transaction over the EIP-155 fields (private key 1, v 38) recovers key 1's published address",
+  (() => { const r = app.recoverTransactionSender(SENDER_LEGACY_KEY1); return r !== null && r.sender === KEY1_ADDR && r.chainId === "1" && r.signingHash === "0xdaf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53"; })());
+check("wrong-parity type 2 transaction recovers a different sender, not an error (Python oracle)",
+  (() => { const r = app.recoverTransactionSender("0x02f8af822105078459682f008506fc23ac00830186a094111111111111111111111111111111111111111184075bcd1584a9059cbbf838f7942222222222222222222222222222222222222222e1a0000000000000000000000000000000000000000000000000000000000000000380a0f984a588d8d9d1015297234c11be7636934485c3472b29e384090f054c7b3d11a04c146271197744cb90664d2ee14d4e488e7f78f69f0f475767f0d211bf872ba9"); return r !== null && r.sender === app.toChecksumAddress("0xa889bfc89edab5560fcd903c2e908183e80d0359") && r.sender !== KEY1_ADDR; })());
+check("sender recovery refuses unsigned, malleable, and malformed transactions",
+  app.recoverTransactionSender("0xe9098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080") === null &&
+  app.recoverTransactionSender("0xf86c098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a76400008025a0460787a3c09748220e60d5ebf934e92be18601ddd326693df104c63f7399e7f4a0efb502413e00e29c3b4d2c71d8dd14c43d83fe008adc516ccfee8d523d61f65a") === null &&
+  app.recoverTransactionSender("0x03" + EIP155_TX.slice(2)) === null &&
+  app.recoverTransactionSender(EIP155_TX + "00") === null &&
+  app.recoverTransactionSender("") === null &&
+  app.recoverTransactionSender("0xzz") === null &&
+  app.recoverTransactionSender(null) === null);
+check("transaction sender tool section present in index.html", html.includes("txs-btn") && html.includes("Transaction sender recovery"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

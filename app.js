@@ -182,6 +182,54 @@ function gasEstimate(gasUnitsStr, baseFeeGweiStr, priorityFeeGweiStr) {
   };
 }
 
+/* ---------- EIP-1559 next-block base fee ----------
+   The estimator above prices a transaction given a base fee; this is
+   the protocol rule that produces the next block's fee from the
+   parent's. The parent gas target is parent gas limit // 2 (the
+   elasticity multiplier). A parent exactly at target leaves the fee
+   unchanged; above target the fee rises by parent fee * (used -
+   target) // target // 8, with a floor of 1 wei on the rise (the
+   BASE_FEE_MAX_CHANGE_DENOMINATOR is 8, so a full parent raises the
+   fee by exactly one eighth — 12.5%); below target it falls by the
+   same quotient with no floor. All integer arithmetic in wei, as the
+   EIP's own validation pseudocode writes it. Header fields are
+   uint64, so gas values at or above 2^64 are refused, as is a gas
+   limit so small its target would be zero. Applies the rule to
+   values the user supplies — it reads no chain and shows no live
+   fee. Base (an OP Stack chain) adjusts its own fee parameters, so
+   treat L2 numbers as the L1 rule illustrated, not a quote. */
+function nextBaseFee(parentBaseFeeGweiStr, parentGasUsedStr, parentGasLimitStr) {
+  const parentFeeWei = parseScaled(String(parentBaseFeeGweiStr).trim(), 9);
+  const gasUsed = parseScaled(String(parentGasUsedStr).trim(), 0);
+  const gasLimit = parseScaled(String(parentGasLimitStr).trim(), 0);
+  if (parentFeeWei === null || gasUsed === null || gasLimit === null) return null;
+  if (parentFeeWei >= (1n << 256n)) return null;
+  if (gasUsed >= (1n << 64n) || gasLimit >= (1n << 64n)) return null;
+  const target = gasLimit / 2n;
+  if (target === 0n) return null;
+  if (gasUsed > gasLimit) return null;
+  let deltaWei, direction;
+  if (gasUsed === target) { deltaWei = 0n; direction = "unchanged"; }
+  else if (gasUsed > target) {
+    const raw = parentFeeWei * (gasUsed - target) / target / 8n;
+    deltaWei = raw > 1n ? raw : 1n;
+    direction = "up";
+  } else {
+    deltaWei = parentFeeWei * (target - gasUsed) / target / 8n;
+    direction = "down";
+  }
+  const nextWei = direction === "up" ? parentFeeWei + deltaWei
+    : direction === "down" ? parentFeeWei - deltaWei : parentFeeWei;
+  return {
+    gasTarget: target.toString(),
+    direction,
+    deltaWei: deltaWei.toString(),
+    deltaGwei: formatScaled(deltaWei, 9),
+    nextBaseFeeWei: nextWei.toString(),
+    nextBaseFeeGwei: formatScaled(nextWei, 9)
+  };
+}
+
 /* ---------- EIP-4844 blob gas & base fee ----------
    Blob gas is priced by its own EIP-1559-like rule: each block's header
    carries excess_blob_gas, a running total of blob gas consumed above the
@@ -1909,6 +1957,25 @@ if (typeof document !== "undefined") {
         : `Effective gas price: ${r.effectiveGwei} gwei → expected cost ${r.expectedEth} ETH. Max fee per gas (2×base + priority): ${r.maxFeeGwei} gwei → max cost ${r.maxEth} ETH. Model only — not live network data.`;
     });
 
+    /* EIP-1559 next-block base fee */
+    const baseFeeBtn = document.getElementById("basefee-btn");
+    if (baseFeeBtn) baseFeeBtn.addEventListener("click", () => {
+      const r = nextBaseFee(
+        document.getElementById("basefee-parent").value,
+        document.getElementById("basefee-used").value,
+        document.getElementById("basefee-limit").value
+      );
+      const el = document.getElementById("basefee-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: parent base fee in gwei (up to 9 decimals), and parent gas used / gas limit as whole numbers with gas used no more than the gas limit and a gas limit of at least 2.";
+        return;
+      }
+      const move = r.direction === "unchanged"
+        ? "the parent sat exactly on its gas target, so the fee is unchanged"
+        : `the fee moves ${r.direction} by ${r.deltaWei} wei (${r.deltaGwei} gwei)`;
+      el.textContent = `Parent gas target (limit ÷ 2): ${r.gasTarget}. Next block's base fee: ${r.nextBaseFeeWei} wei (${r.nextBaseFeeGwei} gwei) — ${move}. Computed locally with EIP-1559's own update rule from the parent values you gave — this is the protocol's formula, not live network data.`;
+    });
+
     /* EIP-4844 blob gas & base fee */
     const blobBtn = document.getElementById("blob-btn");
     if (blobBtn) blobBtn.addEventListener("click", () => {
@@ -1930,5 +1997,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, UNIT_DECIMALS };
 }

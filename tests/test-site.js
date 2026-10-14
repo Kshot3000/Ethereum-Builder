@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=20"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=21"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -898,6 +898,49 @@ check("blob calculator refuses out-of-protocol and malformed inputs",
   app.blobFeeCalc("0", "0", "1", null) === null);
 check("blob tool section present in index.html", html.includes("blob-btn") && html.includes("Blob gas &amp; blob base fee calculator"));
 check("EIP-7691 linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-7691"));
+
+/* EIP-1559 next-block base fee — vectors from an independent pure-Python
+   transcription of the EIP-1559 validation pseudocode, self-validated
+   against closed forms the spec never prints: a full parent raises the
+   fee by exactly fee//8 (min 1 wei), an empty parent lowers it by
+   exactly fee//8, a parent at target leaves it unchanged */
+check("basefee controls labelled",
+  ["basefee-parent", "basefee-used", "basefee-limit"].every(id => html.includes(`for="${id}"`)));
+check("basefee: parent at target leaves the fee unchanged",
+  app.nextBaseFee("12", "15000000", "30000000").nextBaseFeeWei === "12000000000" &&
+  app.nextBaseFee("12", "15000000", "30000000").direction === "unchanged" &&
+  app.nextBaseFee("12", "15000000", "30000000").gasTarget === "15000000");
+check("basefee: full parent raises by exactly one eighth, empty lowers by one eighth",
+  app.nextBaseFee("12", "30000000", "30000000").nextBaseFeeWei === "13500000000" &&
+  app.nextBaseFee("12", "30000000", "30000000").nextBaseFeeGwei === "13.5" &&
+  app.nextBaseFee("12", "0", "30000000").nextBaseFeeWei === "10500000000" &&
+  app.nextBaseFee("100", "36000000", "36000000").nextBaseFeeWei === "112500000000");
+check("basefee: partial parents match the Python oracle",
+  app.nextBaseFee("12", "22500000", "30000000").nextBaseFeeWei === "12750000000" &&
+  app.nextBaseFee("12", "7500000", "30000000").nextBaseFeeWei === "11250000000" &&
+  app.nextBaseFee("10", "30000001", "30000001").nextBaseFeeWei === "11250000083" &&
+  app.nextBaseFee("10", "30000001", "30000001").gasTarget === "15000000" &&
+  app.nextBaseFee("0.5", "30000000", "30000000").nextBaseFeeWei === "562500000" &&
+  app.nextBaseFee("999.999999999", "29999999", "30000000").nextBaseFeeWei === "1124999991665" &&
+  app.nextBaseFee("999.999999999", "29999999", "30000000").deltaWei === "124999991666");
+check("basefee: 1-wei floor applies to rises only",
+  app.nextBaseFee("0.000000007", "15000001", "30000000").nextBaseFeeWei === "8" &&
+  app.nextBaseFee("0.000000007", "14999999", "30000000").nextBaseFeeWei === "7" &&
+  app.nextBaseFee("0.000000001", "30000000", "30000000").nextBaseFeeWei === "2");
+check("basefee calculator refuses out-of-protocol and malformed inputs",
+  app.nextBaseFee("12", "30000001", "30000000") === null &&
+  app.nextBaseFee("12", "0", "0") === null &&
+  app.nextBaseFee("12", "0", "1") === null &&
+  app.nextBaseFee("-1", "0", "30000000") === null &&
+  app.nextBaseFee("12", "1.5", "30000000") === null &&
+  app.nextBaseFee("12", "0x10", "30000000") === null &&
+  app.nextBaseFee("", "0", "30000000") === null &&
+  app.nextBaseFee(null, "0", "30000000") === null &&
+  app.nextBaseFee("12", null, "30000000") === null &&
+  app.nextBaseFee("12.0000000001", "0", "30000000") === null &&
+  app.nextBaseFee("12", "18446744073709551616", "18446744073709551616") === null);
+check("basefee tool section present in index.html", html.includes("basefee-btn") && html.includes("Next-block base fee calculator"));
+check("EIP-1559 linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-1559"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

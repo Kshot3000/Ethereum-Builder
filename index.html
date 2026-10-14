@@ -163,6 +163,21 @@
     </div>
 
     <div class="tool">
+      <h3>Uniswap V2 swap quote calculator</h3>
+      <p>Found the pair with the calculator above — this prices a swap against it, with the exact integer math of <a href="https://github.com/Uniswap/v2-periphery/blob/master/contracts/libraries/UniswapV2Library.sol">UniswapV2Library</a> in v2-periphery. A V2 pair holds the constant product of its two reserves and charges 0.3% on the input, applied as a 997/1000 factor: for an exact input the output is the fee-adjusted input times the output reserve, divided by the input reserve scaled by 1000 plus the fee-adjusted input, rounded down; for an exact output the required input is the same relation solved the other way, rounded <em>up</em> by 1 so the pair's invariant check passes. The third mode, spot quote, is just the reserve ratio — no fee, no price movement, and not a trade quote. Enter reserves and amounts in each token's base units (the raw integers the contracts use); the pair stores reserves as uint112, so a reserve at or above 2<sup>112</sup> is refused. Price impact is measured against the pre-trade reserve ratio, includes the fee, and is shown truncated to 4 decimal places (the amounts themselves are exact). Single pair only — a multi-hop route chains this per hop — and forks charging a fee other than 0.3% are out of scope. Honest scope: the reserves are values <em>you</em> supply — a real pair's reserves are chain state (its <code>getReserves</code>), which this page does not read, so this is the library's formula applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
+      <label for="v2q-mode">Mode</label>
+      <select id="v2q-mode"><option value="out" selected>Exact input — I send the amount, quote what I receive</option><option value="in">Exact output — I want the amount, quote what I must send</option><option value="quote">Spot quote — equivalent amount at the reserve ratio (no fee, no trade)</option></select>
+      <label for="v2q-reserve-in">Reserve of the input token (base units)</label>
+      <input id="v2q-reserve-in" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="v2q-reserve-out">Reserve of the output token (base units)</label>
+      <input id="v2q-reserve-out" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="v2q-amount">Amount (base units — sent in exact-input and spot modes, received in exact-output mode)</label>
+      <input id="v2q-amount" type="text" inputmode="numeric" spellcheck="false" value="10000">
+      <button id="v2q-btn" type="button">Calculate swap quote</button>
+      <p id="v2q-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>CREATE address calculator</h3>
       <p>The classic deployment opcode derives a contract's address from the creator alone: the last 20 bytes of Keccak-256 of the RLP encoding of <code>[sender, nonce]</code>. Know an account's nonce and you know the address its next deployment lands at — the same on Ethereum, Base, Unichain and Robinhood Chain. (CREATE2 above is the salt-based alternative.) Defaults below are the long-published worked example for this formula, so you can reproduce its known nonce-0 address. This only computes the address locally; nothing is deployed.</p>
       <label for="create-sender">Sender / deployer address (20 bytes)</label>
@@ -445,6 +460,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=24"></script>
+<script src="app.js?v=25"></script>
 </body>
 </html>

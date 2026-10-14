@@ -554,6 +554,83 @@ function uniswapPoolAddress(protocol, factory, tokenA, tokenB, feeStr, initCodeH
   };
 }
 
+/* ---------- Uniswap V2 swap quote (exact input / exact output / spot quote) ----------
+   The pricing math of UniswapV2Library in v2-periphery, run locally on
+   reserves the user supplies (a pair's reserves are chain state, read
+   via its getReserves — this tool makes no such query, so the numbers
+   below are a formula applied to supplied values, not live pool data).
+   A V2 pair holds the constant product reserveIn × reserveOut and
+   charges 0.3% on the input, which the library applies as a 997/1000
+   factor in exact integer arithmetic:
+     exact input:  amountOut = (amountIn × 997 × reserveOut)
+                               ÷ (reserveIn × 1000 + amountIn × 997),
+                   rounded down;
+     exact output: amountIn  = (reserveIn × amountOut × 1000)
+                               ÷ ((reserveOut − amountOut) × 997) + 1,
+                   the +1 rounding the required input UP, so the pair's
+                   invariant check passes on the computed input;
+     spot quote:   amountB   = amountA × reserveB ÷ reserveA, rounded
+                   down — the reserve ratio itself: no fee, no price
+                   movement, and not a trade quote.
+   Reserves are stored by the pair as uint112, so a reserve at or above
+   2^112 cannot describe a real V2 pair and is refused. Amounts are in
+   each token's base units (the raw integers the contracts use). An
+   exact-input amount so small it buys less than 1 base unit of the
+   output is refused: the library's formula yields 0 there, and the
+   pair itself reverts on a zero-output swap. Price impact is measured
+   against the pre-trade reserve ratio and includes the 0.3% fee:
+   1 − (amountOut × reserveIn) ÷ (amountIn × reserveOut), rendered as
+   a percent truncated to 4 decimal places (display rounding only —
+   the amounts themselves are exact). Single pair only: a multi-hop
+   route chains this calculation per hop. Forks whose fee differs
+   from 0.3% are out of scope rather than approximated. */
+function uniswapV2Quote(mode, reserveInStr, reserveOutStr, amountStr) {
+  if (mode !== "out" && mode !== "in" && mode !== "quote") return null;
+  const parseAmt = (str) => {
+    if (typeof str !== "string") return null;
+    const s = str.trim();
+    if (!/^\d+$/.test(s) || s.length > 78) return null;
+    return BigInt(s);
+  };
+  const reserveIn = parseAmt(reserveInStr);
+  const reserveOut = parseAmt(reserveOutStr);
+  const amount = parseAmt(amountStr);
+  if (reserveIn === null || reserveOut === null || amount === null) return null;
+  const MAX_RESERVE = (1n << 112n) - 1n;
+  if (reserveIn === 0n || reserveOut === 0n) return null;
+  if (reserveIn > MAX_RESERVE || reserveOut > MAX_RESERVE) return null;
+  if (amount === 0n) return null;
+  let amountIn, amountOut;
+  if (mode === "out") {
+    amountIn = amount;
+    const amountInWithFee = amountIn * 997n;
+    amountOut = (amountInWithFee * reserveOut) / (reserveIn * 1000n + amountInWithFee);
+    if (amountOut === 0n) return null;
+  } else if (mode === "in") {
+    amountOut = amount;
+    if (amountOut >= reserveOut) return null;
+    amountIn = (reserveIn * amountOut * 1000n) / ((reserveOut - amountOut) * 997n) + 1n;
+  } else {
+    amountIn = amount;
+    amountOut = (amountIn * reserveOut) / reserveIn;
+  }
+  let impactPercent = null;
+  if (mode !== "quote") {
+    const den = amountIn * reserveOut;
+    const scaled = ((den - amountOut * reserveIn) * 1000000n) / den;
+    impactPercent = `${scaled / 10000n}.${String(scaled % 10000n).padStart(4, "0")}`;
+  }
+  const traded = mode !== "quote";
+  return {
+    mode,
+    amountIn: amountIn.toString(),
+    amountOut: amountOut.toString(),
+    impactPercent,
+    newReserveIn: (traded ? reserveIn + amountIn : reserveIn).toString(),
+    newReserveOut: (traded ? reserveOut - amountOut : reserveOut).toString()
+  };
+}
+
 /* ---------- CREATE address calculator ----------
    The original deployment opcode derives the contract address from the
    creator alone: address = last 20 bytes of keccak256(rlp([sender,
@@ -1935,6 +2012,29 @@ if (typeof document !== "undefined") {
       el.textContent = `Uniswap ${protocol === "v3" ? "V3 pool" : "V2 pair"} address: ${r.address} · token0 ${r.token0} · token1 ${r.token1} · salt ${r.salt}. Derived locally with CREATE2 from the factory, the sorted tokens and the init code hash you gave. Whether a ${protocol === "v3" ? "pool" : "pair"} actually exists at this address is a chain query (the factory's ${protocol === "v3" ? "getPool" : "getPair"}) that this page does not make — nothing deployed, no chain queried.`;
     });
 
+    /* Uniswap V2 swap quote calculator */
+    const v2qBtn = document.getElementById("v2q-btn");
+    if (v2qBtn) v2qBtn.addEventListener("click", () => {
+      const r = uniswapV2Quote(
+        document.getElementById("v2q-mode").value,
+        document.getElementById("v2q-reserve-in").value,
+        document.getElementById("v2q-reserve-out").value,
+        document.getElementById("v2q-amount").value
+      );
+      const el = document.getElementById("v2q-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: both reserves and the amount must be whole numbers of 1 or more in the tokens' base units, each reserve below 2^112 (the pair stores reserves as uint112), an exact-output amount must be less than the output reserve, and an exact-input amount must be large enough to buy at least 1 base unit of the output token.";
+        return;
+      }
+      if (r.mode === "quote") {
+        el.textContent = `Spot quote: ${r.amountIn} base units of the input token ≡ ${r.amountOut} base units of the output token at the reserve ratio ${document.getElementById("v2q-reserve-in").value.trim()} : ${document.getElementById("v2q-reserve-out").value.trim()} — no fee taken and no price moved, so this is the ratio a trade is priced against, not what a trade of that size returns. Computed locally from the reserves you gave — not live pool data.`;
+        return;
+      }
+      el.textContent = r.mode === "out"
+        ? `Swap quote: ${r.amountIn} base units in → ${r.amountOut} base units out · Price impact vs the pre-trade reserve ratio (includes the 0.3% fee): ${r.impactPercent}% · Reserves after this swap: ${r.newReserveIn} in / ${r.newReserveOut} out (the product grows by the fee kept in the pair). Computed locally with UniswapV2Library's formula from the reserves you gave — a formula applied to supplied values, not live pool data: read a real pair's reserves from its getReserves before quoting a real trade.`
+        : `Swap quote: to receive exactly ${r.amountOut} base units out you must send ${r.amountIn} base units in (rounded up by 1, as the library rounds, so the pair's invariant check passes) · Price impact vs the pre-trade reserve ratio (includes the 0.3% fee): ${r.impactPercent}% · Reserves after this swap: ${r.newReserveIn} in / ${r.newReserveOut} out. Computed locally with UniswapV2Library's formula from the reserves you gave — not live pool data.`;
+    });
+
     /* CREATE calculator */
     const createBtn = document.getElementById("create-btn");
     if (createBtn) createBtn.addEventListener("click", () => {
@@ -2267,5 +2367,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

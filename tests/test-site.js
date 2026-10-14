@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=24"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=25"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1077,6 +1077,71 @@ check("pool calculator refuses factory-invalid and malformed inputs",
 check("pool tool section present in index.html", html.includes("pool-btn") && html.includes("Uniswap V2 pair"));
 check("Uniswap V2 pair-address docs linked from index.html", html.includes("https://developers.uniswap.org/docs/protocols/v2/guides/getting-pair-addresses"));
 check("v3-periphery PoolAddress linked from index.html", html.includes("https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/PoolAddress.sol"));
+
+/* Uniswap V2 swap quotes — expected values produced by an independent
+   pure-Python transcription of UniswapV2Library's three formulas
+   (getAmountOut with the 997/1000 fee factor, getAmountIn rounding the
+   required input up by 1, quote as the raw reserve ratio), whose
+   round-trip property was also asserted in Python: the required input
+   for a floored output reproduces that output, and 1 unit less does
+   not. Price impact is 1 − (out × reserveIn)/(in × reserveOut) as a
+   percent truncated to 4 decimals. */
+check("v2q controls labelled in index.html",
+  html.includes('for="v2q-mode"') && html.includes('for="v2q-reserve-in"') &&
+  html.includes('for="v2q-reserve-out"') && html.includes('for="v2q-amount"'));
+check("v2q: exact-input quotes match the Python oracle",
+  (() => { const V = [
+    ["1000000", "1000000", "10000", "9871", "1.2900", "1010000", "990129"],
+    ["5000000", "2500000", "25000", "12400", "0.8000", "5025000", "2487600"],
+    ["123456789", "987654321", "1000000", "7912104", "1.0987", "124456789", "979742217"],
+    ["1000000000000000000000000", "400000000000000000000000", "100000000000000000000", "39876024360371270984", "0.3099", "1000100000000000000000000", "399960123975639628729016"],
+    ["777", "333", "100", "37", "13.6666", "877", "296"],
+    ["5192296858534827628530496329220095", "2596148429267413814265248164610048", "1000000000000000000", "498499999999999904", "0.3000", "5192296858534828628530496329220095", "2596148429267413315765248164610144"]
+  ]; return V.every(([ri, ro, ai, ao, imp, nri, nro]) => { const r = app.uniswapV2Quote("out", ri, ro, ai);
+    return r !== null && r.amountIn === ai && r.amountOut === ao && r.impactPercent === imp && r.newReserveIn === nri && r.newReserveOut === nro; }); })());
+check("v2q: exact-output quotes match the Python oracle",
+  (() => { const V = [
+    ["1000000", "1000000", "9871", "10000", "1.2900"],
+    ["8000000", "2000000", "100000", "422320", "5.2850"],
+    ["10000000000000000000000", "10000000000000000000000", "1000000000000000000", "1003109338015045236", "0.3099"],
+    ["999983", "499979", "123457", "328869", "24.9183"]
+  ]; return V.every(([ri, ro, ao, ai, imp]) => { const r = app.uniswapV2Quote("in", ri, ro, ao);
+    return r !== null && r.amountOut === ao && r.amountIn === ai && r.impactPercent === imp &&
+      r.newReserveIn === (BigInt(ri) + BigInt(ai)).toString() && r.newReserveOut === (BigInt(ro) - BigInt(ao)).toString(); }); })());
+check("v2q: spot quotes are the raw reserve ratio (no fee, no impact figure)",
+  (() => { const V = [
+    ["1000000", "1000000", "10000", "10000"],
+    ["3000000", "7500000", "40000", "100000"],
+    ["100000000000000000000", "50000000000000000000", "123456789", "61728394"]
+  ]; return V.every(([ri, ro, ai, ao]) => { const r = app.uniswapV2Quote("quote", ri, ro, ai);
+    return r !== null && r.amountOut === ao && r.impactPercent === null && r.newReserveIn === ri && r.newReserveOut === ro; }); })());
+check("v2q: round trip — required input for a quoted output is minimal and sufficient",
+  (() => { const cases = [["1000000", "1000000", "10000", "10000"], ["5000000", "2500000", "25000", "24999"], ["777", "333", "100", "98"]];
+    return cases.every(([ri, ro, ai, back]) => { const out = app.uniswapV2Quote("out", ri, ro, ai);
+      const inn = app.uniswapV2Quote("in", ri, ro, out.amountOut);
+      if (inn.amountIn !== back || BigInt(back) > BigInt(ai)) return false;
+      const oneLess = app.uniswapV2Quote("out", ri, ro, (BigInt(back) - 1n).toString());
+      return oneLess === null || BigInt(oneLess.amountOut) < BigInt(out.amountOut); }); })());
+check("v2q: prefilled page values reproduce the oracle's 9871 for 10000 in",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.uniswapV2Quote("out", g("v2q-reserve-in"), g("v2q-reserve-out"), g("v2q-amount"));
+    return r !== null && r.amountOut === "9871" && r.impactPercent === "1.2900"; })());
+check("v2q calculator refuses illiquid, impossible and malformed inputs",
+  app.uniswapV2Quote("out", "0", "1000000", "10000") === null &&
+  app.uniswapV2Quote("out", "1000000", "0", "10000") === null &&
+  app.uniswapV2Quote("out", "1000000", "1000000", "0") === null &&
+  app.uniswapV2Quote("in", "1000000", "1000000", "1000000") === null &&
+  app.uniswapV2Quote("in", "1000000", "1000000", "1000001") === null &&
+  app.uniswapV2Quote("out", "5192296858534827628530496329220096", "1000000", "10000") === null &&
+  app.uniswapV2Quote("out", "1000000000000000000000000", "1", "1") === null &&
+  app.uniswapV2Quote("out", "1000000", "1000000", "1.5") === null &&
+  app.uniswapV2Quote("out", "1000000", "1000000", "-3") === null &&
+  app.uniswapV2Quote("out", "1000000", "1000000", "") === null &&
+  app.uniswapV2Quote("amounts", "1000000", "1000000", "10000") === null &&
+  app.uniswapV2Quote("out", "1000000", "1000000", "1".repeat(79)) === null &&
+  app.uniswapV2Quote("out", null, "1000000", "10000") === null);
+check("v2q tool section present in index.html", html.includes("v2q-btn") && html.includes("Uniswap V2 swap quote calculator"));
+check("UniswapV2Library linked from index.html", html.includes("https://github.com/Uniswap/v2-periphery/blob/master/contracts/libraries/UniswapV2Library.sol"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

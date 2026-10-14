@@ -933,8 +933,9 @@ function merkleVerify(leafInput, proof, root) {
 
 /* ---------- Raw transaction decoder (RLP, strict) ----------
    Decodes a raw transaction — legacy (incl. EIP-155), EIP-2930
-   (type 1), EIP-1559 (type 2) and EIP-7702 (type 4, set code) —
-   from its RLP encoding, and recomputes the two hashes a
+   (type 1), EIP-1559 (type 2), EIP-4844 (type 3, blob) and
+   EIP-7702 (type 4, set code) — from its RLP encoding, and
+   recomputes the two hashes a
    wallet/explorer derives from it: the transaction hash
    (keccak256 of the raw bytes) and the signing hash (keccak256
    of the unsigned payload, with the type byte prefixed for
@@ -952,9 +953,18 @@ function merkleVerify(leafInput, proof, root) {
    authorization list must be non-empty, and each authorization
    tuple [chain_id, address, nonce, y_parity, r, s] must have a
    20-byte address, a nonce below 2^64 and a y-parity below
-   2^8. The signature fields are decoded, NOT verified — no
-   sender is recovered and no chain is queried. Type 3 (blob)
-   transactions are rejected rather than guessed at. */
+   2^8. EIP-4844 adds its own rules from the EIP: the
+   destination may not be empty (a blob transaction cannot
+   create a contract), the blob versioned-hash list must be
+   non-empty, and every versioned hash must be exactly 32
+   bytes starting with 0x01 (VERSIONED_HASH_VERSION_KZG).
+   Only the execution-payload form is decoded — the pooled
+   network wrapper rlp([tx_payload_body, blobs, commitments,
+   proofs]) that gossip uses is a different shape and is
+   refused, and no KZG proof is checked (the blobs themselves
+   are not part of the payload). The signature fields are
+   decoded, NOT verified — no sender is recovered and no
+   chain is queried. */
 function txHexToBytes(str) {
   if (typeof str !== "string") return null;
   let s = str.trim();
@@ -1064,6 +1074,16 @@ function txAuthorizationList(item) {
     return { chainId: chainId.toString(), address: toChecksumAddress("0x" + bytesToHex(addr)), nonce: nonce.toString(), yParity: Number(yParity), r: "0x" + bytesToHex(rB).padStart(64, "0"), s: "0x" + bytesToHex(sB).padStart(64, "0") };
   });
 }
+function txBlobVersionedHashes(item) {
+  if (item.list === undefined) throw new Error("blobVersionedHashes must be a list");
+  if (item.list.length === 0) throw new Error("blobVersionedHashes must not be empty");
+  return item.list.map(h => {
+    const hb = txBytesField(h, "blob versioned hash");
+    if (hb.length !== 32) throw new Error("blob versioned hash must be 32 bytes");
+    if (hb[0] !== 0x01) throw new Error("blob versioned hash must start with 0x01");
+    return "0x" + bytesToHex(hb);
+  });
+}
 function bigIntToMinBytes(v) {
   const out = [];
   let x = v;
@@ -1076,9 +1096,9 @@ function decodeRawTransaction(input) {
     if (raw === null || raw.length === 0) return null;
     const b0 = raw[0];
     let type, items, typeByte = null;
-    if (b0 === 0x01 || b0 === 0x02 || b0 === 0x04) {
+    if (b0 === 0x01 || b0 === 0x02 || b0 === 0x03 || b0 === 0x04) {
       typeByte = b0;
-      type = b0 === 0x01 ? "eip2930" : b0 === 0x02 ? "eip1559" : "eip7702";
+      type = b0 === 0x01 ? "eip2930" : b0 === 0x02 ? "eip1559" : b0 === 0x03 ? "eip4844" : "eip7702";
       const r = rlpDecodeItem(raw, 1);
       if (r.value.list === undefined || r.next !== raw.length) return null;
       items = r.value.list;
@@ -1088,7 +1108,7 @@ function decodeRawTransaction(input) {
       if (r.value.list === undefined || r.next !== raw.length) return null;
       items = r.value.list;
     } else return null;
-    const signedCounts = { legacy: [6, 9], eip2930: [8, 11], eip1559: [9, 12], eip7702: [10, 13] }[type];
+    const signedCounts = { legacy: [6, 9], eip2930: [8, 11], eip1559: [9, 12], eip4844: [11, 14], eip7702: [10, 13] }[type];
     if (!signedCounts.includes(items.length)) return null;
     const signed = items.length === signedCounts[1];
     const out = { type, signed, txHash: "0x" + keccak256Bytes(raw) };
@@ -1108,6 +1128,7 @@ function decodeRawTransaction(input) {
       out.data = "0x" + bytesToHex(txBytesField(items[5], "data"));
       out.accessList = null;
       out.authorizationList = null;
+      out.blobVersionedHashes = null;
       unsignedItems = items.slice(0, 6);
       if (signed) {
         sig = readSig(items[6], items[7], items[8]);
@@ -1139,7 +1160,13 @@ function decodeRawTransaction(input) {
       if (type === "eip7702") {
         if (out.to === null) return null;
         out.authorizationList = txAuthorizationList(items[i + 5]);
-      } else out.authorizationList = null;
+        out.blobVersionedHashes = null;
+      } else if (type === "eip4844") {
+        if (out.to === null) return null;
+        out.maxFeePerBlobGas = txIntField(items[i + 5], "maxFeePerBlobGas").toString();
+        out.blobVersionedHashes = txBlobVersionedHashes(items[i + 6]);
+        out.authorizationList = null;
+      } else { out.authorizationList = null; out.blobVersionedHashes = null; }
       unsignedItems = items.slice(0, signedCounts[0]);
       if (signed) {
         sig = readSig(items[signedCounts[0]], items[signedCounts[0] + 1], items[signedCounts[0] + 2]);
@@ -1536,15 +1563,16 @@ if (typeof document !== "undefined") {
       const r = decodeRawTransaction(document.getElementById("txd-raw").value);
       const el = document.getElementById("txd-out");
       if (r === null) {
-        el.textContent = "That does not strictly decode as a legacy, EIP-2930 (type 1), EIP-1559 (type 2), or EIP-7702 (type 4) transaction — check the hex is complete and canonical RLP (no trailing bytes, no leading-zero integers or lengths, no long form for short payloads), the field count matches the type, `to` is empty or 20 bytes, and v is 27/28 or an EIP-155 value (legacy) or 0/1 (typed). A type 4 transaction additionally needs a destination (no contract creation) and a non-empty authorization list with in-bounds tuples. Type 3 (blob) transactions are not decoded — the tool will not guess at them.";
+        el.textContent = "That does not strictly decode as a legacy, EIP-2930 (type 1), EIP-1559 (type 2), EIP-4844 (type 3), or EIP-7702 (type 4) transaction — check the hex is complete and canonical RLP (no trailing bytes, no leading-zero integers or lengths, no long form for short payloads), the field count matches the type, `to` is empty or 20 bytes, and v is 27/28 or an EIP-155 value (legacy) or 0/1 (typed). A type 4 transaction additionally needs a destination (no contract creation) and a non-empty authorization list with in-bounds tuples. A type 3 transaction additionally needs a destination (no contract creation) and a non-empty list of 32-byte blob versioned hashes, each starting with 0x01, in the execution-payload form — the pooled network wrapper that carries the blobs themselves is a different shape and is not decoded.";
         return;
       }
-      const typeName = { legacy: "legacy", eip2930: "EIP-2930 (type 1)", eip1559: "EIP-1559 (type 2)", eip7702: "EIP-7702 (type 4)" }[r.type];
-      const fees = r.type === "eip1559" || r.type === "eip7702"
+      const typeName = { legacy: "legacy", eip2930: "EIP-2930 (type 1)", eip1559: "EIP-1559 (type 2)", eip4844: "EIP-4844 (type 3)", eip7702: "EIP-7702 (type 4)" }[r.type];
+      const fees = r.type === "eip1559" || r.type === "eip4844" || r.type === "eip7702"
         ? `max priority fee ${r.maxPriorityFeePerGas} wei · max fee ${r.maxFeePerGas} wei`
         : `gas price ${r.gasPrice} wei`;
       let msg = `${typeName} transaction${r.signed ? " (signed)" : " (unsigned)"} · chain ID: ${r.chainId === null ? "none in the transaction (pre-EIP-155 legacy)" : r.chainId} · nonce ${r.nonce} · ${fees} · gas limit ${r.gasLimit} · to: ${r.to === null ? "contract creation (empty)" : r.to} · value ${r.value} wei · data ${r.data}`;
       if (r.accessList !== null) msg += ` · access list: ${r.accessList.length === 0 ? "empty" : JSON.stringify(r.accessList)}`;
+      if (r.blobVersionedHashes !== null) msg += ` · max fee per blob gas ${r.maxFeePerBlobGas} wei · blob versioned hashes: ${JSON.stringify(r.blobVersionedHashes)}`;
       if (r.authorizationList !== null) msg += ` · authorization list: ${JSON.stringify(r.authorizationList)}`;
       if (r.signed) msg += ` · v ${r.v} (y-parity ${r.yParity}) · r ${r.r} · s ${r.s}`;
       msg += ` · Signing hash: ${r.signingHash} · Transaction hash: ${r.txHash}. Decoded locally from the RLP alone — the signature is decoded, not verified, no sender is recovered, and no chain is queried. The same decoding applies on Ethereum, Base, Unichain and Robinhood Chain.`;
@@ -1596,10 +1624,10 @@ if (typeof document !== "undefined") {
       const r = recoverTransactionSender(document.getElementById("txs-raw").value);
       const el = document.getElementById("txs-out");
       if (r === null) {
-        el.textContent = "That does not recover a sender — check the hex is a complete, canonical signed transaction (legacy, EIP-2930 type 1, EIP-1559 type 2, or EIP-7702 type 4; unsigned transactions have no sender), with r and s in range and s in the lower half of the curve order (the canonical EIP-2 form). Type 3 (blob) transactions are not decoded — the tool will not guess at them.";
+        el.textContent = "That does not recover a sender — check the hex is a complete, canonical signed transaction (legacy, EIP-2930 type 1, EIP-1559 type 2, EIP-4844 type 3, or EIP-7702 type 4; unsigned transactions have no sender), with r and s in range and s in the lower half of the curve order (the canonical EIP-2 form).";
         return;
       }
-      const typeName = { legacy: "legacy", eip2930: "EIP-2930 (type 1)", eip1559: "EIP-1559 (type 2)", eip7702: "EIP-7702 (type 4)" }[r.type];
+      const typeName = { legacy: "legacy", eip2930: "EIP-2930 (type 1)", eip1559: "EIP-1559 (type 2)", eip4844: "EIP-4844 (type 3)", eip7702: "EIP-7702 (type 4)" }[r.type];
       let msg = `Sender: ${r.sender} · ${typeName} transaction · chain ID: ${r.chainId === null ? "none in the transaction (pre-EIP-155 legacy)" : r.chainId} · Signing hash: ${r.signingHash} · Transaction hash: ${r.txHash}.`;
       if (r.authorizations !== null) msg += ` Authorizations: ${r.authorizations.map(a => a.authority === null ? `an unrecoverable signature (delegate ${a.address}, chain ID ${a.chainId}, nonce ${a.nonce}) — a client would skip this tuple` : `${a.authority} delegates to ${a.address} (authorization chain ID ${a.chainId}, nonce ${a.nonce})`).join(" · ")}.`;
       msg += " Recovered locally from the transaction's own signatures — no private key involved, nothing signed, and no chain queried. The same recovery applies on Ethereum, Base, Unichain and Robinhood Chain.";

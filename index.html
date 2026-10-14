@@ -144,6 +144,15 @@
     </div>
 
     <div class="tool">
+      <h3>ENS namehash calculator (EIP-137)</h3>
+      <p>Every ENS name maps to a 32-byte node: start from 32 zero bytes and fold each label in right-to-left with Keccak-256 — <code>node = keccak256(node ++ keccak256(label))</code>. Registries and resolvers key records by this node on Ethereum and every EVM L2. Honest scope: names are lowercased and must be ASCII labels — internationalised names need full UTS-46 normalisation first, which this tool does not do, so it rejects them rather than hashing them wrong. This computes the identifier locally; it does not look up any name or resolver.</p>
+      <label for="ens-input">ENS name</label>
+      <input id="ens-input" type="text" spellcheck="false" value="foo.eth">
+      <button id="ens-btn" type="button">Calculate namehash</button>
+      <p id="ens-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>EIP-1559 gas cost estimator</h3>
       <p>A wallet-convention model, not live data: expected cost uses base + priority fee; max cost uses maxFeePerGas = 2×base + priority. A simple transfer is 21,000 gas.</p>
       <label for="gas-units">Gas units</label>
@@ -169,6 +178,6 @@
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

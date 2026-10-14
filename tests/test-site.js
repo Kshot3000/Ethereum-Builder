@@ -43,9 +43,9 @@ for (const x of ["https://x.com/ethereum", "https://x.com/base", "https://x.com/
 check("exactly one <h1>", (html.match(/<h1[ >]/g) || []).length === 1);
 check("has <main> landmark", /<main[\s>]/.test(html));
 check("all tool controls labelled",
-  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init"]
+  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "ens-input"]
     .every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=3"));
+check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=4"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -168,6 +168,32 @@ check("keccak256Bytes matches keccak256 on ASCII bytes",
 check("keccak256Bytes of empty input is the empty-hash vector",
   app.keccak256Bytes([]) === "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
 check("CREATE2 tool section present in index.html", html.includes("c2-btn") && html.includes("EIP-1014"));
+
+/* ENS namehash — official EIP-137 test vectors, verbatim */
+check("namehash('') is the root node", app.namehash("") === "0x0000000000000000000000000000000000000000000000000000000000000000");
+check("namehash('eth') EIP-137 vector", app.namehash("eth") === "0x93cdeb708b7545dc668eb9280176169d1c33cfd8ed6f04690a0bcc88a93fc4ae");
+check("namehash('foo.eth') EIP-137 vector", app.namehash("foo.eth") === "0xde9b09fd7c5f901e23a3f19fecc54828e9c848539801e86591bd9801b019f84f");
+check("labelhash('eth') folds to namehash('eth')", (() => {
+  const lh = app.labelhash("eth");
+  if (lh === null) return false;
+  const labelBytes = [];
+  for (let i = 2; i < lh.length; i += 2) labelBytes.push(parseInt(lh.substr(i, 2), 16));
+  const folded = "0x" + app.keccak256Bytes([...new Array(32).fill(0), ...labelBytes]);
+  return folded === app.namehash("eth");
+})());
+check("namehash is case-insensitive (lowercased before hashing)", app.namehash("FOO.ETH") === app.namehash("foo.eth"));
+check("namehash tolerates surrounding whitespace", app.namehash("  foo.eth ") === app.namehash("foo.eth"));
+check("namehash rejects empty labels / bad names",
+  app.namehash(".eth") === null &&
+  app.namehash("foo..eth") === null &&
+  app.namehash("foo.") === null &&
+  app.namehash("foo eth") === null &&
+  app.namehash("foo.eth!") === null &&
+  app.namehash(null) === null);
+check("namehash rejects non-ASCII labels instead of mis-hashing (no UTS-46)",
+  app.namehash("exämple.eth") === null && app.labelhash("bücher") === null);
+check("utf8Bytes ASCII matches char codes", app.utf8Bytes("eth").join(",") === "101,116,104");
+check("ENS tool section present in index.html", html.includes("ens-btn") && html.includes("EIP-137"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -19,6 +19,7 @@ I'm Kyle Cox (@kshot9000), an independent builder. This repo is my home base for
 3. **EIP-1559 gas cost estimator** — gas × (base + priority) expected cost, and max cost at maxFeePerGas = 2×base + priority. Clearly a wallet-convention model, not live data.
 4. **Function selector & event topic calculator** — Keccak-256 of a canonical signature gives the 4-byte calldata selector and the 32-byte event topic0; verified in the tests against the canonical ERC-20 selectors (`transfer(address,uint256)` → `0xa9059cbb`) and the Transfer/Approval topic hashes.
 5. **CREATE2 address calculator** — EIP-1014 deterministic deployment addresses from deployer + salt + init code; verified in the tests against all seven official EIP-1014 examples. Computes the address only — nothing is deployed.
+6. **ENS namehash calculator** — EIP-137 namehash (and the trailing label's labelhash) for a name, folded right-to-left with Keccak-256; verified in the tests against the official EIP-137 vectors (`''`, `eth`, `foo.eth`). ASCII labels only: internationalised names need full UTS-46 normalisation, so they are rejected rather than mis-hashed. Computes the identifier only — no name or resolver is looked up.
 
 ## Scope
 

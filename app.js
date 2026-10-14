@@ -233,6 +233,44 @@ function create2Address(deployer, salt, initCode) {
   return toChecksumAddress("0x" + bytesToHex(digest.slice(12)));
 }
 
+/* ---------- ENS namehash (EIP-137) ----------
+   namehash folds labels right-to-left: node starts as 32 zero bytes, and
+   for each label from the rightmost, node = keccak256(node ++
+   keccak256(label)). The empty name is the root node (32 zero bytes).
+   Honest scope: ENS proper names go through UTS-46 normalisation first.
+   This tool lowercases the input (namehash is case-insensitive after
+   normalisation) and accepts ASCII labels [a-z0-9-_]; internationalised
+   names that need full UTS-46 mapping are rejected, never mis-hashed. */
+function utf8Bytes(str) {
+  if (typeof TextEncoder !== "undefined") return Array.from(new TextEncoder().encode(str));
+  const out = [];
+  for (let i = 0; i < str.length; i++) {
+    let cp = str.charCodeAt(i);
+    if (cp < 0x80) out.push(cp);
+    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    else out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+  }
+  return out;
+}
+function labelhash(label) {
+  if (typeof label !== "string") return null;
+  const l = label.trim().toLowerCase();
+  if (!/^[a-z0-9_-]+$/.test(l)) return null;
+  return "0x" + keccak256Bytes(utf8Bytes(l));
+}
+function namehash(name) {
+  if (typeof name !== "string") return null;
+  const n = name.trim().toLowerCase();
+  if (n === "") return "0x" + "00".repeat(32);
+  const labels = n.split(".");
+  if (labels.some(l => !/^[a-z0-9_-]+$/.test(l))) return null;
+  let node = new Array(32).fill(0);
+  for (let i = labels.length - 1; i >= 0; i--) {
+    node = keccak256Digest([...node, ...keccak256Digest(utf8Bytes(labels[i]))]);
+  }
+  return "0x" + bytesToHex(node);
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -306,6 +344,22 @@ if (typeof document !== "undefined") {
         : `CREATE2 address: ${r} (EIP-55 checksummed). The same deployer, salt and init code produce this address on Ethereum, Base, Unichain and Robinhood Chain — computed locally, nothing deployed.`;
     });
 
+    /* ENS namehash */
+    const ensBtn = document.getElementById("ens-btn");
+    if (ensBtn) ensBtn.addEventListener("click", () => {
+      const input = document.getElementById("ens-input").value;
+      const r = namehash(input);
+      const el = document.getElementById("ens-out");
+      if (r === null) {
+        el.textContent = "Enter an ENS name made of ASCII labels (a–z, 0–9, hyphen, underscore) separated by dots, e.g. foo.eth. Internationalised names need full UTS-46 normalisation, which this local tool does not do — it will not guess at their hash.";
+        return;
+      }
+      const trimmed = input.trim().toLowerCase();
+      const lastLabel = trimmed === "" ? "" : trimmed.split(".").pop();
+      const lh = lastLabel ? ` Labelhash of "${lastLabel}": ${labelhash(lastLabel)}.` : " The empty name is the ENS root node.";
+      el.textContent = `Namehash (EIP-137): ${r}.${lh} Computed locally — a namehash is an identifier, not a lookup: no resolver is queried and no live chain data is shown.`;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -323,5 +377,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, utf8Bytes, labelhash, namehash, UNIT_DECIMALS };
 }

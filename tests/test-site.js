@@ -1265,6 +1265,9 @@ check("v3l: liquidity for amounts matches the Python oracle (L and amounts actua
       return r !== null && r.liquidity === liq && r.amount0 === u0 && r.amount1 === u1 &&
         r.desiredAmount0 === d0 && r.desiredAmount1 === d1;
     }));
+check("v3l: 1 base unit of each token in-range mints L=20 (per-unit-L amount ≈0.048, so it is NOT too small — oracle-verified)",
+  (() => { const r = app.uniswapV3Liquidity("liquidity", "-1000", "1000", "0", "0", "1", "1");
+    return r !== null && r.liquidity === "20" && r.amount0 === "0" && r.amount1 === "0"; })());
 check("v3l: round trip amounts → liquidity never exceeds the original L and is exact on the oracle cases",
   [[-1000, 1000, 0, "1000000", "999995"],
    [-1000, 1000, -1000, "1000000", "999993"],
@@ -1296,7 +1299,7 @@ check("v3l calculator refuses invalid ranges, bounds and malformed inputs",
   app.uniswapV3Liquidity("liquidity", "-1000", "1000", "0", "0", "0", "0") === null &&
   app.uniswapV3Liquidity("liquidity", "-1000", "1000", "-2000", "0", "0", "99999") === null &&
   app.uniswapV3Liquidity("liquidity", "-1000", "1000", "5000", "0", "99999", "0") === null &&
-  app.uniswapV3Liquidity("liquidity", "-1000", "1000", "0", "0", "1", "1") === null &&
+  app.uniswapV3Liquidity("liquidity", "-1000", "1000", "0", "0", "0", "100") === null &&
   app.uniswapV3Liquidity("liquidity", "-1000", "1000", "0", "0", "-1", "100") === null &&
   app.uniswapV3Liquidity("liquidity", "-1000", "1000", "0", "0", "1".repeat(79), "100") === null &&
   app.uniswapV3Liquidity("swap", "-1000", "1000", "0", "100", "0", "0") === null &&

@@ -401,6 +401,48 @@ function eip712MailDigest(domainName, domainVersion, chainIdStr, verifyingContra
   return { domainSeparator, mailTypeHash: EIP712_MAIL_TYPEHASH, structHash, digest };
 }
 
+/* ---------- Proxy & namespaced storage slots (ERC-1967 / ERC-7201) ----------
+   ERC-1967 proxy slots: bytes32(uint256(keccak256(label)) - 1) for the labels
+   eip1967.proxy.implementation / .beacon / .admin (plus .rollback, defined in
+   the ERC's reference implementation). ERC-7201 namespaced storage:
+   erc7201(id) = keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~0xff —
+   the second hash keeps namespaces out of the standard storage tree and the
+   mask aligns the root to a multiple of 256. Both are pure derivations of a
+   string; this tool computes slot constants only — it reads no chain state. */
+const ERC1967_LABELS = {
+  implementation: "eip1967.proxy.implementation",
+  beacon: "eip1967.proxy.beacon",
+  admin: "eip1967.proxy.admin",
+  rollback: "eip1967.proxy.rollback"
+};
+function bytes32HexToBigInt(hex) {
+  return BigInt("0x" + hex);
+}
+function bigIntToSlotHex(n) {
+  return "0x" + n.toString(16).padStart(64, "0");
+}
+function bigIntToBytes32(n) {
+  const out = new Array(32);
+  let v = n;
+  for (let i = 31; i >= 0; i--) { out[i] = Number(v & 0xffn); v >>= 8n; }
+  return out;
+}
+function erc1967Slot(kind) {
+  if (typeof kind !== "string") return null;
+  const label = ERC1967_LABELS[kind.trim()];
+  if (label === undefined) return null;
+  return bigIntToSlotHex(bytes32HexToBigInt(keccak256(label)) - 1n);
+}
+function erc7201Slot(id) {
+  if (typeof id !== "string") return null;
+  const s = id.trim();
+  /* ERC-7201: a namespace id should not contain any whitespace. */
+  if (s === "" || /\s/.test(s)) return null;
+  const inner = bytes32HexToBigInt(keccak256(s)) - 1n;
+  const outer = bytes32HexToBigInt(keccak256Bytes(bigIntToBytes32(inner)));
+  return bigIntToSlotHex(outer & ~0xffn);
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -538,6 +580,21 @@ if (typeof document !== "undefined") {
         : `Signable digest: ${r.digest} · hashStruct(Mail): ${r.structHash} · Domain separator: ${r.domainSeparator} · Mail type hash: ${r.mailTypeHash}. This is the hash a wallet would sign for this message — computed locally only; nothing is signed and no wallet is involved.`;
     });
 
+    /* Proxy & namespaced storage slots (ERC-1967 / ERC-7201) */
+    const slotBtn = document.getElementById("slot-btn");
+    if (slotBtn) slotBtn.addEventListener("click", () => {
+      const kind = document.getElementById("slot-kind").value;
+      const ns = document.getElementById("slot-ns").value;
+      const s1967 = erc1967Slot(kind);
+      const s7201 = erc7201Slot(ns);
+      const el = document.getElementById("slot-out");
+      if (s1967 === null || s7201 === null) {
+        el.textContent = "Check the inputs: pick one of the ERC-1967 slots, and give an ERC-7201 namespace ID with no whitespace (e.g. example.main).";
+        return;
+      }
+      el.textContent = `ERC-1967 ${kind} slot: ${s1967} · ERC-7201 slot for "${ns.trim()}": ${s7201}. Both are Keccak-256 derivations computed locally — pass a slot to eth_getStorageAt in your own tooling to read a contract; this page reads no chain state.`;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -555,5 +612,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, UNIT_DECIMALS };
 }

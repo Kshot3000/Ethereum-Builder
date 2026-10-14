@@ -43,9 +43,9 @@ for (const x of ["https://x.com/ethereum", "https://x.com/base", "https://x.com/
 check("exactly one <h1>", (html.match(/<h1[ >]/g) || []).length === 1);
 check("has <main> landmark", /<main[\s>]/.test(html));
 check("all tool controls labelled",
-  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "create-sender", "create-nonce", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract", "m712-dname", "m712-dversion", "m712-dchain", "m712-dcontract", "m712-from-name", "m712-from-wallet", "m712-to-name", "m712-to-wallet", "m712-contents"]
+  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "create-sender", "create-nonce", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract", "m712-dname", "m712-dversion", "m712-dchain", "m712-dcontract", "m712-from-name", "m712-from-wallet", "m712-to-name", "m712-to-wallet", "m712-contents", "slot-kind", "slot-ns"]
     .every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=7"));
+check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=8"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -297,6 +297,35 @@ check("EIP-712 mail digest rejects bad wallets / empty person names / bad domain
   app.eip712MailDigest("Ether Mail", "1", "0", MAIL_CONTRACT, "Cow", COW, "Bob", BOB, "Hello, Bob!") === null &&
   app.eip712MailDigest("Ether Mail", "1", "1", MAIL_CONTRACT, "Cow", COW, "Bob", BOB, null) === null);
 check("EIP-712 mail tool section present in index.html", html.includes("m712-btn") && html.includes("hashStruct"));
+
+/* Proxy & namespaced storage slots — the slot values published in ERC-1967
+   (implementation / beacon / admin, plus rollback from its reference
+   implementation) and ERC-7201's worked example for namespace example.main. */
+check("ERC-1967 implementation slot matches the published value",
+  app.erc1967Slot("implementation") === "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc");
+check("ERC-1967 beacon slot matches the published value",
+  app.erc1967Slot("beacon") === "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50");
+check("ERC-1967 admin slot matches the published value",
+  app.erc1967Slot("admin") === "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103");
+check("ERC-1967 rollback slot matches the reference implementation",
+  app.erc1967Slot("rollback") === "0x4910fdfa16fed3260ed0e7147f7cc6da11a60208b5b9406d12a635614ffd9143");
+check("ERC-1967 the four standard slots are all distinct",
+  new Set(["implementation", "beacon", "admin", "rollback"].map(k => app.erc1967Slot(k))).size === 4);
+check("ERC-1967 rejects unknown kinds and non-strings",
+  app.erc1967Slot("owner") === null && app.erc1967Slot("") === null && app.erc1967Slot(null) === null && app.erc1967Slot(3) === null);
+check("ERC-7201 example.main slot matches the ERC's worked example",
+  app.erc7201Slot("example.main") === "0x183a6125c38840424c4a85fa12bab2ab606c4b6d0e7cc73c0c06ba5300eab500");
+check("ERC-7201 roots are 256-aligned (low byte zeroed by the & ~0xff mask)",
+  ["example.main", "openzeppelin.storage.ERC20", "my.app.storage"].every(id => app.erc7201Slot(id).endsWith("00")));
+check("ERC-7201 slot changes with the namespace ID",
+  app.erc7201Slot("example.main") !== app.erc7201Slot("example.other"));
+check("ERC-7201 trims surrounding whitespace on the ID",
+  app.erc7201Slot("  example.main  ") === app.erc7201Slot("example.main"));
+check("ERC-7201 rejects empty / whitespace-containing / non-string IDs",
+  app.erc7201Slot("") === null && app.erc7201Slot("   ") === null &&
+  app.erc7201Slot("two words") === null && app.erc7201Slot("exa\tmple") === null &&
+  app.erc7201Slot(null) === null && app.erc7201Slot(7) === null);
+check("storage slot tool section present in index.html", html.includes("slot-btn") && html.includes("ERC-7201"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

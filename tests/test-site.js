@@ -43,9 +43,9 @@ for (const x of ["https://x.com/ethereum", "https://x.com/base", "https://x.com/
 check("exactly one <h1>", (html.match(/<h1[ >]/g) || []).length === 1);
 check("has <main> landmark", /<main[\s>]/.test(html));
 check("all tool controls labelled",
-  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "create-sender", "create-nonce", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract", "m712-dname", "m712-dversion", "m712-dchain", "m712-dcontract", "m712-from-name", "m712-from-wallet", "m712-to-name", "m712-to-wallet", "m712-contents", "slot-kind", "slot-ns"]
+  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "create-sender", "create-nonce", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract", "m712-dname", "m712-dversion", "m712-dchain", "m712-dcontract", "m712-from-name", "m712-from-wallet", "m712-to-name", "m712-to-wallet", "m712-contents", "slot-kind", "slot-ns", "abi-sig", "abi-args"]
     .every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=1") && html.includes("app.js?v=8"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=9"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -326,6 +326,58 @@ check("ERC-7201 rejects empty / whitespace-containing / non-string IDs",
   app.erc7201Slot("two words") === null && app.erc7201Slot("exa\tmple") === null &&
   app.erc7201Slot(null) === null && app.erc7201Slot(7) === null);
 check("storage slot tool section present in index.html", html.includes("slot-btn") && html.includes("ERC-7201"));
+
+/* ABI calldata encoder — verified byte-for-byte against all five worked
+   examples in the Solidity ABI specification (baz, bar, sam, f, g), whose
+   published encodings are the oracles below (words composed with W). */
+const W = h => h.padStart(64, "0");
+const baz = app.abiEncodeCall("baz(uint32,bool)", [69, true]);
+check("ABI spec example baz(uint32,bool) with (69, true), byte-for-byte",
+  baz !== null && baz.selector === "0xcdcd77c0" &&
+  baz.calldata === "0xcdcd77c0" + W("45") + W("1"));
+const bar = app.abiEncodeCall("bar(bytes3[2])", [["abc", "def"]]);
+check("ABI spec example bar(bytes3[2]) with ('abc', 'def'), byte-for-byte",
+  bar !== null && bar.calldata === "0xfce353f6" + "616263" + "0".repeat(58) + "646566" + "0".repeat(58));
+const sam = app.abiEncodeCall("sam(bytes,bool,uint[])", ["dave", true, [1, 2, 3]]);
+check("ABI spec example sam(bytes,bool,uint256[]) with ('dave', true, [1,2,3]), byte-for-byte",
+  sam !== null && sam.calldata === "0xa5643bf2" + W("60") + W("1") + W("a0") + W("4") + "64617665" + "0".repeat(56) + W("3") + W("1") + W("2") + W("3"));
+check("ABI bare uint canonicalises to uint256 in the signature (sam example)",
+  sam !== null && sam.canonical === "sam(bytes,bool,uint256[])");
+const fabi = app.abiEncodeCall("f(uint256,uint32[],bytes10,bytes)", ["0x123", ["0x456", "0x789"], "1234567890", "Hello, world!"]);
+check("ABI spec example f(uint256,uint32[],bytes10,bytes), byte-for-byte",
+  fabi !== null && fabi.calldata === "0x8be65246" + W("123") + W("80") + "31323334353637383930" + "0".repeat(44) + W("e0") + W("2") + W("456") + W("789") + W("d") + "48656c6c6f2c20776f726c6421" + "0".repeat(38));
+const gabi = app.abiEncodeCall("g(uint256[][],string[])", [[[1, 2], [3]], ["one", "two", "three"]]);
+check("ABI spec example g(uint256[][],string[]) nested dynamics, byte-for-byte",
+  gabi !== null && gabi.calldata === "0x2289b18c" + W("40") + W("140") + W("2") + W("40") + W("a0") + W("2") + W("1") + W("2") + W("1") + W("3") + W("3") + W("60") + W("a0") + W("e0") + W("3") + "6f6e65" + "0".repeat(58) + W("3") + "74776f" + "0".repeat(58) + W("5") + "7468726565" + "0".repeat(54));
+check("ABI ERC-20 transfer calldata (selector tool's canonical signature)",
+  app.abiEncodeCall("transfer(address,uint256)", [ETH, "1000000000000000000"]).calldata ===
+  "0xa9059cbb" + "0".repeat(24) + ETH.slice(2) + W("de0b6b3a7640000"));
+check("ABI bytes as 0x hex encodes identically to the same bytes as text",
+  app.abiEncodeCall("sam(bytes,bool,uint256[])", ["0x64617665", true, [1, 2, 3]]).calldata === sam.calldata);
+check("ABI negative int8 encodes as a sign-extended two's-complement word",
+  app.abiEncodeCall("n(int8)", ["-1"]).calldata.endsWith("f".repeat(64)));
+check("ABI whitespace in the signature is tolerated and canonicalised",
+  app.abiEncodeCall(" baz(uint32, bool) ", [69, true]).calldata === baz.calldata);
+check("ABI rejects out-of-range integers (uint32 overflow, int8 bounds, negative uint)",
+  app.abiEncodeCall("baz(uint32,bool)", ["4294967296", true]) === null &&
+  app.abiEncodeCall("n(int8)", ["128"]) === null &&
+  app.abiEncodeCall("n(int8)", ["-129"]) === null &&
+  app.abiEncodeCall("u(uint256)", ["-1"]) === null);
+check("ABI rejects an unsafe JSON number instead of rounding a uint256",
+  app.abiEncodeCall("u(uint256)", [9007199254740993]) === null);
+check("ABI rejects wrong arity / non-bool bool / bad address / wrong fixed-array length",
+  app.abiEncodeCall("baz(uint32,bool)", [69]) === null &&
+  app.abiEncodeCall("baz(uint32,bool)", [69, "true"]) === null &&
+  app.abiEncodeCall("t(address)", ["0x123"]) === null &&
+  app.abiEncodeCall("bar(bytes3[2])", [["abc"]]) === null &&
+  app.abiEncodeCall("bar(bytes3[2])", [["abcd", "def"]]) === null);
+check("ABI rejects unsupported types (tuples, fixed-point, bad bit sizes, bytes33)",
+  app.abiEncodeCall("h((uint256))", [[1]]) === null &&
+  app.abiEncodeCall("h(fixed128x18)", ["1"]) === null &&
+  app.abiEncodeCall("h(uint7)", [1]) === null &&
+  app.abiEncodeCall("h(bytes33)", ["0x"]) === null &&
+  app.abiEncodeCall("h(uint256)", "not-an-array") === null);
+check("ABI tool section present in index.html", html.includes("abi-btn") && html.includes("ABI calldata encoder"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

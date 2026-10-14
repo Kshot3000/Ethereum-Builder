@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ethereum Builder — build and fix code on Ethereum and its Layer 2s</title>
 <meta name="description" content="Ethereum Builder by @kshot9000: an independent builder hub for Ethereum L1 and its Layer 2s — Base, Unichain, and Robinhood Chain — with exact, browser-local developer tools.">
-<link rel="stylesheet" href="styles.css?v=1">
+<link rel="stylesheet" href="styles.css?v=2">
 </head>
 <body>
 <header class="hero">
@@ -231,6 +231,17 @@
       <button id="slot-btn" type="button">Calculate slots</button>
       <p id="slot-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>ABI calldata encoder</h3>
+      <p>Every contract call is one byte string: the 4-byte selector plus the arguments encoded by the <a href="https://docs.soliditylang.org/en/latest/abi-spec.html">Solidity ABI specification</a> — static values as 32-byte words in place, dynamic values (<code>bytes</code>, <code>string</code>, arrays) as a head offset pointing at length-prefixed tail data, recursively for nested arrays. This encoder covers <code>uint&lt;M&gt;</code>/<code>int&lt;M&gt;</code>, <code>address</code>, <code>bool</code>, <code>bytes&lt;M&gt;</code>/<code>bytes</code>, <code>string</code> and fixed/dynamic arrays of those, nested — the same encoding on Ethereum, Base, Unichain and Robinhood Chain. Tuple and fixed-point types are out of scope and rejected rather than guessed at. Arguments are a JSON array: integers as decimal or <code>0x</code> strings (a big <code>uint256</code> in quotes can never lose precision), <code>true</code>/<code>false</code> for bool, <code>0x</code> hex or plain text for bytes. The defaults are the ABI specification's own <code>baz</code> example, so you can reproduce its published calldata byte-for-byte. Encoded locally — nothing is sent and no transaction is made.</p>
+      <label for="abi-sig">Function signature</label>
+      <input id="abi-sig" type="text" spellcheck="false" value="baz(uint32,bool)">
+      <label for="abi-args">Arguments (JSON array)</label>
+      <textarea id="abi-args" rows="3" spellcheck="false">[69, true]</textarea>
+      <button id="abi-btn" type="button">Encode calldata</button>
+      <p id="abi-out" class="out" aria-live="polite"></p>
+    </div>
   </section>
 
   <section aria-labelledby="start-h">
@@ -245,6 +256,6 @@
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=8"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>

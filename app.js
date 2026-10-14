@@ -443,6 +443,235 @@ function erc7201Slot(id) {
   return bigIntToSlotHex(outer & ~0xffn);
 }
 
+/* ---------- ABI calldata encoder (Solidity ABI specification) ----------
+   Encodes a function call as selector ++ enc(arguments): static types are
+   encoded in place as 32-byte words; dynamic types (bytes, string, T[],
+   T[k] of dynamic T) put a byte offset in the head and their data in the
+   tail, recursively. Supported: uint<M>/int<M> (M a multiple of 8, plus
+   the bare uint/int aliases, canonicalised to 256), address, bool,
+   bytes<M>/bytes, string, and fixed/dynamic arrays of any supported type,
+   nested. Tuples and fixed-point types are rejected, not guessed at.
+   Argument values follow a strict JSON convention (see the page): integers
+   as decimal/0x strings (JSON numbers only when safe integers, so a uint256
+   can never lose precision silently), bool as JSON true/false, bytes as a
+   0x hex string or plain text (its UTF-8 bytes). Verified in the tests
+   against all five worked examples in the ABI specification itself. */
+function abiWord(value) {
+  let x = ((value % (1n << 256n)) + (1n << 256n)) % (1n << 256n);
+  const out = new Array(32);
+  for (let i = 31; i >= 0; i--) { out[i] = Number(x & 0xffn); x >>= 8n; }
+  return out;
+}
+function abiParseType(s) {
+  if (typeof s !== "string" || s === "") return null;
+  const suffixes = [];
+  let base = s;
+  while (base.endsWith("]")) {
+    const open = base.lastIndexOf("[");
+    if (open < 0) return null;
+    const inner = base.slice(open + 1, -1);
+    if (inner !== "" && !/^\d+$/.test(inner)) return null;
+    suffixes.unshift(inner === "" ? null : Number(inner));
+    base = base.slice(0, open);
+  }
+  let node, m;
+  if ((m = /^(uint|int)(\d*)$/.exec(base))) {
+    const bits = m[2] === "" ? 256 : Number(m[2]);
+    if (bits < 8 || bits > 256 || bits % 8 !== 0) return null;
+    node = { kind: m[1], bits };
+  } else if (base === "address") node = { kind: "address" };
+  else if (base === "bool") node = { kind: "bool" };
+  else if (base === "string") node = { kind: "string" };
+  else if ((m = /^bytes(\d*)$/.exec(base))) {
+    if (m[1] === "") node = { kind: "bytes" };
+    else {
+      const n = Number(m[1]);
+      if (n < 1 || n > 32) return null;
+      node = { kind: "bytesN", n };
+    }
+  } else return null;
+  /* suffixes were collected outermost-first and unshifted, so they now run
+     innermost-first — wrapping in that order rebuilds the type. */
+  for (const size of suffixes) {
+    if (size !== null && size < 1) return null;
+    node = { kind: "array", elem: node, len: size };
+  }
+  return node;
+}
+function abiCanonicalType(t) {
+  switch (t.kind) {
+    case "uint": return "uint" + t.bits;
+    case "int": return "int" + t.bits;
+    case "address": return "address";
+    case "bool": return "bool";
+    case "string": return "string";
+    case "bytes": return "bytes";
+    case "bytesN": return "bytes" + t.n;
+    case "array": return abiCanonicalType(t.elem) + "[" + (t.len === null ? "" : t.len) + "]";
+  }
+  return null;
+}
+function abiIsDynamic(t) {
+  if (t.kind === "bytes" || t.kind === "string") return true;
+  if (t.kind === "array") return t.len === null || abiIsDynamic(t.elem);
+  return false;
+}
+function abiStaticSize(t) {
+  if (t.kind === "array") return t.len * abiStaticSize(t.elem);
+  return 32;
+}
+function abiParseIntValue(v, signed) {
+  let x;
+  if (typeof v === "number") {
+    if (!Number.isSafeInteger(v)) return null;
+    x = BigInt(v);
+  } else if (typeof v === "string") {
+    const s = v.trim();
+    if (/^0[xX][0-9a-fA-F]+$/.test(s)) x = BigInt(s);
+    else if (/^-?\d+$/.test(s)) x = BigInt(s);
+    else return null;
+  } else return null;
+  if (!signed && x < 0n) return null;
+  return x;
+}
+function abiCoerceBytes(v, exactLen) {
+  if (typeof v !== "string") return null;
+  let bytes;
+  if (/^0[xX]/.test(v.trim())) {
+    bytes = parseHexBytes(v);
+    if (bytes === null) return null;
+  } else bytes = utf8Bytes(v);
+  if (exactLen !== undefined && bytes.length !== exactLen) return null;
+  return bytes;
+}
+function abiEncodeStatic(t, v) {
+  switch (t.kind) {
+    case "uint": {
+      const x = abiParseIntValue(v, false);
+      if (x === null || x >= (1n << BigInt(t.bits))) return null;
+      return abiWord(x);
+    }
+    case "int": {
+      const x = abiParseIntValue(v, true);
+      if (x === null) return null;
+      const b = BigInt(t.bits);
+      if (x < -(1n << (b - 1n)) || x >= (1n << (b - 1n))) return null;
+      return abiWord(x);
+    }
+    case "address": {
+      const b = parseHexBytes(v, 20);
+      if (b === null) return null;
+      return [...new Array(12).fill(0), ...b];
+    }
+    case "bool": {
+      if (v !== true && v !== false) return null;
+      return abiWord(v ? 1n : 0n);
+    }
+    case "bytesN": {
+      const b = abiCoerceBytes(v, t.n);
+      if (b === null) return null;
+      return [...b, ...new Array(32 - t.n).fill(0)];
+    }
+    case "array": {
+      if (!Array.isArray(v) || v.length !== t.len) return null;
+      const out = [];
+      for (const el of v) {
+        const e = abiEncodeStatic(t.elem, el);
+        if (e === null) return null;
+        out.push(...e);
+      }
+      return out;
+    }
+  }
+  return null;
+}
+function abiEncodeElements(elemType, values) {
+  if (!abiIsDynamic(elemType)) {
+    const out = [];
+    for (const el of values) {
+      const e = abiEncodeStatic(elemType, el);
+      if (e === null) return null;
+      out.push(...e);
+    }
+    return out;
+  }
+  const heads = [], tails = [];
+  let offset = 32 * values.length;
+  for (const el of values) {
+    const tail = abiEncodeDynamic(elemType, el);
+    if (tail === null) return null;
+    heads.push(...abiWord(BigInt(offset)));
+    tails.push(...tail);
+    offset += tail.length;
+  }
+  return [...heads, ...tails];
+}
+function abiEncodeDynamic(t, v) {
+  switch (t.kind) {
+    case "bytes": {
+      const b = abiCoerceBytes(v);
+      if (b === null) return null;
+      const pad = (32 - (b.length % 32)) % 32;
+      return [...abiWord(BigInt(b.length)), ...b, ...new Array(pad).fill(0)];
+    }
+    case "string": {
+      if (typeof v !== "string") return null;
+      const b = utf8Bytes(v);
+      const pad = (32 - (b.length % 32)) % 32;
+      return [...abiWord(BigInt(b.length)), ...b, ...new Array(pad).fill(0)];
+    }
+    case "array": {
+      if (!Array.isArray(v)) return null;
+      if (t.len === null) {
+        const body = abiEncodeElements(t.elem, v);
+        if (body === null) return null;
+        return [...abiWord(BigInt(v.length)), ...body];
+      }
+      if (v.length !== t.len) return null;
+      return abiEncodeElements(t.elem, v);
+    }
+  }
+  return null;
+}
+function abiEncodeTuple(types, values) {
+  if (!Array.isArray(values) || values.length !== types.length) return null;
+  const headSize = types.reduce((a, t) => a + (abiIsDynamic(t) ? 32 : abiStaticSize(t)), 0);
+  const heads = [], tails = [];
+  let offset = headSize;
+  for (let i = 0; i < types.length; i++) {
+    if (abiIsDynamic(types[i])) {
+      const tail = abiEncodeDynamic(types[i], values[i]);
+      if (tail === null) return null;
+      heads.push(...abiWord(BigInt(offset)));
+      tails.push(...tail);
+      offset += tail.length;
+    } else {
+      const h = abiEncodeStatic(types[i], values[i]);
+      if (h === null) return null;
+      heads.push(...h);
+    }
+  }
+  return [...heads, ...tails];
+}
+function abiEncodeCall(sig, values) {
+  if (typeof sig !== "string") return null;
+  const s = sig.trim().replace(/\s+/g, "");
+  const m = /^([A-Za-z_][A-Za-z0-9_]*)\((.*)\)$/.exec(s);
+  if (!m) return null;
+  const paramStrs = m[2] === "" ? [] : m[2].split(",");
+  const types = [];
+  for (const p of paramStrs) {
+    const t = abiParseType(p);
+    if (t === null) return null;
+    types.push(t);
+  }
+  const canonical = m[1] + "(" + types.map(abiCanonicalType).join(",") + ")";
+  const body = abiEncodeTuple(types, values);
+  if (body === null) return null;
+  const selector = "0x" + keccak256(canonical).slice(0, 8);
+  return { canonical, selector, calldata: selector + bytesToHex(body) };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -595,6 +824,21 @@ if (typeof document !== "undefined") {
       el.textContent = `ERC-1967 ${kind} slot: ${s1967} · ERC-7201 slot for "${ns.trim()}": ${s7201}. Both are Keccak-256 derivations computed locally — pass a slot to eth_getStorageAt in your own tooling to read a contract; this page reads no chain state.`;
     });
 
+    /* ABI calldata encoder */
+    const abiBtn = document.getElementById("abi-btn");
+    if (abiBtn) abiBtn.addEventListener("click", () => {
+      const el = document.getElementById("abi-out");
+      let values;
+      try { values = JSON.parse(document.getElementById("abi-args").value); }
+      catch (e) { values = undefined; }
+      const r = Array.isArray(values)
+        ? abiEncodeCall(document.getElementById("abi-sig").value, values)
+        : null;
+      el.textContent = r === null
+        ? "Check the inputs: a canonical signature over the supported types, and arguments as a JSON array matching it — integers as decimal or 0x strings, true/false for bool, 0x hex or plain text for bytes, arrays as JSON arrays."
+        : `Calldata for ${r.canonical} — selector ${r.selector}, ${(r.calldata.length - 2) / 2} bytes total: ${r.calldata}. Encoded locally per the Solidity ABI specification — this is data you could paste into your own tooling; nothing is sent anywhere and no transaction is made.`;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -612,5 +856,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiParseType, abiCanonicalType, UNIT_DECIMALS };
 }

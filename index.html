@@ -355,6 +355,24 @@ dave</textarea>
       <button id="v712-btn" type="button">Verify signature</button>
       <p id="v712-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Blob gas &amp; blob base fee calculator (EIP-4844 / EIP-7691)</h3>
+      <p>The blob transactions the decoder above reads are priced in a second gas market of their own. <a href="https://eips.ethereum.org/EIPS/eip-4844">EIP-4844</a> gives every block an <code>excess_blob_gas</code> header field — a running total of blob gas consumed above the block target — and sets the base fee per blob gas to <code>fake_exponential(1, excess_blob_gas, update_fraction)</code>, a Taylor-series approximation of <code>e<sup>excess / fraction</sup></code> with a 1-wei floor, so the fee rises about 12.5% for each consecutive full Cancun block and falls when blocks run below target. Give this calculator the parent block's excess and blob gas used and it applies the EIP's own update rule (<code>calc_excess_blob_gas</code>) and pricing formula, then totals the blob fee for a transaction carrying your blob count — each blob is 131,072 blob gas, and the blob fee is burned, separate from the execution gas fee. Two schedules are offered because the numbers changed once already: Cancun as EIP-4844 launched it (target 3 blobs, max 6, fraction 3,338,477) and Prague as <a href="https://eips.ethereum.org/EIPS/eip-7691">EIP-7691</a> raised it (target 6 blobs, max 9, fraction 5,007,716 — fuller blocks now move the fee about 8.2%). The defaults are a full Prague parent block (9 blobs), which lifts the excess by exactly the 3 above-target blobs' worth of blob gas while the fee still sits at its floor. Honest scope: this is the protocol's pricing rule applied to values you supply, not live network data — read a real block's <code>excess_blob_gas</code> from your own node or an explorer to price the current fee. Computed locally — nothing is sent and no chain is queried.</p>
+      <label for="blob-schedule">Blob schedule</label>
+      <select id="blob-schedule">
+        <option value="prague" selected>Prague — EIP-7691: target 6 blobs, max 9, fraction 5,007,716</option>
+        <option value="cancun">Cancun — EIP-4844: target 3 blobs, max 6, fraction 3,338,477</option>
+      </select>
+      <label for="blob-excess">Parent block excess blob gas</label>
+      <input id="blob-excess" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="blob-used">Parent block blob gas used</label>
+      <input id="blob-used" type="text" inputmode="numeric" spellcheck="false" value="1179648">
+      <label for="blob-count">Blobs in your transaction</label>
+      <input id="blob-count" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <button id="blob-btn" type="button">Calculate blob base fee</button>
+      <p id="blob-out" class="out" aria-live="polite"></p>
+    </div>
   </section>
 
   <section aria-labelledby="start-h">
@@ -369,6 +387,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=19"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>

@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=19"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=20"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -852,6 +852,52 @@ check("RLP encoder refuses malformed values",
   app.rlpEncodeInput(null) === null);
 check("RLP tool section present in index.html", html.includes("rlp-enc-btn") && html.includes("rlp-dec-btn") && html.includes("RLP encoder &amp; decoder"));
 check("RLP specification linked from index.html", html.includes("https://ethereum.org/en/developers/docs/data-structures-and-encoding/rlp/"));
+
+/* EIP-4844 blob gas & base fee — vectors from an independent pure-Python
+   transcription of the EIP-4844 pseudocode (fake_exponential,
+   calc_excess_blob_gas, calc_blob_fee) with EIP-7691's Prague parameters;
+   fake_exponential at 10x the update fraction reproduces floor(e^10) */
+check("blob controls labelled",
+  ["blob-schedule", "blob-excess", "blob-used", "blob-count"].every(id => html.includes(`for="${id}"`)));
+check("fake_exponential matches the specification's approximation",
+  app.fakeExponential(1n, 0n, 3338477n) === 1n &&
+  app.fakeExponential(1n, 3338477n, 3338477n) === 2n &&
+  app.fakeExponential(1n, 33384770n, 3338477n) === 22026n &&
+  app.fakeExponential(1n, 5007716n, 5007716n) === 2n &&
+  app.fakeExponential(1n, 50077160n, 5007716n) === 22026n);
+check("blob excess update follows calc_excess_blob_gas on both schedules",
+  app.blobFeeCalc("0", "0", "1", "cancun").excessBlobGas === "0" &&
+  app.blobFeeCalc("0", "393216", "1", "cancun").excessBlobGas === "0" &&
+  app.blobFeeCalc("100000", "100000", "1", "cancun").excessBlobGas === "0" &&
+  app.blobFeeCalc("0", "786432", "1", "cancun").excessBlobGas === "393216" &&
+  app.blobFeeCalc("0", "1179648", "1", "prague").excessBlobGas === "393216" &&
+  app.blobFeeCalc("5000000", "0", "1", "cancun").excessBlobGas === "4606784" &&
+  app.blobFeeCalc("5000000", "0", "1", "prague").excessBlobGas === "4213568");
+check("blob fee pipeline matches the Python oracle (base fee and totals)",
+  app.blobFeeCalc("0", "786432", "6", "cancun").totalFeeWei === "786432" &&
+  app.blobFeeCalc("0", "1179648", "2", "prague").totalFeeWei === "262144" &&
+  app.blobFeeCalc("0", "1179648", "2", "prague").totalFeeEth === "0.000000000000262144" &&
+  app.blobFeeCalc("20000000", "393216", "3", "cancun").baseFeeWei === "399" &&
+  app.blobFeeCalc("20000000", "393216", "3", "cancun").totalFeeWei === "156893184" &&
+  app.blobFeeCalc("20000000", "786432", "3", "prague").baseFeeWei === "54" &&
+  app.blobFeeCalc("20000000", "786432", "3", "prague").totalFeeWei === "21233664" &&
+  app.blobFeeCalc("20000000", "393216", "1", "cancun").baseFeeGwei === "0.000000399" &&
+  app.blobFeeCalc("0", "0", "1", "prague").baseFeeWei === "1");
+check("blob calculator refuses out-of-protocol and malformed inputs",
+  app.blobFeeCalc("-1", "0", "1", "cancun") === null &&
+  app.blobFeeCalc("1.5", "0", "1", "cancun") === null &&
+  app.blobFeeCalc("", "0", "1", "cancun") === null &&
+  app.blobFeeCalc(null, "0", "1", "cancun") === null &&
+  app.blobFeeCalc("0x10", "0", "1", "cancun") === null &&
+  app.blobFeeCalc("1000000000", "0", "1", "cancun") === null &&
+  app.blobFeeCalc("0", "786433", "1", "cancun") === null &&
+  app.blobFeeCalc("0", "1179649", "1", "prague") === null &&
+  app.blobFeeCalc("0", "0", "0", "cancun") === null &&
+  app.blobFeeCalc("0", "0", "2.5", "cancun") === null &&
+  app.blobFeeCalc("0", "0", "1", "osaka") === null &&
+  app.blobFeeCalc("0", "0", "1", null) === null);
+check("blob tool section present in index.html", html.includes("blob-btn") && html.includes("Blob gas &amp; blob base fee calculator"));
+check("EIP-7691 linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-7691"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

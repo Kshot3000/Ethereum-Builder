@@ -182,6 +182,70 @@ function gasEstimate(gasUnitsStr, baseFeeGweiStr, priorityFeeGweiStr) {
   };
 }
 
+/* ---------- EIP-4844 blob gas & base fee ----------
+   Blob gas is priced by its own EIP-1559-like rule: each block's header
+   carries excess_blob_gas, a running total of blob gas consumed above the
+   target, and the base fee per blob gas is
+   fake_exponential(MIN_BASE_FEE_PER_BLOB_GAS = 1, excess, update fraction)
+   — the Taylor-series approximation EIP-4844 specifies, computed here in
+   exact BigInt arithmetic exactly as the EIP's pseudocode writes it.
+   Cancun (EIP-4844): target 393,216 blob gas (3 blobs), max 786,432 (6),
+   fraction 3,338,477. Prague (EIP-7691): target 786,432 (6), max 1,179,648
+   (9), fraction 5,007,716. Inputs are capped at 9 digits: real excess
+   values sit far below that, and the cap keeps the Taylor loop's output
+   size bounded. A parent block cannot have used more than the schedule's
+   maximum blob gas, so that is refused rather than extrapolated. */
+const BLOB_GAS_PER_BLOB = 131072n;
+const BLOB_SCHEDULES = {
+  cancun: { targetBlobGas: 393216n, maxBlobGas: 786432n, updateFraction: 3338477n },
+  prague: { targetBlobGas: 786432n, maxBlobGas: 1179648n, updateFraction: 5007716n }
+};
+
+function fakeExponential(factor, numerator, denominator) {
+  let i = 1n;
+  let output = 0n;
+  let numeratorAccum = factor * denominator;
+  while (numeratorAccum > 0n) {
+    output += numeratorAccum;
+    numeratorAccum = (numeratorAccum * numerator) / (denominator * i);
+    i += 1n;
+  }
+  return output / denominator;
+}
+
+function parseBlobUint(str) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  if (!/^\d+$/.test(s) || s.length > 9) return null;
+  return BigInt(s);
+}
+
+function blobFeeCalc(parentExcessStr, parentUsedStr, blobCountStr, scheduleName) {
+  const sched = BLOB_SCHEDULES[scheduleName];
+  if (!sched) return null;
+  const parentExcess = parseBlobUint(parentExcessStr);
+  const parentUsed = parseBlobUint(parentUsedStr);
+  const blobCount = parseBlobUint(blobCountStr);
+  if (parentExcess === null || parentUsed === null || blobCount === null) return null;
+  if (parentUsed > sched.maxBlobGas) return null;
+  if (blobCount < 1n || blobCount > 10000n) return null;
+  const excessBlobGas = parentExcess + parentUsed < sched.targetBlobGas
+    ? 0n
+    : parentExcess + parentUsed - sched.targetBlobGas;
+  const baseFeePerBlobGas = fakeExponential(1n, excessBlobGas, sched.updateFraction);
+  const blobGas = BLOB_GAS_PER_BLOB * blobCount;
+  const totalFeeWei = blobGas * baseFeePerBlobGas;
+  return {
+    schedule: scheduleName,
+    excessBlobGas: excessBlobGas.toString(),
+    baseFeeWei: baseFeePerBlobGas.toString(),
+    baseFeeGwei: formatScaled(baseFeePerBlobGas, 9),
+    blobGas: blobGas.toString(),
+    totalFeeWei: totalFeeWei.toString(),
+    totalFeeEth: formatScaled(totalFeeWei, 18)
+  };
+}
+
 /* ---------- Function selector / event topic (Keccak-256) ----------
    A function selector is the first 4 bytes of Keccak-256 of the canonical
    signature, e.g. transfer(address,uint256) -> 0xa9059cbb. An event topic0
@@ -1844,9 +1908,27 @@ if (typeof document !== "undefined") {
         ? "Enter valid numbers: gas units (whole), base fee and priority fee in gwei (up to 9 decimals)."
         : `Effective gas price: ${r.effectiveGwei} gwei → expected cost ${r.expectedEth} ETH. Max fee per gas (2×base + priority): ${r.maxFeeGwei} gwei → max cost ${r.maxEth} ETH. Model only — not live network data.`;
     });
+
+    /* EIP-4844 blob gas & base fee */
+    const blobBtn = document.getElementById("blob-btn");
+    if (blobBtn) blobBtn.addEventListener("click", () => {
+      const r = blobFeeCalc(
+        document.getElementById("blob-excess").value,
+        document.getElementById("blob-used").value,
+        document.getElementById("blob-count").value,
+        document.getElementById("blob-schedule").value
+      );
+      const el = document.getElementById("blob-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: parent excess blob gas and parent blob gas used are whole numbers (parent excess up to 999,999,999; a parent block cannot have used more blob gas than the schedule's maximum — 786,432 for Cancun, 1,179,648 for Prague), and the blob count is a whole number of 1 or more.";
+        return;
+      }
+      const schedName = r.schedule === "prague" ? "Prague (EIP-7691)" : "Cancun (EIP-4844)";
+      el.textContent = `Under the ${schedName} schedule: excess blob gas for this block: ${r.excessBlobGas} · Base fee per blob gas: ${r.baseFeeWei} wei (${r.baseFeeGwei} gwei) · Blob gas for ${document.getElementById("blob-count").value.trim()} blob(s): ${r.blobGas} · Total blob fee at this base fee: ${r.totalFeeWei} wei (${r.totalFeeEth} ETH). Computed locally from the parent values you gave, with the EIPs' own formulas — this is the protocol's pricing rule, not live network data: read a real block's excess_blob_gas from your own node or explorer to price the current fee.`;
+    });
   });
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, UNIT_DECIMALS };
 }

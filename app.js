@@ -933,22 +933,28 @@ function merkleVerify(leafInput, proof, root) {
 
 /* ---------- Raw transaction decoder (RLP, strict) ----------
    Decodes a raw transaction — legacy (incl. EIP-155), EIP-2930
-   (type 1) and EIP-1559 (type 2) — from its RLP encoding, and
-   recomputes the two hashes a wallet/explorer derives from it:
-   the transaction hash (keccak256 of the raw bytes) and the
-   signing hash (keccak256 of the unsigned payload, with the
-   type byte prefixed for typed transactions). Decoding is
-   strict in the same spirit as the ABI decoder above: the RLP
-   itself must be canonical (no 0x81-prefixed single byte below
-   0x80, no long form for a payload of 55 bytes or less, no
-   leading zero in a length-of-length), integer fields must have
-   no leading zero byte, `to` must be empty (contract creation)
-   or 20 bytes, access-list keys must be 32 bytes, a legacy v
-   must be 27/28 or an EIP-155 value >= 35, a typed v (y-parity)
-   must be 0/1, and no trailing bytes are allowed. The signature
-   fields are decoded, NOT verified — no sender is recovered and
-   no chain is queried. Type 3 (blob) and later transaction
-   types are rejected rather than guessed at. */
+   (type 1), EIP-1559 (type 2) and EIP-7702 (type 4, set code) —
+   from its RLP encoding, and recomputes the two hashes a
+   wallet/explorer derives from it: the transaction hash
+   (keccak256 of the raw bytes) and the signing hash (keccak256
+   of the unsigned payload, with the type byte prefixed for
+   typed transactions). Decoding is strict in the same spirit
+   as the ABI decoder above: the RLP itself must be canonical
+   (no 0x81-prefixed single byte below 0x80, no long form for a
+   payload of 55 bytes or less, no leading zero in a
+   length-of-length), integer fields must have no leading zero
+   byte, `to` must be empty (contract creation) or 20 bytes,
+   access-list keys must be 32 bytes, a legacy v must be 27/28
+   or an EIP-155 value >= 35, a typed v (y-parity) must be 0/1,
+   and no trailing bytes are allowed. EIP-7702 adds its own
+   rules from the EIP: the destination may not be empty (a set
+   code transaction cannot create a contract), the
+   authorization list must be non-empty, and each authorization
+   tuple [chain_id, address, nonce, y_parity, r, s] must have a
+   20-byte address, a nonce below 2^64 and a y-parity below
+   2^8. The signature fields are decoded, NOT verified — no
+   sender is recovered and no chain is queried. Type 3 (blob)
+   transactions are rejected rather than guessed at. */
 function txHexToBytes(str) {
   if (typeof str !== "string") return null;
   let s = str.trim();
@@ -1041,6 +1047,23 @@ function txAccessList(item) {
     return { address: toChecksumAddress("0x" + bytesToHex(addr)), storageKeys: keys };
   });
 }
+function txAuthorizationList(item) {
+  if (item.list === undefined) throw new Error("authorizationList must be a list");
+  if (item.list.length === 0) throw new Error("authorizationList must not be empty");
+  return item.list.map(entry => {
+    if (entry.list === undefined || entry.list.length !== 6) throw new Error("bad authorization entry");
+    const chainId = txIntField(entry.list[0], "authorization chainId");
+    const addr = txBytesField(entry.list[1], "authorization address");
+    if (addr.length !== 20) throw new Error("authorization address must be 20 bytes");
+    const nonce = txIntField(entry.list[2], "authorization nonce");
+    if (nonce >= (1n << 64n)) throw new Error("authorization nonce too large");
+    const yParity = txIntField(entry.list[3], "authorization yParity");
+    if (yParity > 255n) throw new Error("authorization yParity too large");
+    const rB = txBytesField(entry.list[4], "authorization r"), sB = txBytesField(entry.list[5], "authorization s");
+    if (rB.length > 32 || sB.length > 32) throw new Error("authorization r/s too long");
+    return { chainId: chainId.toString(), address: toChecksumAddress("0x" + bytesToHex(addr)), nonce: nonce.toString(), yParity: Number(yParity), r: "0x" + bytesToHex(rB).padStart(64, "0"), s: "0x" + bytesToHex(sB).padStart(64, "0") };
+  });
+}
 function bigIntToMinBytes(v) {
   const out = [];
   let x = v;
@@ -1053,9 +1076,9 @@ function decodeRawTransaction(input) {
     if (raw === null || raw.length === 0) return null;
     const b0 = raw[0];
     let type, items, typeByte = null;
-    if (b0 === 0x01 || b0 === 0x02) {
+    if (b0 === 0x01 || b0 === 0x02 || b0 === 0x04) {
       typeByte = b0;
-      type = b0 === 0x01 ? "eip2930" : "eip1559";
+      type = b0 === 0x01 ? "eip2930" : b0 === 0x02 ? "eip1559" : "eip7702";
       const r = rlpDecodeItem(raw, 1);
       if (r.value.list === undefined || r.next !== raw.length) return null;
       items = r.value.list;
@@ -1065,7 +1088,7 @@ function decodeRawTransaction(input) {
       if (r.value.list === undefined || r.next !== raw.length) return null;
       items = r.value.list;
     } else return null;
-    const signedCounts = { legacy: [6, 9], eip2930: [8, 11], eip1559: [9, 12] }[type];
+    const signedCounts = { legacy: [6, 9], eip2930: [8, 11], eip1559: [9, 12], eip7702: [10, 13] }[type];
     if (!signedCounts.includes(items.length)) return null;
     const signed = items.length === signedCounts[1];
     const out = { type, signed, txHash: "0x" + keccak256Bytes(raw) };
@@ -1084,6 +1107,7 @@ function decodeRawTransaction(input) {
       out.value = txIntField(items[4], "value").toString();
       out.data = "0x" + bytesToHex(txBytesField(items[5], "data"));
       out.accessList = null;
+      out.authorizationList = null;
       unsignedItems = items.slice(0, 6);
       if (signed) {
         sig = readSig(items[6], items[7], items[8]);
@@ -1112,6 +1136,10 @@ function decodeRawTransaction(input) {
       out.value = txIntField(items[i + 2], "value").toString();
       out.data = "0x" + bytesToHex(txBytesField(items[i + 3], "data"));
       out.accessList = txAccessList(items[i + 4]);
+      if (type === "eip7702") {
+        if (out.to === null) return null;
+        out.authorizationList = txAuthorizationList(items[i + 5]);
+      } else out.authorizationList = null;
       unsignedItems = items.slice(0, signedCounts[0]);
       if (signed) {
         sig = readSig(items[signedCounts[0]], items[signedCounts[0] + 1], items[signedCounts[0] + 2]);
@@ -1241,6 +1269,30 @@ function verifyPersonalSignature(message, signature) {
   return { digest, signer };
 }
 
+/* ---------- EIP-7702 authorization digest ----------
+   Each authorization tuple in a set code transaction is signed
+   on its own, over a digest that is NOT the transaction's
+   signing hash: keccak256(0x05 ‖ rlp([chain_id, address,
+   nonce])) — the 0x05 MAGIC byte keeps an authorization from
+   ever being mistaken for a transaction (the same separation
+   trick as EIP-191's 0x19 prefix). Recovering that digest's
+   signer with the ecrecover math above gives the authority:
+   the account whose code the tuple delegates. A chain ID of 0
+   in the tuple means the authorization is valid on any chain.
+   Computes a digest only — nothing is signed. */
+function eip7702AuthorizationDigest(chainIdStr, address, nonceStr) {
+  if (typeof chainIdStr !== "string" || typeof nonceStr !== "string") return null;
+  if (!/^\d+$/.test(chainIdStr.trim()) || !/^\d+$/.test(nonceStr.trim())) return null;
+  const addrBytes = parseHexBytes(address, 20);
+  if (addrBytes === null) return null;
+  const payload = rlpEncodeItem({ list: [
+    { bytes: bigIntToMinBytes(BigInt(chainIdStr.trim())) },
+    { bytes: addrBytes },
+    { bytes: bigIntToMinBytes(BigInt(nonceStr.trim())) }
+  ] });
+  return "0x" + keccak256Bytes([0x05, ...payload]);
+}
+
 /* ---------- Transaction sender recovery ----------
    The decoder above deliberately stops at decoding, and the ecrecover
    tool above recovers a signer from a digest handed to it — this tool
@@ -1254,15 +1306,32 @@ function verifyPersonalSignature(message, signature) {
    transactions carry y-parity 0/1 directly. Unsigned transactions have
    no sender and are refused, and the ecrecover strictness carries over:
    r / s out of range, or the malleable high-s twin of a signature, is
-   refused rather than recovered. Recovers an address from a signed
-   transaction only — nothing is signed, no key is used or asked for,
-   and no chain is queried. */
+   refused rather than recovered. For an EIP-7702 set code
+   transaction it goes one step further, the way a client does:
+   each authorization tuple's authority is recovered from the
+   tuple's own digest (keccak256(0x05 ‖ rlp([chain_id, address,
+   nonce]))), and a tuple whose signature does not recover —
+   out-of-range values, a y-parity other than 0/1, or the
+   malleable high-s twin — is reported with a null authority
+   rather than a guessed account, exactly as a client skips that
+   tuple and processes the rest. Recovers addresses from a signed
+   transaction only — nothing is signed, no key is used or asked
+   for, and no chain is queried. */
 function recoverTransactionSender(input) {
   const d = decodeRawTransaction(input);
   if (d === null || !d.signed) return null;
   const sender = recoverAddress(d.signingHash, d.v, d.r, d.s);
   if (sender === null) return null;
-  return { sender, type: d.type, chainId: d.chainId, signingHash: d.signingHash, txHash: d.txHash };
+  let authorizations = null;
+  if (d.type === "eip7702") {
+    authorizations = d.authorizationList.map(a => {
+      const digest = eip7702AuthorizationDigest(a.chainId, a.address, a.nonce);
+      const authority = digest !== null && (a.yParity === 0 || a.yParity === 1)
+        ? recoverAddress(digest, String(a.yParity), a.r, a.s) : null;
+      return { authority, address: a.address, chainId: a.chainId, nonce: a.nonce };
+    });
+  }
+  return { sender, type: d.type, chainId: d.chainId, signingHash: d.signingHash, txHash: d.txHash, authorizations };
 }
 
 /* ---------- browser wiring ---------- */
@@ -1467,15 +1536,16 @@ if (typeof document !== "undefined") {
       const r = decodeRawTransaction(document.getElementById("txd-raw").value);
       const el = document.getElementById("txd-out");
       if (r === null) {
-        el.textContent = "That does not strictly decode as a legacy, EIP-2930 (type 1), or EIP-1559 (type 2) transaction — check the hex is complete and canonical RLP (no trailing bytes, no leading-zero integers or lengths, no long form for short payloads), the field count matches the type, `to` is empty or 20 bytes, and v is 27/28 or an EIP-155 value (legacy) or 0/1 (typed). Type 3 (blob) transactions are not decoded — the tool will not guess at them.";
+        el.textContent = "That does not strictly decode as a legacy, EIP-2930 (type 1), EIP-1559 (type 2), or EIP-7702 (type 4) transaction — check the hex is complete and canonical RLP (no trailing bytes, no leading-zero integers or lengths, no long form for short payloads), the field count matches the type, `to` is empty or 20 bytes, and v is 27/28 or an EIP-155 value (legacy) or 0/1 (typed). A type 4 transaction additionally needs a destination (no contract creation) and a non-empty authorization list with in-bounds tuples. Type 3 (blob) transactions are not decoded — the tool will not guess at them.";
         return;
       }
-      const typeName = { legacy: "legacy", eip2930: "EIP-2930 (type 1)", eip1559: "EIP-1559 (type 2)" }[r.type];
-      const fees = r.type === "eip1559"
+      const typeName = { legacy: "legacy", eip2930: "EIP-2930 (type 1)", eip1559: "EIP-1559 (type 2)", eip7702: "EIP-7702 (type 4)" }[r.type];
+      const fees = r.type === "eip1559" || r.type === "eip7702"
         ? `max priority fee ${r.maxPriorityFeePerGas} wei · max fee ${r.maxFeePerGas} wei`
         : `gas price ${r.gasPrice} wei`;
       let msg = `${typeName} transaction${r.signed ? " (signed)" : " (unsigned)"} · chain ID: ${r.chainId === null ? "none in the transaction (pre-EIP-155 legacy)" : r.chainId} · nonce ${r.nonce} · ${fees} · gas limit ${r.gasLimit} · to: ${r.to === null ? "contract creation (empty)" : r.to} · value ${r.value} wei · data ${r.data}`;
       if (r.accessList !== null) msg += ` · access list: ${r.accessList.length === 0 ? "empty" : JSON.stringify(r.accessList)}`;
+      if (r.authorizationList !== null) msg += ` · authorization list: ${JSON.stringify(r.authorizationList)}`;
       if (r.signed) msg += ` · v ${r.v} (y-parity ${r.yParity}) · r ${r.r} · s ${r.s}`;
       msg += ` · Signing hash: ${r.signingHash} · Transaction hash: ${r.txHash}. Decoded locally from the RLP alone — the signature is decoded, not verified, no sender is recovered, and no chain is queried. The same decoding applies on Ethereum, Base, Unichain and Robinhood Chain.`;
       el.textContent = msg;
@@ -1526,11 +1596,14 @@ if (typeof document !== "undefined") {
       const r = recoverTransactionSender(document.getElementById("txs-raw").value);
       const el = document.getElementById("txs-out");
       if (r === null) {
-        el.textContent = "That does not recover a sender — check the hex is a complete, canonical signed transaction (legacy, EIP-2930 type 1, or EIP-1559 type 2; unsigned transactions have no sender), with r and s in range and s in the lower half of the curve order (the canonical EIP-2 form). Type 3 (blob) transactions are not decoded — the tool will not guess at them.";
+        el.textContent = "That does not recover a sender — check the hex is a complete, canonical signed transaction (legacy, EIP-2930 type 1, EIP-1559 type 2, or EIP-7702 type 4; unsigned transactions have no sender), with r and s in range and s in the lower half of the curve order (the canonical EIP-2 form). Type 3 (blob) transactions are not decoded — the tool will not guess at them.";
         return;
       }
-      const typeName = { legacy: "legacy", eip2930: "EIP-2930 (type 1)", eip1559: "EIP-1559 (type 2)" }[r.type];
-      el.textContent = `Sender: ${r.sender} · ${typeName} transaction · chain ID: ${r.chainId === null ? "none in the transaction (pre-EIP-155 legacy)" : r.chainId} · Signing hash: ${r.signingHash} · Transaction hash: ${r.txHash}. Recovered locally from the transaction's own signature — no private key involved, nothing signed, and no chain queried. The same recovery applies on Ethereum, Base, Unichain and Robinhood Chain.`;
+      const typeName = { legacy: "legacy", eip2930: "EIP-2930 (type 1)", eip1559: "EIP-1559 (type 2)", eip7702: "EIP-7702 (type 4)" }[r.type];
+      let msg = `Sender: ${r.sender} · ${typeName} transaction · chain ID: ${r.chainId === null ? "none in the transaction (pre-EIP-155 legacy)" : r.chainId} · Signing hash: ${r.signingHash} · Transaction hash: ${r.txHash}.`;
+      if (r.authorizations !== null) msg += ` Authorizations: ${r.authorizations.map(a => a.authority === null ? `an unrecoverable signature (delegate ${a.address}, chain ID ${a.chainId}, nonce ${a.nonce}) — a client would skip this tuple` : `${a.authority} delegates to ${a.address} (authorization chain ID ${a.chainId}, nonce ${a.nonce})`).join(" · ")}.`;
+      msg += " Recovered locally from the transaction's own signatures — no private key involved, nothing signed, and no chain queried. The same recovery applies on Ethereum, Base, Unichain and Robinhood Chain.";
+      el.textContent = msg;
     });
 
     /* EIP-1559 estimator */
@@ -1550,5 +1623,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, recoverTransactionSender, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, recoverTransactionSender, eip7702AuthorizationDigest, UNIT_DECIMALS };
 }

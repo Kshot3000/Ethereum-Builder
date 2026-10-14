@@ -631,6 +631,139 @@ function uniswapV2Quote(mode, reserveInStr, reserveOutStr, amountStr) {
   };
 }
 
+/* ---------- Uniswap V3 tick ⇄ sqrtPriceX96 converter (TickMath) ----------
+   A Uniswap V3 pool's price is carried as sqrtPriceX96, the square
+   root of the token1/token0 price in Q64.96 fixed point, and its tick
+   is the price on a 1.0001 grid: sqrtPriceX96 = sqrt(1.0001^tick) ×
+   2^96. TickMath in v3-core computes both directions in exact integer
+   arithmetic; this is that math transcribed to BigInt:
+     tick → sqrt: a Q128.128 product over the tick's set bits of the
+       library's precomputed sqrt(1.0001^(2^i)) factors, inverted when
+       the tick is positive, then divided by 2^32 rounding UP — so the
+       result is the exact value or 1 above its floor, never below it;
+     sqrt → tick: a log2 of the ratio (the EVM's wrapping 256-bit
+       multiply is masked here), scaled by log base 2 of sqrt(1.0001),
+       bracketed by the library's two error bounds and resolved against
+       the forward direction — the greatest tick whose sqrt ratio is
+       at most the input.
+   Ticks are bounded by ±887272 (the ticks of prices 2^-128 and
+   2^128); a sqrt ratio must satisfy MIN_SQRT_RATIO ≤ s < MAX_SQRT_RATIO
+   — the maximum tick's own ratio is refused in the reverse direction,
+   exactly as the library requires, because a price can never reach it.
+   The raw price shown is the ratio itself, (sqrtPriceX96 / 2^96)^2,
+   rendered truncated to 12 significant digits (display rounding only —
+   tick and sqrtPriceX96 are exact). The raw price ignores token
+   decimals: a pool's human price additionally scales by
+   10^(decimals0 − decimals1), which needs the tokens' decimals — chain
+   state this page does not read. User-supplied values only: a real
+   pool's sqrtPriceX96 and tick are its slot0 chain query. */
+const V3_MIN_TICK = -887272;
+const V3_MAX_TICK = 887272;
+const V3_MIN_SQRT = 4295128739n;
+const V3_MAX_SQRT = 1461446703485210103287273052203988822378723970342n;
+const V3_TICK_FACTORS = [
+  [0x1n, 0xfffcb933bd6fad37aa2d162d1a594001n],
+  [0x2n, 0xfff97272373d413259a46990580e213an],
+  [0x4n, 0xfff2e50f5f656932ef12357cf3c7fdccn],
+  [0x8n, 0xffe5caca7e10e4e61c3624eaa0941cd0n],
+  [0x10n, 0xffcb9843d60f6159c9db58835c926644n],
+  [0x20n, 0xff973b41fa98c081472e6896dfb254c0n],
+  [0x40n, 0xff2ea16466c96a3843ec78b326b52861n],
+  [0x80n, 0xfe5dee046a99a2a811c461f1969c3053n],
+  [0x100n, 0xfcbe86c7900a88aedcffc83b479aa3a4n],
+  [0x200n, 0xf987a7253ac413176f2b074cf7815e54n],
+  [0x400n, 0xf3392b0822b70005940c7a398e4b70f3n],
+  [0x800n, 0xe7159475a2c29b7443b29c7fa6e889d9n],
+  [0x1000n, 0xd097f3bdfd2022b8845ad8f792aa5825n],
+  [0x2000n, 0xa9f746462d870fdf8a65dc1f90e061e5n],
+  [0x4000n, 0x70d869a156d2a1b890bb3df62baf32f7n],
+  [0x8000n, 0x31be135f97d08fd981231505542fcfa6n],
+  [0x10000n, 0x9aa508b5b7a84e1c677de54f3e99bc9n],
+  [0x20000n, 0x5d6af8dedb81196699c329225ee604n],
+  [0x40000n, 0x2216e584f5fa1ea926041bedfe98n],
+  [0x80000n, 0x48a170391f7dc42444e8fa2n]
+];
+function v3SqrtRatioAtTick(tick) {
+  const absTick = BigInt(tick < 0 ? -tick : tick);
+  let ratio = (absTick & 0x1n) !== 0n ? V3_TICK_FACTORS[0][1] : (1n << 128n);
+  for (let i = 1; i < V3_TICK_FACTORS.length; i++) {
+    if ((absTick & V3_TICK_FACTORS[i][0]) !== 0n) ratio = (ratio * V3_TICK_FACTORS[i][1]) >> 128n;
+  }
+  if (tick > 0) ratio = ((1n << 256n) - 1n) / ratio;
+  return (ratio >> 32n) + (ratio % (1n << 32n) === 0n ? 0n : 1n);
+}
+function v3TickAtSqrtRatio(sqrt) {
+  const ratio = sqrt << 32n;
+  let r = ratio;
+  let msb = 0n;
+  const steps = [
+    [7n, (1n << 128n) - 1n], [6n, (1n << 64n) - 1n], [5n, (1n << 32n) - 1n],
+    [4n, (1n << 16n) - 1n], [3n, (1n << 8n) - 1n], [2n, (1n << 4n) - 1n],
+    [1n, (1n << 2n) - 1n], [0n, 1n]
+  ];
+  for (const [shift, threshold] of steps) {
+    const f = r > threshold ? (1n << shift) : 0n;
+    msb |= f;
+    r >>= f;
+  }
+  r = msb >= 128n ? ratio >> (msb - 127n) : ratio << (127n - msb);
+  let log2 = (msb - 128n) << 64n;
+  const MASK256 = (1n << 256n) - 1n;
+  for (let i = 0; i < 14; i++) {
+    r = ((r * r) & MASK256) >> 127n;
+    const f = r >> 128n;
+    log2 |= f << BigInt(63 - i);
+    if (i < 13) r >>= f;
+  }
+  const logSqrt10001 = log2 * 255738958999603826347141n;
+  const tickLow = Number((logSqrt10001 - 3402992956809132418596140100660247210n) >> 128n);
+  const tickHi = Number((logSqrt10001 + 291339464771989622907027621153398088495n) >> 128n);
+  if (tickLow === tickHi) return tickLow;
+  return v3SqrtRatioAtTick(tickHi) <= sqrt ? tickHi : tickLow;
+}
+function v3PriceString(sqrt) {
+  const num = sqrt * sqrt;
+  const den = 1n << 192n;
+  let e;
+  if (num >= den) {
+    e = (num / den).toString().length - 1;
+  } else {
+    let k = 1;
+    while (num * (10n ** BigInt(k)) < den) k++;
+    e = -k;
+  }
+  const scaled = e - 11 >= 0
+    ? num / (den * (10n ** BigInt(e - 11)))
+    : (num * (10n ** BigInt(11 - e))) / den;
+  const digits = scaled.toString().padStart(12, "0");
+  if (digits.length !== 12) return null;
+  if (e >= -6 && e < 0) return "0." + "0".repeat(-e - 1) + digits;
+  if (e >= 0 && e <= 11) return digits.slice(0, e + 1) + "." + digits.slice(e + 1);
+  if (e >= 12 && e < 21) return digits + "0".repeat(e - 11);
+  return digits[0] + "." + digits.slice(1) + "e" + e;
+}
+function uniswapV3Tick(mode, valueStr) {
+  if (mode !== "tick" && mode !== "sqrt") return null;
+  if (typeof valueStr !== "string") return null;
+  const s = valueStr.trim();
+  let tick, sqrt;
+  if (mode === "tick") {
+    if (!/^-?\d+$/.test(s) || s.length > 7) return null;
+    tick = Number(BigInt(s));
+    if (tick < V3_MIN_TICK || tick > V3_MAX_TICK) return null;
+    sqrt = v3SqrtRatioAtTick(tick);
+  } else {
+    if (/^0[xX][0-9a-fA-F]+$/.test(s)) sqrt = BigInt(s);
+    else if (/^\d+$/.test(s) && s.length <= 49) sqrt = BigInt(s);
+    else return null;
+    if (sqrt < V3_MIN_SQRT || sqrt >= V3_MAX_SQRT) return null;
+    tick = v3TickAtSqrtRatio(sqrt);
+  }
+  const price = v3PriceString(sqrt);
+  if (price === null) return null;
+  return { tick: String(tick), sqrtPriceX96: sqrt.toString(), price };
+}
+
 /* ---------- CREATE address calculator ----------
    The original deployment opcode derives the contract address from the
    creator alone: address = last 20 bytes of keccak256(rlp([sender,
@@ -2035,6 +2168,19 @@ if (typeof document !== "undefined") {
         : `Swap quote: to receive exactly ${r.amountOut} base units out you must send ${r.amountIn} base units in (rounded up by 1, as the library rounds, so the pair's invariant check passes) · Price impact vs the pre-trade reserve ratio (includes the 0.3% fee): ${r.impactPercent}% · Reserves after this swap: ${r.newReserveIn} in / ${r.newReserveOut} out. Computed locally with UniswapV2Library's formula from the reserves you gave — not live pool data.`;
     });
 
+    /* Uniswap V3 tick ⇄ sqrtPriceX96 converter */
+    const v3tBtn = document.getElementById("v3t-btn");
+    if (v3tBtn) v3tBtn.addEventListener("click", () => {
+      const mode = document.getElementById("v3t-mode").value;
+      const r = uniswapV3Tick(mode, document.getElementById("v3t-value").value);
+      const el = document.getElementById("v3t-out");
+      if (r === null) {
+        el.textContent = "Check the input: a tick must be a whole number from −887272 to 887272; a sqrtPriceX96 must be a whole number (decimal or 0x hex) from 4295128739 up to but not including 1461446703485210103287273052203988822378723970342 — the maximum tick's own ratio is refused in the reverse direction, as TickMath requires, because a pool price can never reach it.";
+        return;
+      }
+      el.textContent = `Tick ${r.tick} · sqrtPriceX96 ${r.sqrtPriceX96} · raw price (token1 per token0) ${r.price}. Converted locally with TickMath's exact integer math from the value you gave — not live pool data: a real pool's tick and sqrtPriceX96 are its slot0. The raw price ignores token decimals; scale by 10^(decimals of token0 − decimals of token1) for a human price.`;
+    });
+
     /* CREATE calculator */
     const createBtn = document.getElementById("create-btn");
     if (createBtn) createBtn.addEventListener("click", () => {
@@ -2367,5 +2513,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV3Tick, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

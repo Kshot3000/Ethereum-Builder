@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=25"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=26"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1142,6 +1142,91 @@ check("v2q calculator refuses illiquid, impossible and malformed inputs",
   app.uniswapV2Quote("out", null, "1000000", "10000") === null);
 check("v2q tool section present in index.html", html.includes("v2q-btn") && html.includes("Uniswap V2 swap quote calculator"));
 check("UniswapV2Library linked from index.html", html.includes("https://github.com/Uniswap/v2-periphery/blob/master/contracts/libraries/UniswapV2Library.sol"));
+
+/* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
+   independent pure-Python transcription of TickMath (the Q128.128
+   factor product forward; the log2-based inverse with the EVM's
+   wrapping 256-bit multiply), cross-checked three ways in Python:
+   the published MIN/MAX_SQRT_RATIO anchors at ticks ∓887272, an
+   exact-integer isqrt evaluation of sqrt(1.0001^tick) × 2^96 (the
+   library result is that value's floor or floor + 1, as it rounds
+   up), and a round-trip over 361 sampled ticks (the maximum tick
+   excluded: its ratio is not a valid input to the inverse, which
+   requires sqrt < MAX_SQRT_RATIO). The price is (sqrt / 2^96)^2
+   truncated to 12 significant digits. */
+check("v3t controls labelled in index.html",
+  html.includes('for="v3t-mode"') && html.includes('for="v3t-value"'));
+check("v3t: tick → sqrtPriceX96 + price match the Python oracle",
+  (() => { const V = [
+    ["0", "79228162514264337593543950336", "1.00000000000"],
+    ["1", "79232123823359799118286999568", "1.00010000000"],
+    ["-1", "79224201403219477170569942574", "0.999900009999"],
+    ["60", "79466191966197645195421774833", "1.00601773426"],
+    ["-60", "78990846045029531151608375686", "0.994018262239"],
+    ["200", "80024378775772204256025656563", "1.02020031989"],
+    ["-200", "78439868342809377387252074393", "0.980199653440"],
+    ["1000", "83290069058676223003182343270", "1.10516539260"],
+    ["-1000", "75364347830767020784054125655", "0.904841941932"],
+    ["10000", "130621891405341611593710811006", "2.71814592682"],
+    ["-10000", "48055510970269007215549348797", "0.367897834377"],
+    ["100000", "11755562826496067164730007768450", "22015.4560485"],
+    ["-100000", "533968626430936354154228408", "0.0000454226338893"],
+    ["200000", "1744244129640337381386292603617838", "484680305.025"],
+    ["-200000", "3598751819609688046946419", "2.06321566944e-9"],
+    ["85176", "5602223755577321903022134995689", "4999.90478577"],
+    ["-85176", "1120466087977560823015148755", "0.000200003808641"],
+    ["887271", "1461373636630004318706518188784493106690254656249", "3.40222764559e38"],
+    ["-887272", "4295128739", "2.93895680877e-39"],
+    ["887272", "1461446703485210103287273052203988822378723970342", "3.40256786836e38"]
+  ]; return V.every(([t, s, p]) => { const r = app.uniswapV3Tick("tick", t);
+    return r !== null && r.tick === t && r.sqrtPriceX96 === s && r.price === p; }); })());
+check("v3t: sqrtPriceX96 → tick + price match the Python oracle",
+  (() => { const V = [
+    ["4295128739", "-887272", "2.93895680877e-39"],
+    ["4295128740", "-887272", "2.93895681014e-39"],
+    ["79228162514264337593543950336", "0", "1.00000000000"],
+    ["79228162514264337593543950335", "-1", "0.999999999999"],
+    ["79228162514264337593543950337", "0", "1.00000000000"],
+    ["123456789012345678901234567890", "8871", "2.42812358246"],
+    ["33954926791827573254375978715", "-16947", "0.183673469387"],
+    ["1461446703485210103287273052203988822378723970341", "887271", "3.40256786836e38"],
+    ["5602223755577321903022134995689", "85176", "4999.90478577"],
+    ["1120466087977560823015148755", "-85176", "0.000200003808641"],
+    ["1744244129640337381386292603617838", "200000", "484680305.025"]
+  ]; return V.every(([s, t, p]) => { const r = app.uniswapV3Tick("sqrt", s);
+    return r !== null && r.tick === t && r.sqrtPriceX96 === s && r.price === p; }); })());
+check("v3t: published MIN/MAX sqrt ratio constants are the boundary ticks' ratios",
+  String(app.V3_MIN_SQRT) === "4295128739" && String(app.V3_MAX_SQRT) === "1461446703485210103287273052203988822378723970342" &&
+  app.uniswapV3Tick("tick", "-887272").sqrtPriceX96 === String(app.V3_MIN_SQRT) &&
+  app.uniswapV3Tick("tick", "887272").sqrtPriceX96 === String(app.V3_MAX_SQRT));
+check("v3t: round trip tick → sqrt → tick is the identity (max tick excluded by the inverse's range)",
+  ["-887272", "-200000", "-85176", "-1000", "-1", "0", "1", "60", "1000", "10000", "85176", "200000", "887271"]
+    .every(t => app.uniswapV3Tick("sqrt", app.uniswapV3Tick("tick", t).sqrtPriceX96).tick === t));
+check("v3t: sqrt input accepts 0x hex and trims whitespace",
+  app.uniswapV3Tick("sqrt", "0x" + (1n << 96n).toString(16)).tick === "0" &&
+  app.uniswapV3Tick("sqrt", "0X" + (1n << 96n).toString(16).toUpperCase()).sqrtPriceX96 === "79228162514264337593543950336" &&
+  app.uniswapV3Tick("tick", " 1000 ").sqrtPriceX96 === "83290069058676223003182343270");
+check("v3t: prefilled page values reproduce tick 1000's oracle values",
+  (() => { const m = /id="v3t-value"[^>]*value="([^"]+)"/.exec(html);
+    const r = m && app.uniswapV3Tick("tick", m[1]);
+    return r !== null && r.sqrtPriceX96 === "83290069058676223003182343270" && r.price === "1.10516539260"; })());
+check("v3t converter refuses out-of-range and malformed inputs",
+  app.uniswapV3Tick("tick", "887273") === null &&
+  app.uniswapV3Tick("tick", "-887273") === null &&
+  app.uniswapV3Tick("tick", "1.5") === null &&
+  app.uniswapV3Tick("tick", "") === null &&
+  app.uniswapV3Tick("tick", "0x10") === null &&
+  app.uniswapV3Tick("sqrt", "4295128738") === null &&
+  app.uniswapV3Tick("sqrt", "1461446703485210103287273052203988822378723970342") === null &&
+  app.uniswapV3Tick("sqrt", "0") === null &&
+  app.uniswapV3Tick("sqrt", "-5") === null &&
+  app.uniswapV3Tick("sqrt", "1.5") === null &&
+  app.uniswapV3Tick("sqrt", "0xzz") === null &&
+  app.uniswapV3Tick("sqrt", "1".repeat(50)) === null &&
+  app.uniswapV3Tick("price", "1000") === null &&
+  app.uniswapV3Tick("tick", null) === null);
+check("v3t tool section present in index.html", html.includes("v3t-btn") && html.includes("Uniswap V3 tick"));
+check("TickMath linked from index.html", html.includes("https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -230,6 +230,23 @@
     </div>
 
     <div class="tool">
+      <h3>Intrinsic gas calculator (minimum gas limit)</h3>
+      <p>Before any EVM execution runs, a transaction must carry a gas limit at least its <em>intrinsic</em> cost — the gas-units figure the estimator above takes as given. This calculator derives it from the transaction's data and lists. The standard cost is 21,000 base, plus calldata at 4 gas per zero byte and 16 per non-zero byte (EIP-2028 pricing), plus an <a href="https://eips.ethereum.org/EIPS/eip-2930">EIP-2930</a> access list at 2,400 per address and 1,900 per storage key. A contract-creation transaction adds 32,000 plus <a href="https://eips.ethereum.org/EIPS/eip-3860">EIP-3860</a>'s initcode metering — 2 gas per 32-byte word of initcode, rounded up — and initcode over 49,152 bytes is invalid, so it is refused here. An <a href="https://eips.ethereum.org/EIPS/eip-7702">EIP-7702</a> set-code transaction adds 25,000 per authorization (and must have a destination, so authorizations cannot combine with creation). Since Prague, <a href="https://eips.ethereum.org/EIPS/eip-7623">EIP-7623</a> also sets a calldata floor: counting each zero byte as 1 token and each non-zero byte as 4, the gas limit must reach 21,000 + 10 per token — the minimum is whichever of the standard cost and that floor is larger, and the floor binds on data-heavy transactions like the prefilled <code>baz(uint32,bool)</code> call (standard 21,344, floor 21,860). Honest scope: this is a <em>minimum</em> gas limit, not a prediction of total gas used — execution costs more, and L2s add their own fees and may adjust these parameters. Computed locally from the values you give — not live network data.</p>
+      <label for="ig-data">Transaction data / initcode (hex)</label>
+      <textarea id="ig-data" rows="3" spellcheck="false">0xcdcd77c000000000000000000000000000000000000000000000000000000000000000450000000000000000000000000000000000000000000000000000000000000001</textarea>
+      <label for="ig-kind">Transaction kind</label>
+      <select id="ig-kind"><option value="call" selected>call — to an existing address</option><option value="create">create — contract creation (data is initcode)</option></select>
+      <label for="ig-addrs">Access-list addresses</label>
+      <input id="ig-addrs" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="ig-keys">Access-list storage keys</label>
+      <input id="ig-keys" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="ig-auths">EIP-7702 authorizations</label>
+      <input id="ig-auths" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <button id="ig-btn" type="button">Calculate minimum gas limit</button>
+      <p id="ig-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Proxy &amp; namespaced storage slot calculator (ERC-1967 / ERC-7201)</h3>
       <p>Upgradeable proxies keep their logic address in a standard ERC-1967 slot — <code>bytes32(uint256(keccak256(label)) − 1)</code> — and ERC-7201 namespaced storage roots a struct at <code>keccak256(abi.encode(uint256(keccak256(id)) − 1)) &amp; ~0xff</code>. Both derivations run locally here. This computes the slot constants only: to read a contract you pass a slot to <code>eth_getStorageAt</code> in your own tooling — this page reads no chain state.</p>
       <label for="slot-kind">ERC-1967 slot</label>
@@ -409,6 +426,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=22"></script>
+<script src="app.js?v=23"></script>
 </body>
 </html>

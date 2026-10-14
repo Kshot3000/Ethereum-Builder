@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=22"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=23"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -978,6 +978,55 @@ check("blob versioned hash refuses anything that is not exactly 48 bytes of hex"
   app.blobVersionedHash("0x" + "0".repeat(95)) === null &&
   app.blobVersionedHash(null) === null);
 check("vhash tool section present in index.html", html.includes("vhash-btn") && html.includes("Blob versioned hash calculator"));
+
+/* Intrinsic gas — verified against an independent pure-Python
+   transcription of the rules in EIP-2930 / EIP-2028 (standard cost),
+   EIP-3860 (initcode metering + limit), EIP-7702 (per-authorization
+   cost) and EIP-7623 (calldata floor: minimum is the larger of the
+   standard cost and 21000 + 10 * tokens, tokens = zero + 4*nonzero) */
+check("ig controls labelled",
+  ["ig-data", "ig-kind", "ig-addrs", "ig-keys", "ig-auths"].every(id => html.includes(`for="${id}"`)));
+check("ig: empty call is exactly the 21000 base",
+  app.intrinsicGas("0x", "call", "0", "0", "0").minimum === "21000" &&
+  app.intrinsicGas("0x", "call", "0", "0", "0").standard === "21000" &&
+  app.intrinsicGas("0x", "call", "0", "0", "0").floor === "21000" &&
+  app.intrinsicGas("0x", "call", "0", "0", "0").floorBinds === false);
+check("ig: prefilled baz calldata matches the Python oracle and the floor binds",
+  (() => { const m = /id="ig-data"[^>]*>([^<]+)</.exec(html); const r = m && app.intrinsicGas(m[1].trim(), "call", "0", "0", "0");
+    return r !== null && r.byteLength === "68" && r.zeroBytes === "62" && r.nonzeroBytes === "6" &&
+      r.tokens === "86" && r.dataCost === "344" && r.standard === "21344" && r.floor === "21860" &&
+      r.minimum === "21860" && r.floorBinds === true; })());
+check("ig: floor binds on data-heavy calldata, standard cost binds otherwise",
+  app.intrinsicGas("0x" + "ff".repeat(100), "call", "0", "0", "0").minimum === "25000" &&
+  app.intrinsicGas("0x" + "00".repeat(100), "call", "0", "0", "0").minimum === "22000" &&
+  app.intrinsicGas("0x" + "00".repeat(100), "call", "0", "0", "0").standard === "21400" &&
+  app.intrinsicGas("0xa9059cbb", "call", "1", "2", "2").minimum === "77264");
+check("ig: creation adds 32000 plus the per-word initcode cost",
+  app.intrinsicGas("0x" + "60".repeat(32), "create", "0", "0", "0").createCost === "32002" &&
+  app.intrinsicGas("0x" + "60".repeat(32), "create", "0", "0", "0").minimum === "53514" &&
+  app.intrinsicGas("0x" + "00".repeat(33), "create", "0", "0", "0").createCost === "32004" &&
+  app.intrinsicGas("0x" + "00".repeat(33), "create", "0", "0", "0").minimum === "53136" &&
+  app.intrinsicGas("0x" + "00".repeat(49152), "create", "0", "0", "0").minimum === "512520");
+check("ig: access list and authorization totals match the Python oracle",
+  app.intrinsicGas("0x", "call", "2", "3", "0").accessCost === "10500" &&
+  app.intrinsicGas("0x", "call", "2", "3", "0").minimum === "31500" &&
+  app.intrinsicGas("0x0001000203", "call", "1", "0", "1").minimum === "48456" &&
+  app.intrinsicGas("0x0001000203", "call", "1", "0", "1").authCost === "25000");
+check("ig calculator refuses invalid, out-of-protocol and malformed inputs",
+  app.intrinsicGas("", "call", "0", "0", "0") === null &&
+  app.intrinsicGas("0x0", "call", "0", "0", "0") === null &&
+  app.intrinsicGas("0xzz", "call", "0", "0", "0") === null &&
+  app.intrinsicGas("0x", "bogus", "0", "0", "0") === null &&
+  app.intrinsicGas("0x" + "00".repeat(49153), "create", "0", "0", "0") === null &&
+  app.intrinsicGas("0x", "create", "0", "0", "1") === null &&
+  app.intrinsicGas("0x", "call", "-1", "0", "0") === null &&
+  app.intrinsicGas("0x", "call", "0", "1.5", "0") === null &&
+  app.intrinsicGas("0x", "call", "1000001", "0", "0") === null &&
+  app.intrinsicGas(null, "call", "0", "0", "0") === null &&
+  app.intrinsicGas("0x", "call", null, "0", "0") === null);
+check("ig tool section present in index.html", html.includes("ig-btn") && html.includes("Intrinsic gas calculator"));
+check("EIP-7623 linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-7623"));
+check("EIP-3860 linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-3860"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

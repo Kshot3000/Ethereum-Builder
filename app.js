@@ -230,6 +230,79 @@ function nextBaseFee(parentBaseFeeGweiStr, parentGasUsedStr, parentGasLimitStr) 
   };
 }
 
+/* ---------- Intrinsic gas (minimum gas limit) ----------
+   Every transaction must carry a gas limit at least its intrinsic
+   cost before any EVM execution runs — the gas-units input the
+   estimator above takes as given. The standard cost (EIP-2930's
+   inherited formula, with EIP-2028 calldata pricing) is:
+     21000 base
+     + 4 per zero calldata byte, 16 per non-zero byte
+     + 2400 per access-list address, 1900 per storage key
+     + for a contract-creation transaction: 32000 plus the
+       EIP-3860 initcode word cost, 2 per 32-byte word of initcode
+       (rounded up); initcode over 49,152 bytes makes the
+       transaction invalid, so it is refused here
+     + for an EIP-7702 set-code transaction: 25000
+       (PER_EMPTY_ACCOUNT_COST) per authorization. A set-code
+       transaction must have a destination, so authorizations
+       combined with creation are refused.
+   Since Prague, EIP-7623 adds a calldata floor:
+   tokens = zero bytes + 4 * non-zero bytes, and a transaction is
+   invalid with a gas limit below 21000 + 10 * tokens. The minimum
+   gas limit is the larger of the standard intrinsic cost and
+   that floor — the floor binds on data-heavy transactions whose
+   execution is cheap. This is a minimum, not a prediction:
+   execution beyond the intrinsic cost needs more gas, and L2s
+   add their own fees and may adjust these parameters. Counts are
+   capped at 1,000,000 entries each as an input sanity bound. */
+function parseCount(str) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  if (!/^\d+$/.test(s) || s.length > 7) return null;
+  const n = Number(s);
+  return n <= 1000000 ? n : null;
+}
+
+function intrinsicGas(dataStr, kind, addrsStr, keysStr, authsStr) {
+  if (typeof dataStr !== "string" || dataStr.trim() === "") return null;
+  if (kind !== "call" && kind !== "create") return null;
+  const bytes = parseHexBytes(dataStr);
+  if (bytes === null) return null;
+  const addrs = parseCount(addrsStr);
+  const keys = parseCount(keysStr);
+  const auths = parseCount(authsStr);
+  if (addrs === null || keys === null || auths === null) return null;
+  const creation = kind === "create";
+  if (creation && bytes.length > 49152) return null;
+  if (creation && auths > 0) return null;
+  let zero = 0;
+  for (const b of bytes) if (b === 0) zero++;
+  const nonzero = bytes.length - zero;
+  const tokens = BigInt(zero) + 4n * BigInt(nonzero);
+  const dataCost = 4n * tokens;
+  const accessCost = 2400n * BigInt(addrs) + 1900n * BigInt(keys);
+  const createCost = creation
+    ? 32000n + 2n * BigInt(Math.ceil(bytes.length / 32)) : 0n;
+  const authCost = 25000n * BigInt(auths);
+  const standard = 21000n + dataCost + accessCost + createCost + authCost;
+  const floor = 21000n + 10n * tokens;
+  const minimum = standard > floor ? standard : floor;
+  return {
+    byteLength: String(bytes.length),
+    zeroBytes: String(zero),
+    nonzeroBytes: String(nonzero),
+    tokens: tokens.toString(),
+    dataCost: dataCost.toString(),
+    accessCost: accessCost.toString(),
+    createCost: createCost.toString(),
+    authCost: authCost.toString(),
+    standard: standard.toString(),
+    floor: floor.toString(),
+    minimum: minimum.toString(),
+    floorBinds: floor > standard
+  };
+}
+
 /* ---------- EIP-4844 blob gas & base fee ----------
    Blob gas is priced by its own EIP-1559-like rule: each block's header
    carries excess_blob_gas, a running total of blob gas consumed above the
@@ -2067,6 +2140,24 @@ if (typeof document !== "undefined") {
       el.textContent = `Under the ${schedName} schedule: excess blob gas for this block: ${r.excessBlobGas} · Base fee per blob gas: ${r.baseFeeWei} wei (${r.baseFeeGwei} gwei) · Blob gas for ${document.getElementById("blob-count").value.trim()} blob(s): ${r.blobGas} · Total blob fee at this base fee: ${r.totalFeeWei} wei (${r.totalFeeEth} ETH). Computed locally from the parent values you gave, with the EIPs' own formulas — this is the protocol's pricing rule, not live network data: read a real block's excess_blob_gas from your own node or explorer to price the current fee.`;
     });
 
+    /* Intrinsic gas (minimum gas limit) */
+    const igBtn = document.getElementById("ig-btn");
+    if (igBtn) igBtn.addEventListener("click", () => {
+      const r = intrinsicGas(
+        document.getElementById("ig-data").value,
+        document.getElementById("ig-kind").value,
+        document.getElementById("ig-addrs").value,
+        document.getElementById("ig-keys").value,
+        document.getElementById("ig-auths").value
+      );
+      const el = document.getElementById("ig-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the data must be hex (0x for none), the counts must be whole numbers of 0 or more (at most 1,000,000 each), a creation transaction's initcode may not exceed 49,152 bytes, and an EIP-7702 authorization count only applies to a call — a set-code transaction must have a destination, so it cannot also create a contract.";
+        return;
+      }
+      el.textContent = `Data: ${r.byteLength} byte(s) — ${r.zeroBytes} zero, ${r.nonzeroBytes} non-zero (${r.tokens} calldata token(s), costing ${r.dataCost} gas at the standard rate) · Access list: ${r.accessCost} gas · Creation: ${r.createCost} gas · Authorizations: ${r.authCost} gas · Standard intrinsic cost: ${r.standard} gas · EIP-7623 calldata floor: ${r.floor} gas · Minimum gas limit: ${r.minimum} gas${r.floorBinds ? " — the calldata floor binds, because this transaction is data-heavy relative to its other intrinsic costs" : ""}. This is the minimum before execution, not a prediction of total gas used: execution costs more, and L2s add their own fees. Computed locally from the values you gave — not live network data.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -2080,5 +2171,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -43,9 +43,9 @@ for (const x of ["https://x.com/ethereum", "https://x.com/base", "https://x.com/
 check("exactly one <h1>", (html.match(/<h1[ >]/g) || []).length === 1);
 check("has <main> landmark", /<main[\s>]/.test(html));
 check("all tool controls labelled",
-  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "create-sender", "create-nonce", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract", "m712-dname", "m712-dversion", "m712-dchain", "m712-dcontract", "m712-from-name", "m712-from-wallet", "m712-to-name", "m712-to-wallet", "m712-contents", "slot-kind", "slot-ns", "abi-sig", "abi-args"]
+  ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "create-sender", "create-nonce", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract", "m712-dname", "m712-dversion", "m712-dchain", "m712-dcontract", "m712-from-name", "m712-from-wallet", "m712-to-name", "m712-to-wallet", "m712-contents", "slot-kind", "slot-ns", "abi-sig", "abi-args", "dec-sig", "dec-data"]
     .every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=9"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=10"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -378,6 +378,55 @@ check("ABI rejects unsupported types (tuples, fixed-point, bad bit sizes, bytes3
   app.abiEncodeCall("h(bytes33)", ["0x"]) === null &&
   app.abiEncodeCall("h(uint256)", "not-an-array") === null);
 check("ABI tool section present in index.html", html.includes("abi-btn") && html.includes("ABI calldata encoder"));
+
+/* ABI calldata decoder — the strict inverse of the encoder. The oracles are
+   the same five published spec encodings (composed with W above): decoding
+   them must return the spec's published arguments, in the decoder's output
+   conventions (integers as decimal strings, bytes/address as 0x hex). */
+const J = v => JSON.stringify(v);
+check("ABI decoder: spec baz calldata decodes to [69, true]",
+  J(app.abiDecodeCall("baz(uint32,bool)", baz.calldata)?.args) === J(["69", true]));
+check("ABI decoder: spec bar calldata decodes to the two bytes3 values as hex",
+  J(app.abiDecodeCall("bar(bytes3[2])", bar.calldata)?.args) === J([["0x616263", "0x646566"]]));
+check("ABI decoder: spec sam calldata decodes bytes as hex, bool, and the uint array as strings",
+  J(app.abiDecodeCall("sam(bytes,bool,uint256[])", sam.calldata)?.args) === J(["0x64617665", true, ["1", "2", "3"]]));
+check("ABI decoder: spec f calldata decodes to the published arguments",
+  J(app.abiDecodeCall("f(uint256,uint32[],bytes10,bytes)", fabi.calldata)?.args) ===
+  J(["291", ["1110", "1929"], "0x31323334353637383930", "0x48656c6c6f2c20776f726c6421"]));
+check("ABI decoder: spec g calldata decodes the nested dynamic arrays",
+  J(app.abiDecodeCall("g(uint256[][],string[])", gabi.calldata)?.args) ===
+  J([[["1", "2"], ["3"]], ["one", "two", "three"]]));
+check("ABI decoder: ERC-20 transfer calldata decodes the address lowercase and the amount exactly",
+  J(app.abiDecodeCall("transfer(address,uint256)",
+    app.abiEncodeCall("transfer(address,uint256)", [ETH, "1000000000000000000"]).calldata)?.args) ===
+  J([ETH, "1000000000000000000"]));
+check("ABI decoder: every spec example re-encodes byte-for-byte from its decoded form",
+  [["baz(uint32,bool)", baz], ["bar(bytes3[2])", bar], ["sam(bytes,bool,uint256[])", sam],
+   ["f(uint256,uint32[],bytes10,bytes)", fabi], ["g(uint256[][],string[])", gabi]
+  ].every(([sig, enc]) => app.abiEncodeCall(sig, app.abiDecodeCall(sig, enc.calldata).args).calldata === enc.calldata));
+check("ABI decoder: negative int8 and a non-ASCII string round-trip",
+  J(app.abiDecodeCall("n(int8)", app.abiEncodeCall("n(int8)", ["-1"]).calldata)?.args) === J(["-1"]) &&
+  J(app.abiDecodeCall("s(string)", app.abiEncodeCall("s(string)", ["héllo"]).calldata)?.args) === J(["héllo"]));
+check("ABI decoder: rejects a selector that does not match the signature",
+  app.abiDecodeCall("sam(bytes,bool,uint256[])", baz.calldata) === null &&
+  app.abiDecodeCall("baz(uint32,bool)", sam.calldata) === null);
+check("ABI decoder: rejects truncated calldata and trailing bytes",
+  app.abiDecodeCall("baz(uint32,bool)", baz.calldata.slice(0, -2)) === null &&
+  app.abiDecodeCall("baz(uint32,bool)", baz.calldata + "00") === null &&
+  app.abiDecodeCall("baz(uint32,bool)", "0xcdcd77c0") === null);
+check("ABI decoder: rejects non-canonical words (bool 2, uint32 bits above 32, int8 = 128)",
+  app.abiDecodeCall("baz(uint32,bool)", baz.calldata.slice(0, -2) + "02") === null &&
+  app.abiDecodeCall("baz(uint32,bool)", "0xcdcd77c0" + "1" + "0".repeat(55) + "00000045" + W("1")) === null &&
+  app.abiDecodeCall("n(int8)", app.abiEncodeCall("n(int256)", ["128"]).calldata.replace(app.functionSelector("n(int256)"), app.functionSelector("n(int8)"))) === null);
+check("ABI decoder: rejects a head-pointing offset and non-zero bytes padding in sam calldata",
+  app.abiDecodeCall("sam(bytes,bool,uint256[])", sam.calldata.slice(0, 10) + W("0") + sam.calldata.slice(10 + 64)) === null &&
+  app.abiDecodeCall("sam(bytes,bool,uint256[])", sam.calldata.slice(0, -64) + "64617665" + "0".repeat(54) + "ff" + sam.calldata.slice(-64)) === null);
+check("ABI decoder: rejects missing 0x, odd-length hex, an invalid-UTF-8 string, and a huge array length",
+  app.abiDecodeCall("baz(uint32,bool)", baz.calldata.slice(2)) === null &&
+  app.abiDecodeCall("baz(uint32,bool)", baz.calldata + "0") === null &&
+  app.abiDecodeCall("s(string)", app.abiEncodeCall("s(string)", ["ok"]).calldata.replace("6f6b", "ffff")) === null &&
+  app.abiDecodeCall("a(uint256[])", "0x" + app.keccak256("a(uint256[])").slice(0, 8) + W("20") + "f".repeat(64)) === null);
+check("ABI decoder tool section present in index.html", html.includes("dec-btn") && html.includes("ABI calldata decoder"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

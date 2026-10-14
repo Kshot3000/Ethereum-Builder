@@ -242,6 +242,17 @@
       <button id="abi-btn" type="button">Encode calldata</button>
       <p id="abi-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>ABI calldata decoder</h3>
+      <p>The encoder above, run backwards — paste calldata you meet in a block explorer or a failing transaction, give the function signature you believe it is for, and read the arguments back. Decoding here is <em>strict</em>: the 4-byte selector must match the signature, and non-canonical encodings are rejected rather than silently tolerated — a <code>uint32</code> word with bits set above bit 31, a bool other than 0 or 1, an address with non-zero leading bytes, non-zero padding, an offset pointing into the head or past the end, a string that is not valid UTF-8, truncated data, or trailing bytes after the last argument. Decoded values come out in exactly the JSON form the encoder accepts (integers as decimal strings, addresses and <code>bytes</code> as <code>0x</code> hex), so a decode re-encodes byte-for-byte. Same type scope as the encoder; tuple and fixed-point signatures are rejected. The defaults are the ABI specification's <code>baz</code> calldata, decoding back to <code>[69, true]</code>. Decoded locally — nothing is sent and no chain is queried.</p>
+      <label for="dec-sig">Function signature</label>
+      <input id="dec-sig" type="text" spellcheck="false" value="baz(uint32,bool)">
+      <label for="dec-data">Calldata (0x hex)</label>
+      <textarea id="dec-data" rows="3" spellcheck="false">0xcdcd77c000000000000000000000000000000000000000000000000000000000000000450000000000000000000000000000000000000000000000000000000000000001</textarea>
+      <button id="dec-btn" type="button">Decode calldata</button>
+      <p id="dec-out" class="out" aria-live="polite"></p>
+    </div>
   </section>
 
   <section aria-labelledby="start-h">
@@ -256,6 +267,6 @@
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=9"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>

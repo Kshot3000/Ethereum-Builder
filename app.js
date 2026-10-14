@@ -931,6 +931,199 @@ function merkleVerify(leafInput, proof, root) {
   return bytesToHex(node) === bytesToHex(rootBytes);
 }
 
+/* ---------- Raw transaction decoder (RLP, strict) ----------
+   Decodes a raw transaction — legacy (incl. EIP-155), EIP-2930
+   (type 1) and EIP-1559 (type 2) — from its RLP encoding, and
+   recomputes the two hashes a wallet/explorer derives from it:
+   the transaction hash (keccak256 of the raw bytes) and the
+   signing hash (keccak256 of the unsigned payload, with the
+   type byte prefixed for typed transactions). Decoding is
+   strict in the same spirit as the ABI decoder above: the RLP
+   itself must be canonical (no 0x81-prefixed single byte below
+   0x80, no long form for a payload of 55 bytes or less, no
+   leading zero in a length-of-length), integer fields must have
+   no leading zero byte, `to` must be empty (contract creation)
+   or 20 bytes, access-list keys must be 32 bytes, a legacy v
+   must be 27/28 or an EIP-155 value >= 35, a typed v (y-parity)
+   must be 0/1, and no trailing bytes are allowed. The signature
+   fields are decoded, NOT verified — no sender is recovered and
+   no chain is queried. Type 3 (blob) and later transaction
+   types are rejected rather than guessed at. */
+function txHexToBytes(str) {
+  if (typeof str !== "string") return null;
+  let s = str.trim();
+  if (s.startsWith("0x") || s.startsWith("0X")) s = s.slice(2);
+  if (s.length === 0 || s.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(s)) return null;
+  const out = [];
+  for (let i = 0; i < s.length; i += 2) out.push(parseInt(s.slice(i, i + 2), 16));
+  return out;
+}
+function rlpDecodeItem(bytes, pos) {
+  if (pos >= bytes.length) throw new Error("truncated");
+  const b = bytes[pos];
+  const readLen = (ll, at) => {
+    if (at + ll > bytes.length) throw new Error("truncated length");
+    if (bytes[at] === 0) throw new Error("length has leading zero");
+    let len = 0;
+    for (let i = 0; i < ll; i++) { len = len * 256 + bytes[at + i]; if (len > bytes.length) throw new Error("length too large"); }
+    if (len <= 55) throw new Error("long form used for short payload");
+    return len;
+  };
+  const decodeListPayload = (start, end) => {
+    const items = [];
+    let p = start;
+    while (p < end) { const r = rlpDecodeItem(bytes, p); items.push(r.value); p = r.next; }
+    if (p !== end) throw new Error("list payload overrun");
+    return items;
+  };
+  if (b < 0x80) return { value: { bytes: [b] }, next: pos + 1 };
+  if (b <= 0xb7) {
+    const len = b - 0x80, start = pos + 1;
+    if (start + len > bytes.length) throw new Error("truncated string");
+    if (len === 1 && bytes[start] < 0x80) throw new Error("non-canonical single byte");
+    return { value: { bytes: bytes.slice(start, start + len) }, next: start + len };
+  }
+  if (b <= 0xbf) {
+    const ll = b - 0xb7, len = readLen(ll, pos + 1), start = pos + 1 + ll;
+    if (start + len > bytes.length) throw new Error("truncated string");
+    return { value: { bytes: bytes.slice(start, start + len) }, next: start + len };
+  }
+  if (b <= 0xf7) {
+    const len = b - 0xc0, start = pos + 1;
+    if (start + len > bytes.length) throw new Error("truncated list");
+    return { value: { list: decodeListPayload(start, start + len) }, next: start + len };
+  }
+  const ll = b - 0xf7, len = readLen(ll, pos + 1), start = pos + 1 + ll;
+  if (start + len > bytes.length) throw new Error("truncated list");
+  return { value: { list: decodeListPayload(start, start + len) }, next: start + len };
+}
+function rlpEncodeItem(item) {
+  if (item.bytes !== undefined) return rlpEncodeBytes(item.bytes);
+  const payload = [];
+  for (const child of item.list) payload.push(...rlpEncodeItem(child));
+  if (payload.length <= 55) return [0xc0 + payload.length, ...payload];
+  const lenBytes = [];
+  let len = payload.length;
+  while (len > 0) { lenBytes.unshift(len & 0xff); len >>= 8; }
+  return [0xf7 + lenBytes.length, ...lenBytes, ...payload];
+}
+function txIntField(item, name) {
+  if (item.bytes === undefined) throw new Error(name + " must be a string");
+  const bs = item.bytes;
+  if (bs.length > 32) throw new Error(name + " too long");
+  if (bs.length > 0 && bs[0] === 0) throw new Error(name + " has leading zero");
+  let v = 0n;
+  for (const x of bs) v = (v << 8n) + BigInt(x);
+  return v;
+}
+function txBytesField(item, name) {
+  if (item.bytes === undefined) throw new Error(name + " must be a string");
+  return item.bytes;
+}
+function txToField(item) {
+  const bs = txBytesField(item, "to");
+  if (bs.length === 0) return null;
+  if (bs.length !== 20) throw new Error("to must be 0 or 20 bytes");
+  return toChecksumAddress("0x" + bytesToHex(bs));
+}
+function txAccessList(item) {
+  if (item.list === undefined) throw new Error("accessList must be a list");
+  return item.list.map(entry => {
+    if (entry.list === undefined || entry.list.length !== 2) throw new Error("bad access list entry");
+    const addr = txBytesField(entry.list[0], "access address");
+    if (addr.length !== 20) throw new Error("access address must be 20 bytes");
+    if (entry.list[1].list === undefined) throw new Error("storage keys must be a list");
+    const keys = entry.list[1].list.map(k => {
+      const kb = txBytesField(k, "storage key");
+      if (kb.length !== 32) throw new Error("storage key must be 32 bytes");
+      return "0x" + bytesToHex(kb);
+    });
+    return { address: toChecksumAddress("0x" + bytesToHex(addr)), storageKeys: keys };
+  });
+}
+function bigIntToMinBytes(v) {
+  const out = [];
+  let x = v;
+  while (x > 0n) { out.unshift(Number(x & 0xffn)); x >>= 8n; }
+  return out;
+}
+function decodeRawTransaction(input) {
+  try {
+    const raw = txHexToBytes(input);
+    if (raw === null || raw.length === 0) return null;
+    const b0 = raw[0];
+    let type, items, typeByte = null;
+    if (b0 === 0x01 || b0 === 0x02) {
+      typeByte = b0;
+      type = b0 === 0x01 ? "eip2930" : "eip1559";
+      const r = rlpDecodeItem(raw, 1);
+      if (r.value.list === undefined || r.next !== raw.length) return null;
+      items = r.value.list;
+    } else if (b0 >= 0xc0) {
+      type = "legacy";
+      const r = rlpDecodeItem(raw, 0);
+      if (r.value.list === undefined || r.next !== raw.length) return null;
+      items = r.value.list;
+    } else return null;
+    const signedCounts = { legacy: [6, 9], eip2930: [8, 11], eip1559: [9, 12] }[type];
+    if (!signedCounts.includes(items.length)) return null;
+    const signed = items.length === signedCounts[1];
+    const out = { type, signed, txHash: "0x" + keccak256Bytes(raw) };
+    let unsignedItems, sig = null;
+    const readSig = (vItem, rItem, sItem) => {
+      const v = txIntField(vItem, "v");
+      const rB = txBytesField(rItem, "r"), sB = txBytesField(sItem, "s");
+      if (rB.length > 32 || sB.length > 32) throw new Error("r/s too long");
+      return { v, r: "0x" + bytesToHex(rB).padStart(64, "0"), s: "0x" + bytesToHex(sB).padStart(64, "0") };
+    };
+    if (type === "legacy") {
+      out.nonce = txIntField(items[0], "nonce").toString();
+      out.gasPrice = txIntField(items[1], "gasPrice").toString();
+      out.gasLimit = txIntField(items[2], "gasLimit").toString();
+      out.to = txToField(items[3]);
+      out.value = txIntField(items[4], "value").toString();
+      out.data = "0x" + bytesToHex(txBytesField(items[5], "data"));
+      out.accessList = null;
+      unsignedItems = items.slice(0, 6);
+      if (signed) {
+        sig = readSig(items[6], items[7], items[8]);
+        if (sig.v === 27n || sig.v === 28n) {
+          out.chainId = null; out.yParity = Number(sig.v - 27n);
+        } else if (sig.v >= 35n) {
+          const cid = (sig.v - 35n) / 2n;
+          out.chainId = cid.toString(); out.yParity = Number((sig.v - 35n) % 2n);
+          unsignedItems = [...unsignedItems,
+            { bytes: bigIntToMinBytes(cid) }, { bytes: [] }, { bytes: [] }];
+        } else return null;
+        out.v = sig.v.toString(); out.r = sig.r; out.s = sig.s;
+      } else out.chainId = null;
+      out.signingHash = "0x" + keccak256Bytes(rlpEncodeItem({ list: unsignedItems }));
+    } else {
+      out.chainId = txIntField(items[0], "chainId").toString();
+      out.nonce = txIntField(items[1], "nonce").toString();
+      let i;
+      if (type === "eip2930") { out.gasPrice = txIntField(items[2], "gasPrice").toString(); i = 3; }
+      else {
+        out.maxPriorityFeePerGas = txIntField(items[2], "maxPriorityFeePerGas").toString();
+        out.maxFeePerGas = txIntField(items[3], "maxFeePerGas").toString(); i = 4;
+      }
+      out.gasLimit = txIntField(items[i], "gasLimit").toString();
+      out.to = txToField(items[i + 1]);
+      out.value = txIntField(items[i + 2], "value").toString();
+      out.data = "0x" + bytesToHex(txBytesField(items[i + 3], "data"));
+      out.accessList = txAccessList(items[i + 4]);
+      unsignedItems = items.slice(0, signedCounts[0]);
+      if (signed) {
+        sig = readSig(items[signedCounts[0]], items[signedCounts[0] + 1], items[signedCounts[0] + 2]);
+        if (sig.v !== 0n && sig.v !== 1n) return null;
+        out.yParity = Number(sig.v); out.v = sig.v.toString(); out.r = sig.r; out.s = sig.s;
+      }
+      out.signingHash = "0x" + keccak256Bytes([typeByte, ...rlpEncodeItem({ list: unsignedItems })]);
+    }
+    return out;
+  } catch (e) { return null; }
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -1127,6 +1320,26 @@ if (typeof document !== "undefined") {
       el.textContent = `Merkle root (over ${leaves.length} leaves): ${r.root} · Leaf #${idxStr} hash: ${r.leaf} · Proof (${r.proof.length} sibling${r.proof.length === 1 ? "" : "s"}, bottom-up): ${JSON.stringify(r.proof)} · Self-check: ${ok ? "the proof folds back to the root ✓" : "FAILED — this is a bug; the proof should always verify"}. Computed locally — nothing is sent anywhere.`;
     });
 
+    /* Raw transaction decoder */
+    const txdBtn = document.getElementById("txd-btn");
+    if (txdBtn) txdBtn.addEventListener("click", () => {
+      const r = decodeRawTransaction(document.getElementById("txd-raw").value);
+      const el = document.getElementById("txd-out");
+      if (r === null) {
+        el.textContent = "That does not strictly decode as a legacy, EIP-2930 (type 1), or EIP-1559 (type 2) transaction — check the hex is complete and canonical RLP (no trailing bytes, no leading-zero integers or lengths, no long form for short payloads), the field count matches the type, `to` is empty or 20 bytes, and v is 27/28 or an EIP-155 value (legacy) or 0/1 (typed). Type 3 (blob) transactions are not decoded — the tool will not guess at them.";
+        return;
+      }
+      const typeName = { legacy: "legacy", eip2930: "EIP-2930 (type 1)", eip1559: "EIP-1559 (type 2)" }[r.type];
+      const fees = r.type === "eip1559"
+        ? `max priority fee ${r.maxPriorityFeePerGas} wei · max fee ${r.maxFeePerGas} wei`
+        : `gas price ${r.gasPrice} wei`;
+      let msg = `${typeName} transaction${r.signed ? " (signed)" : " (unsigned)"} · chain ID: ${r.chainId === null ? "none in the transaction (pre-EIP-155 legacy)" : r.chainId} · nonce ${r.nonce} · ${fees} · gas limit ${r.gasLimit} · to: ${r.to === null ? "contract creation (empty)" : r.to} · value ${r.value} wei · data ${r.data}`;
+      if (r.accessList !== null) msg += ` · access list: ${r.accessList.length === 0 ? "empty" : JSON.stringify(r.accessList)}`;
+      if (r.signed) msg += ` · v ${r.v} (y-parity ${r.yParity}) · r ${r.r} · s ${r.s}`;
+      msg += ` · Signing hash: ${r.signingHash} · Transaction hash: ${r.txHash}. Decoded locally from the RLP alone — the signature is decoded, not verified, no sender is recovered, and no chain is queried. The same decoding applies on Ethereum, Base, Unichain and Robinhood Chain.`;
+      el.textContent = msg;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -1144,5 +1357,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, UNIT_DECIMALS };
 }

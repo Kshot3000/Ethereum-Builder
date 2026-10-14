@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=11"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=12"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -503,6 +503,73 @@ check("Merkle rejects empty lists, blank leaves, bad hex, and out-of-range index
   app.merkleLeafHash("") === null &&
   app.merkleLeafHash(null) === null);
 check("Merkle tool section present in index.html", html.includes("mrk-btn") && html.includes("Merkle root"));
+check("raw transaction controls labelled",
+  ["txd-raw"].every(id => html.includes(`for="${id}"`)));
+
+/* raw transaction decoder — the signed transaction published in EIP-155
+   (fields and signing hash are the EIP's own published values), plus
+   type 1 / type 2 vectors and hash values produced by an independent
+   pure-Python RLP + Keccak-256 oracle written from the specifications */
+const EIP155_TX = "0xf86c098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a76400008025a028ef61340bd939bc2195fe537567866003e1a15d3c71ff63e1590620aa636276a067cbe9d8997f761aecb703304b3800ccf555c9f3dc64214b297fb1966a3b6d83";
+const tx155 = app.decodeRawTransaction(EIP155_TX);
+check("EIP-155 example decodes to its published fields",
+  tx155 !== null && tx155.type === "legacy" && tx155.signed === true &&
+  tx155.nonce === "9" && tx155.gasPrice === "20000000000" && tx155.gasLimit === "21000" &&
+  tx155.to === app.toChecksumAddress("0x3535353535353535353535353535353535353535") &&
+  tx155.value === "1000000000000000000" && tx155.data === "0x" && tx155.accessList === null);
+check("EIP-155 example: v 37 means chain ID 1, y-parity 0, published r/s",
+  tx155.chainId === "1" && tx155.yParity === 0 && tx155.v === "37" &&
+  tx155.r === "0x28ef61340bd939bc2195fe537567866003e1a15d3c71ff63e1590620aa636276" &&
+  tx155.s === "0x67cbe9d8997f761aecb703304b3800ccf555c9f3dc64214b297fb1966a3b6d83");
+check("EIP-155 example: signing hash is the EIP's published value",
+  tx155.signingHash === "0xdaf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53");
+check("EIP-155 example: transaction hash (Python oracle)",
+  tx155.txHash === "0x33469b22e9f636356c4160a87eb19df52b7412e8eac32a4a55ffe88ea8350788");
+const txPre155 = app.decodeRawTransaction(EIP155_TX.replace("8025a0", "801ba0"));
+check("pre-EIP-155 variant (v 27) has no chain ID and the 6-field signing hash (Python oracle)",
+  txPre155 !== null && txPre155.v === "27" && txPre155.chainId === null && txPre155.yParity === 0 &&
+  txPre155.signingHash === "0xf9e36c28c8cb35adba138005c02ab7aa7fbcd891f3139cb2eeed052a51cd2713");
+const txUnsigned = app.decodeRawTransaction("0xe9098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080");
+check("unsigned legacy transaction (6 fields) decodes with no v and the same signing hash",
+  txUnsigned !== null && txUnsigned.signed === false && !("v" in txUnsigned) &&
+  txUnsigned.signingHash === "0xf9e36c28c8cb35adba138005c02ab7aa7fbcd891f3139cb2eeed052a51cd2713");
+const TYPE2_TX = "0x02f8af822105078459682f008506fc23ac00830186a094111111111111111111111111111111111111111184075bcd1584a9059cbbf838f7942222222222222222222222222222222222222222e1a0000000000000000000000000000000000000000000000000000000000000000301a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222";
+const tx2 = app.decodeRawTransaction(TYPE2_TX);
+check("type 2 (EIP-1559, Base chain ID 8453) decodes all fields incl. access list (Python oracle vector)",
+  tx2 !== null && tx2.type === "eip1559" && tx2.chainId === "8453" && tx2.nonce === "7" &&
+  tx2.maxPriorityFeePerGas === "1500000000" && tx2.maxFeePerGas === "30000000000" &&
+  tx2.gasLimit === "100000" && tx2.value === "123456789" && tx2.data === "0xa9059cbb" &&
+  tx2.to === app.toChecksumAddress("0x1111111111111111111111111111111111111111") &&
+  tx2.yParity === 1 &&
+  JSON.stringify(tx2.accessList) === JSON.stringify([{ address: app.toChecksumAddress("0x2222222222222222222222222222222222222222"), storageKeys: ["0x0000000000000000000000000000000000000000000000000000000000000003"] }]));
+check("type 2 signing and transaction hashes (Python oracle)",
+  tx2.signingHash === "0x3f9a08ab00f217d6e294fb1d1cdc30c1df90641413a54a002521e2b33f34cb51" &&
+  tx2.txHash === "0x553544334406f8e3919bb1e2d275bf8cfe2d11f8e8e4a66c440c53278cd2627d");
+const TYPE1_TX = "0x01f8588182808504a817c8008307a12080808460006000c080a03333333333333333333333333333333333333333333333333333333333333333a04444444444444444444444444444444444444444444444444444444444444444";
+const tx1 = app.decodeRawTransaction(TYPE1_TX);
+check("type 1 (EIP-2930, Unichain chain ID 130) contract creation decodes (Python oracle vector)",
+  tx1 !== null && tx1.type === "eip2930" && tx1.chainId === "130" && tx1.gasPrice === "20000000000" &&
+  tx1.to === null && tx1.value === "0" && tx1.data === "0x60006000" &&
+  Array.isArray(tx1.accessList) && tx1.accessList.length === 0 && tx1.yParity === 0 &&
+  tx1.signingHash === "0x33ceb81ff981f0d0e9dc35bc9a065f8b8425922b7e469d449d56838c2b376922" &&
+  tx1.txHash === "0x0971fa7326ea8dedb333e24ef08f5927b68ac0ef3cec99872a7bcdf5ed3c10c2");
+check("transaction decoder rejects malformed and non-canonical input",
+  app.decodeRawTransaction("") === null &&
+  app.decodeRawTransaction("0x") === null &&
+  app.decodeRawTransaction("0xf86") === null &&
+  app.decodeRawTransaction("0xzz") === null &&
+  app.decodeRawTransaction(EIP155_TX + "00") === null &&
+  app.decodeRawTransaction(EIP155_TX.slice(0, -2)) === null &&
+  app.decodeRawTransaction("0x03" + EIP155_TX.slice(2)) === null &&
+  app.decodeRawTransaction("0xf86d8109" + EIP155_TX.slice(10)) === null &&
+  app.decodeRawTransaction("0xf86e09b8018504a817c800" + EIP155_TX.slice(20)) === null &&
+  app.decodeRawTransaction("0xf86e820009" + EIP155_TX.slice(8)) === null &&
+  app.decodeRawTransaction("0xe9098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a76400008025") === null &&
+  app.decodeRawTransaction(EIP155_TX.replace("8025a0", "801da0")) === null &&
+  app.decodeRawTransaction(TYPE2_TX.replace("0301a0", "0302a0")) === null &&
+  app.decodeRawTransaction(null) === null);
+check("raw transaction tool section present in index.html", html.includes("txd-btn") && html.includes("Raw transaction decoder"));
+check("EIP-155 source linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-155"));
 check("OpenZeppelin MerkleProof source linked from index.html",
   html.includes("https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/utils/cryptography/MerkleProof.sol"));
 

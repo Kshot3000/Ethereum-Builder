@@ -1296,6 +1296,40 @@ function verifyPersonalSignature(message, signature) {
   return { digest, signer };
 }
 
+/* ---------- EIP-712 typed-data verification (Ether Mail schema) ----------
+   The digest calculator above computes the hash a wallet signs for the
+   Ether Mail example; this tool takes the step that makes it a
+   verification: given the same domain and Mail fields plus the 65-byte
+   signature r ‖ s ‖ v a wallet returned from eth_signTypedData, it
+   recomputes the digest keccak256(0x1901 ‖ domainSeparator ‖
+   hashStruct(message)) and recovers the signer with the ecrecover math
+   above. Strict in the same way as the personal_sign verifier: the
+   signature must be exactly 65 bytes and s must be in the lower half
+   of the curve order (the canonical EIP-2 form), so a malleable
+   high-s twin is refused rather than half-verified. Honest scope is
+   the digest tool's: the specification's one fixed Ether Mail schema,
+   not a general typed-data verifier. Verified in the tests against the
+   signature EIP-712 itself prints for this example (recovering its
+   published signing account, Cow) and a signature over the published
+   digest produced by an independent pure-Python secp256k1 oracle
+   (RFC 6979; its address derivation anchored on the published
+   addresses of private key 1 and of the private key EIP-155 prints).
+   It verifies a signature locally; it never asks for a key and signs
+   nothing. */
+function verify712MailSignature(domainName, domainVersion, chainIdStr, verifyingContract,
+                                fromName, fromWallet, toName, toWallet, contents, signature) {
+  const mail = eip712MailDigest(domainName, domainVersion, chainIdStr, verifyingContract,
+                                fromName, fromWallet, toName, toWallet, contents);
+  if (mail === null || typeof signature !== "string") return null;
+  const sigBytes = parseHexBytes(signature, 65);
+  if (sigBytes === null) return null;
+  const r = "0x" + bytesToHex(sigBytes.slice(0, 32));
+  const s = "0x" + bytesToHex(sigBytes.slice(32, 64));
+  const signer = recoverAddress(mail.digest, String(sigBytes[64]), r, s);
+  if (signer === null) return null;
+  return { digest: mail.digest, domainSeparator: mail.domainSeparator, structHash: mail.structHash, signer };
+}
+
 /* ---------- EIP-7702 authorization digest ----------
    Each authorization tuple in a set code transaction is signed
    on its own, over a digest that is NOT the transaction's
@@ -1618,6 +1652,38 @@ if (typeof document !== "undefined") {
       el.textContent = msg;
     });
 
+    /* EIP-712 typed-data verification (Ether Mail schema) */
+    const v712Btn = document.getElementById("v712-btn");
+    if (v712Btn) v712Btn.addEventListener("click", () => {
+      const el = document.getElementById("v712-out");
+      const r = verify712MailSignature(
+        document.getElementById("v712-dname").value,
+        document.getElementById("v712-dversion").value,
+        document.getElementById("v712-dchain").value,
+        document.getElementById("v712-dcontract").value,
+        document.getElementById("v712-from-name").value,
+        document.getElementById("v712-from-wallet").value,
+        document.getElementById("v712-to-name").value,
+        document.getElementById("v712-to-wallet").value,
+        document.getElementById("v712-contents").value,
+        document.getElementById("v712-sig").value
+      );
+      if (r === null) {
+        el.textContent = "That does not verify — check the domain and Mail fields are exactly what was signed (names non-empty, chain ID a whole number of 1 or more, every contract/wallet a 20-byte address) and the signature is the complete 65-byte hex value a wallet returns (0x + 130 hex characters: r, s, then v), with s in the lower half of the curve order.";
+        return;
+      }
+      let msg = `Signer: ${r.signer} · EIP-712 digest signed: ${r.digest} · Domain separator: ${r.domainSeparator} · hashStruct(Mail): ${r.structHash}.`;
+      const expectRaw = document.getElementById("v712-expect").value.trim();
+      if (expectRaw !== "") {
+        const exp = inspectAddress(expectRaw);
+        if (!exp.valid) msg += " The expected signer you gave is not a well-formed address, so no comparison was made.";
+        else if (exp.checksum === r.signer) msg += ` ✓ Matches the expected signer${exp.checksumValid === false ? " (but the expected address's own checksum is wrong — compare with care)" : ""}.`;
+        else msg += ` ✗ Does NOT match the expected signer ${exp.checksum} — this signature was made by a different account, or over different typed data.`;
+      }
+      msg += " Verified locally — no key involved, nothing signed, and no chain queried.";
+      el.textContent = msg;
+    });
+
     /* Transaction sender recovery */
     const txsBtn = document.getElementById("txs-btn");
     if (txsBtn) txsBtn.addEventListener("click", () => {
@@ -1651,5 +1717,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, recoverTransactionSender, eip7702AuthorizationDigest, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, UNIT_DECIMALS };
 }

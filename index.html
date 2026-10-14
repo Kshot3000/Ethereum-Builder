@@ -313,6 +313,35 @@ dave</textarea>
       <button id="txs-btn" type="button">Recover sender</button>
       <p id="txs-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>EIP-712 typed-data signature verification (Ether Mail)</h3>
+      <p>The digest calculator above computes the hash a wallet signs for <a href="https://eips.ethereum.org/EIPS/eip-712">EIP-712</a> typed data; this tool completes the check a dapp or contract performs on the signature that comes back: it recomputes the digest <code>keccak256(0x1901 ‖ domainSeparator ‖ hashStruct(message))</code> for the same domain and <code>Mail</code> fields and recovers the signer from the 65-byte <code>eth_signTypedData</code> signature with the ecrecover math above — “did this account really sign this exact typed data, for this exact domain?”, answered with no key and no chain query. The defaults are the specification's own worked example end to end: the signature below is the one EIP-712 itself prints as the result of its example request, and it verifies to its published signing account, Cow (<code>0xCD2a…D826</code>), over the published Ether Mail digest — change any field and the recovered signer changes with it, because the domain and every field are inside the hash. Honest scope is the digest tool's: this is that one fixed Ether Mail schema, not a general typed-data verifier — arbitrary schemas are out of scope rather than guessed at. Strict in the same way as the verifiers above: the signature must be exactly 65 bytes and <code>s</code> must be the canonical low-<code>s</code> form, or it is refused rather than half-verified. Verifies a signature only: nothing is signed, no key is used or asked for.</p>
+      <label for="v712-dname">Domain name</label>
+      <input id="v712-dname" type="text" spellcheck="false" value="Ether Mail">
+      <label for="v712-dversion">Domain version</label>
+      <input id="v712-dversion" type="text" spellcheck="false" value="1">
+      <label for="v712-dchain">Chain ID</label>
+      <input id="v712-dchain" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <label for="v712-dcontract">Verifying contract (20 bytes)</label>
+      <input id="v712-dcontract" type="text" spellcheck="false" value="0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC">
+      <label for="v712-from-name">From — name</label>
+      <input id="v712-from-name" type="text" spellcheck="false" value="Cow">
+      <label for="v712-from-wallet">From — wallet (20 bytes)</label>
+      <input id="v712-from-wallet" type="text" spellcheck="false" value="0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826">
+      <label for="v712-to-name">To — name</label>
+      <input id="v712-to-name" type="text" spellcheck="false" value="Bob">
+      <label for="v712-to-wallet">To — wallet (20 bytes)</label>
+      <input id="v712-to-wallet" type="text" spellcheck="false" value="0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB">
+      <label for="v712-contents">Contents</label>
+      <input id="v712-contents" type="text" spellcheck="false" value="Hello, Bob!">
+      <label for="v712-sig">Signature (65 bytes: r ‖ s ‖ v, 0x hex)</label>
+      <textarea id="v712-sig" rows="3" spellcheck="false">0x4355c47d63924e8a72e509b65029052eb6c299d53a04e167c5775fd466751c9d07299936d304c153f6443dfa05f40ff007d72911b6f72307f996231605b915621c</textarea>
+      <label for="v712-expect">Expected signer (optional — leave blank to just recover)</label>
+      <input id="v712-expect" type="text" spellcheck="false" value="0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826">
+      <button id="v712-btn" type="button">Verify signature</button>
+      <p id="v712-out" class="out" aria-live="polite"></p>
+    </div>
   </section>
 
   <section aria-labelledby="start-h">
@@ -327,6 +356,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=17"></script>
+<script src="app.js?v=18"></script>
 </body>
 </html>

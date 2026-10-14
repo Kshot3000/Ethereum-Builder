@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=17"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=18"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -714,6 +714,43 @@ check("personal_sign rejects malformed signatures and non-canonical forms",
   app.eip191Digest(null) === null);
 check("signed message tool section present in index.html", html.includes("msg-btn") && html.includes("Signed message verification"));
 check("EIP-191 source linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-191"));
+check("EIP-712 verify controls labelled",
+  ["v712-dname", "v712-dversion", "v712-dchain", "v712-dcontract", "v712-from-name", "v712-from-wallet", "v712-to-name", "v712-to-wallet", "v712-contents", "v712-sig", "v712-expect"].every(id => html.includes(`for="${id}"`)));
+
+/* EIP-712 typed-data verification (Ether Mail schema) — composes the mail
+   digest and ecrecover. Anchors: (1) the signature EIP-712 itself prints
+   as the result of its eth_signTypedData example request recovers its
+   published signing account (Cow) over the published Ether Mail digest;
+   (2) a signature over that same published digest produced by an
+   independent pure-Python secp256k1 oracle (RFC 6979 signing; Keccak
+   anchored on the published '' / 'hello world' vectors; its address
+   derivation anchored on the published addresses of private key 1 and
+   of the private key EIP-155 prints) with private key 1 recovers key 1's
+   published address. NOT produced by this file's own code. */
+const SIG712_FULL = "0x4355c47d63924e8a72e509b65029052eb6c299d53a04e167c5775fd466751c9d07299936d304c153f6443dfa05f40ff007d72911b6f72307f996231605b915621c";
+const SIG712_KEY1 = "0x25ee9afa55806b99c9709a93ab967e487ad3a7cfdc421612e68cef7a737355246000f332e3f5e9ca5942275745c8b04523e17b57ef576e8362c74458fc62a6231c";
+check("EIP-712 printed signature verifies to its published signing account (Cow), carrying the published digest chain",
+  (() => { const r = app.verify712MailSignature(...mailArgs, SIG712_FULL); return r !== null && r.signer === COW_CHECKSUM && r.digest === "0xbe609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2" && r.domainSeparator === "0xf2cee375fa42b42143804025fc449deafd50cc031ca257e0b194a650a912090f" && r.structHash === "0xc52c0ee5d84264471806290a3f2c4cecfc5490626bf912d01f240d7a274b371e"; })());
+check("EIP-712 oracle signature by private key 1 over the mail digest verifies to key 1's published address",
+  app.verify712MailSignature(...mailArgs, SIG712_KEY1)?.signer === KEY1_ADDR);
+check("EIP-712 verification accepts v in 0/1 form as well as 27/28",
+  app.verify712MailSignature(...mailArgs, SIG712_FULL.slice(0, -2) + "01")?.signer === COW_CHECKSUM);
+check("EIP-712 signature over tampered typed data recovers a different signer, not the expected one",
+  (() => { const r = app.verify712MailSignature(...mailArgs.slice(0, 8), "Hello, Bob?", SIG712_FULL); return r !== null && r.signer !== COW_CHECKSUM; })() &&
+  (() => { const r = app.verify712MailSignature("Ether Mail", "1", "8453", MAIL_CONTRACT, "Cow", COW, "Bob", BOB, "Hello, Bob!", SIG712_FULL); return r !== null && r.signer !== COW_CHECKSUM; })());
+check("EIP-712 verification rejects malformed signatures and non-canonical forms",
+  app.verify712MailSignature(...mailArgs, "0x4355c47d63924e8a72e509b65029052eb6c299d53a04e167c5775fd466751c9df8d666c92cfb3eac09bbc205fa0bf00eb2d7b3d4f8517d33c63c3b76ca7d2bdf1b") === null &&
+  app.verify712MailSignature(...mailArgs, SIG712_FULL.slice(0, -2)) === null &&
+  app.verify712MailSignature(...mailArgs, SIG712_FULL + "00") === null &&
+  app.verify712MailSignature(...mailArgs, SIG712_FULL.slice(0, -2) + "1d") === null &&
+  app.verify712MailSignature(...mailArgs, "0x" + "00".repeat(32) + SIG712_FULL.slice(66)) === null &&
+  app.verify712MailSignature(...mailArgs, null) === null);
+check("EIP-712 verification rejects bad typed data (bad domain, bad wallet, null contents)",
+  app.verify712MailSignature("Ether Mail", "1", "0", MAIL_CONTRACT, "Cow", COW, "Bob", BOB, "Hello, Bob!", SIG712_FULL) === null &&
+  app.verify712MailSignature("Ether Mail", "1", "1", MAIL_CONTRACT, "Cow", "0x123", "Bob", BOB, "Hello, Bob!", SIG712_FULL) === null &&
+  app.verify712MailSignature("Ether Mail", "1", "1", MAIL_CONTRACT, "Cow", COW, "Bob", BOB, null, SIG712_FULL) === null);
+check("EIP-712 verify tool section present in index.html", html.includes("v712-btn") && html.includes("EIP-712 typed-data signature verification"));
+check("EIP-712 source linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-712"));
 check("EIP-7702 source linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-7702"));
 check("EIP-4844 source linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-4844"));
 check("transaction sender controls labelled",

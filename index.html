@@ -253,6 +253,20 @@
       <button id="dec-btn" type="button">Decode calldata</button>
       <p id="dec-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Merkle root &amp; proof calculator (sorted-pair Keccak tree)</h3>
+      <p>Allowlists and airdrops commit a whole list to one 32-byte root, then prove each entry with a handful of sibling hashes. This calculator builds that tree locally, one leaf per line: a leaf is the Keccak-256 of its bytes (a <code>0x</code> line contributes those hex bytes; any other line contributes its UTF-8 bytes — so an address leaf is just its <code>0x</code> line). Each parent is the Keccak-256 of its two children <em>sorted ascending before hashing</em> — the commutative pair hashing <a href="https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/utils/cryptography/MerkleProof.sol">OpenZeppelin's MerkleProof</a> uses on-chain, so order inside a pair never matters — and an odd node at the end of a level is promoted unchanged rather than hashed against itself. Pick a leaf number to get its proof (the sibling list, bottom-up), which the tool then folds back to the root as a self-check. Caution, from OpenZeppelin's own documentation: if a root like this will be verified on-chain, keep leaf inputs away from exactly 64 bytes — a 64-byte preimage has the same shape as a concatenated pair of nodes; real airdrops hash an ABI-encoded entry (often twice) as the leaf instead of raw text. Computed locally — nothing is sent and no chain is queried.</p>
+      <label for="mrk-leaves">Leaves (one per line)</label>
+      <textarea id="mrk-leaves" rows="4" spellcheck="false">alice
+bob
+carol
+dave</textarea>
+      <label for="mrk-index">Leaf number to prove (1-based)</label>
+      <input id="mrk-index" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <button id="mrk-btn" type="button">Calculate root &amp; proof</button>
+      <p id="mrk-out" class="out" aria-live="polite"></p>
+    </div>
   </section>
 
   <section aria-labelledby="start-h">
@@ -267,6 +281,6 @@
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=10"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>

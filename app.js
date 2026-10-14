@@ -829,6 +829,108 @@ function abiDecodeCall(sig, calldata) {
   return { canonical, selector, args: r.values };
 }
 
+/* ---------- Merkle root & proof calculator (sorted-pair Keccak tree) ----------
+   The allowlist/airdrop workhorse: a leaf is Keccak-256 of its input bytes
+   (a 0x hex line contributes those bytes; any other line contributes its
+   UTF-8 bytes). Each internal node is Keccak-256 of its two children
+   sorted ascending bytewise before concatenation — the commutative
+   hashing OpenZeppelin's MerkleProof uses on-chain (Hashes.
+   commutativeKeccak256), so position within a pair never matters. An odd
+   node at the end of a level is promoted to the next level unchanged
+   rather than hashed against itself. A single leaf's root is its own leaf
+   hash and its proof is empty. Deliberately strict, like the decoder:
+   empty leaf lists, blank lines, malformed or empty hex leaves, and
+   out-of-range proof indexes are rejected, never patched over. Caution
+   carried from OpenZeppelin's own docs: keep leaf inputs away from
+   exactly 64 bytes if the root will be verified on-chain — a 64-byte
+   preimage has the same shape as a concatenated pair of nodes (a
+   second-preimage hazard); real airdrop contracts typically hash an
+   ABI-encoded entry as the leaf instead of raw user text. Verified in
+   the tests against an independent pure-Python Keccak-256 implementation
+   written from the Keccak specification for this tool. */
+function merkleParseLeaf(input) {
+  if (typeof input !== "string") return null;
+  const s = input.trim();
+  if (s === "") return null;
+  if (/^0[xX]/.test(s)) {
+    const bytes = parseHexBytes(s);
+    if (bytes === null || bytes.length === 0) return null;
+    return bytes;
+  }
+  return utf8Bytes(s);
+}
+function merkleLeafDigest(input) {
+  const bytes = merkleParseLeaf(input);
+  if (bytes === null) return null;
+  return keccak256Digest(bytes);
+}
+function merkleLeafHash(input) {
+  const d = merkleLeafDigest(input);
+  return d === null ? null : "0x" + bytesToHex(d);
+}
+function merkleHashPair(a, b) {
+  let lo = a, hi = b;
+  for (let i = 0; i < 32; i++) {
+    if (a[i] !== b[i]) { if (a[i] > b[i]) { lo = b; hi = a; } break; }
+  }
+  return keccak256Digest([...lo, ...hi]);
+}
+function merkleLayers(leafInputs) {
+  if (!Array.isArray(leafInputs) || leafInputs.length === 0) return null;
+  const leaves = [];
+  for (const input of leafInputs) {
+    const d = merkleLeafDigest(input);
+    if (d === null) return null;
+    leaves.push(d);
+  }
+  const layers = [leaves];
+  while (layers[layers.length - 1].length > 1) {
+    const level = layers[layers.length - 1];
+    const next = [];
+    for (let i = 0; i < level.length; i += 2) {
+      next.push(i + 1 < level.length ? merkleHashPair(level[i], level[i + 1]) : level[i]);
+    }
+    layers.push(next);
+  }
+  return layers;
+}
+function merkleRoot(leafInputs) {
+  const layers = merkleLayers(leafInputs);
+  if (layers === null) return null;
+  return "0x" + bytesToHex(layers[layers.length - 1][0]);
+}
+function merkleProof(leafInputs, index) {
+  const layers = merkleLayers(leafInputs);
+  if (layers === null) return null;
+  if (!Number.isInteger(index) || index < 0 || index >= layers[0].length) return null;
+  const proof = [];
+  let idx = index;
+  for (let li = 0; li < layers.length - 1; li++) {
+    const level = layers[li];
+    if (idx % 2 === 1) proof.push("0x" + bytesToHex(level[idx - 1]));
+    else if (idx + 1 < level.length) proof.push("0x" + bytesToHex(level[idx + 1]));
+    idx = Math.floor(idx / 2);
+  }
+  return {
+    root: "0x" + bytesToHex(layers[layers.length - 1][0]),
+    leaf: "0x" + bytesToHex(layers[0][index]),
+    proof
+  };
+}
+function merkleVerify(leafInput, proof, root) {
+  const leaf = merkleLeafDigest(leafInput);
+  if (leaf === null || !Array.isArray(proof) || typeof root !== "string") return false;
+  const rootBytes = parseHexBytes(root, 32);
+  if (rootBytes === null) return false;
+  let node = leaf;
+  for (const el of proof) {
+    const sib = parseHexBytes(el, 32);
+    if (sib === null) return false;
+    node = merkleHashPair(node, sib);
+  }
+  return bytesToHex(node) === bytesToHex(rootBytes);
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -1009,6 +1111,22 @@ if (typeof document !== "undefined") {
         : `Arguments for ${r.canonical} (selector ${r.selector}): ${JSON.stringify(r.args)}. Integers are decimal strings, addresses and bytes are 0x hex — exactly the JSON form the encoder above accepts, so a decode re-encodes byte-for-byte. Decoded locally; nothing is sent anywhere.`;
     });
 
+    /* Merkle root & proof calculator */
+    const mrkBtn = document.getElementById("mrk-btn");
+    if (mrkBtn) mrkBtn.addEventListener("click", () => {
+      const el = document.getElementById("mrk-out");
+      const raw = document.getElementById("mrk-leaves").value;
+      const leaves = raw.split("\n");
+      const idxStr = document.getElementById("mrk-index").value.trim();
+      const r = /^\d+$/.test(idxStr) ? merkleProof(leaves, Number(idxStr) - 1) : null;
+      if (r === null) {
+        el.textContent = "Check the inputs: at least one leaf, no blank lines, hex leaves as 0x-prefixed even-length hex with at least one byte, and a leaf number between 1 and the number of leaves.";
+        return;
+      }
+      const ok = merkleVerify(leaves[Number(idxStr) - 1], r.proof, r.root);
+      el.textContent = `Merkle root (over ${leaves.length} leaves): ${r.root} · Leaf #${idxStr} hash: ${r.leaf} · Proof (${r.proof.length} sibling${r.proof.length === 1 ? "" : "s"}, bottom-up): ${JSON.stringify(r.proof)} · Self-check: ${ok ? "the proof folds back to the root ✓" : "FAILED — this is a bug; the proof should always verify"}. Computed locally — nothing is sent anywhere.`;
+    });
+
     /* EIP-1559 estimator */
     const gasBtn = document.getElementById("gas-btn");
     if (gasBtn) gasBtn.addEventListener("click", () => {
@@ -1026,5 +1144,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, UNIT_DECIMALS };
 }

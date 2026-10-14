@@ -45,7 +45,9 @@ check("has <main> landmark", /<main[\s>]/.test(html));
 check("all tool controls labelled",
   ["conv-value", "conv-from", "conv-to", "addr-input", "gas-units", "gas-base", "gas-priority", "sig-input", "sig-preset", "c2-deployer", "c2-salt", "c2-init", "create-sender", "create-nonce", "ens-input", "dom712-name", "dom712-version", "dom712-chain", "dom712-contract", "m712-dname", "m712-dversion", "m712-dchain", "m712-dcontract", "m712-from-name", "m712-from-wallet", "m712-to-name", "m712-to-wallet", "m712-contents", "slot-kind", "slot-ns", "abi-sig", "abi-args", "dec-sig", "dec-data"]
     .every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=10"));
+check("all tool controls labelled (merkle)",
+  ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=11"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -427,6 +429,82 @@ check("ABI decoder: rejects missing 0x, odd-length hex, an invalid-UTF-8 string,
   app.abiDecodeCall("s(string)", app.abiEncodeCall("s(string)", ["ok"]).calldata.replace("6f6b", "ffff")) === null &&
   app.abiDecodeCall("a(uint256[])", "0x" + app.keccak256("a(uint256[])").slice(0, 8) + W("20") + "f".repeat(64)) === null);
 check("ABI decoder tool section present in index.html", html.includes("dec-btn") && html.includes("ABI calldata decoder"));
+
+/* Merkle root & proof — sorted-pair Keccak tree with odd-node promotion.
+   The root/proof oracles below were produced by an independent pure-Python
+   Keccak-256 implementation written from the Keccak specification for this
+   tool (itself anchored on the published '' and 'hello world' vectors
+   checked above), NOT by this file's own code — so they cross-check both
+   the JS Keccak and the tree construction. Smaller cases are additionally
+   composed by hand from keccak256Bytes, which the vectors above anchor. */
+const NAMES4 = ["alice", "bob", "carol", "dave"];
+const NAMES5 = [...NAMES4, "eve"];
+check("Merkle leaf hash of 'alice' is keccak256 of its UTF-8 bytes",
+  app.merkleLeafHash("alice") === "0x9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501" &&
+  app.merkleLeafHash("alice") === "0x" + app.keccak256("alice"));
+check("Merkle root of the 4-leaf example (independent Python oracle)",
+  app.merkleRoot(NAMES4) === "0x2c64ce985e642fde9d8ce17ed8d7bb7990cb63ae3f1d5f641664930a339e9cc3");
+check("Merkle root of the 5-leaf example (independent Python oracle, odd promotion)",
+  app.merkleRoot(NAMES5) === "0xc4b14fdcf1a35cc018311ccd1d7df233ed0f44230021aa3d18b34c78cc495a50");
+check("Merkle single leaf: root is the leaf hash and the proof is empty",
+  app.merkleRoot(["alice"]) === app.merkleLeafHash("alice") &&
+  J(app.merkleProof(["alice"], 0).proof) === J([]));
+check("Merkle 2-leaf root composed by hand from the anchored keccak",
+  (() => {
+    const ha = app.parseHexBytes(app.merkleLeafHash("alice"));
+    const hb = app.parseHexBytes(app.merkleLeafHash("bob"));
+    let aFirst = true;
+    for (let i = 0; i < 32; i++) { if (ha[i] !== hb[i]) { aFirst = ha[i] < hb[i]; break; } }
+    const [lo, hi] = aFirst ? [ha, hb] : [hb, ha];
+    return app.merkleRoot(["alice", "bob"]) === "0x" + app.keccak256Bytes([...lo, ...hi]);
+  })());
+check("Merkle proof for leaf 0 of 4 (independent Python oracle)",
+  J(app.merkleProof(NAMES4, 0).proof) === J([
+    "0x38e47a7b719dce63662aeaf43440326f551b8a7ee198cee35cb5d517f2d296a2",
+    "0xb81613f04cd9ce07b4781be9bbaa86a503220985be2a3f168b30d158da0db0e2"]));
+check("Merkle proof for the promoted odd leaf (index 4 of 5) is the 4-leaf subtree root alone",
+  J(app.merkleProof(NAMES5, 4)) === J({
+    root: "0xc4b14fdcf1a35cc018311ccd1d7df233ed0f44230021aa3d18b34c78cc495a50",
+    leaf: "0x876be0999ed9b7fc26f1b270903ef7b0c35291f89407903270fea611c85f515c",
+    proof: ["0x2c64ce985e642fde9d8ce17ed8d7bb7990cb63ae3f1d5f641664930a339e9cc3"] }));
+check("Merkle every leaf of the 5-leaf tree has a proof that verifies",
+  NAMES5.every((leaf, i) => {
+    const p = app.merkleProof(NAMES5, i);
+    return p !== null && app.merkleVerify(leaf, p.proof, p.root);
+  }));
+check("Merkle sorted pairs: swapping the two leaves within a pair keeps the root",
+  app.merkleRoot(["bob", "alice", "carol", "dave"]) === app.merkleRoot(NAMES4) &&
+  app.merkleRoot(["alice", "bob", "dave", "carol"]) === app.merkleRoot(NAMES4));
+check("Merkle swapping leaves across pairs changes the root",
+  app.merkleRoot(["carol", "bob", "alice", "dave"]) !== app.merkleRoot(NAMES4));
+check("Merkle a 0x hex leaf contributes its bytes (0x616c696365 builds the 'alice' tree)",
+  app.merkleRoot(["0x616c696365", "bob", "carol", "dave"]) === app.merkleRoot(NAMES4));
+check("Merkle changing any leaf changes the root",
+  app.merkleRoot(["alice", "bob", "carol", "mallory"]) !== app.merkleRoot(NAMES4));
+check("Merkle verify rejects a tampered proof, a wrong leaf, and a wrong root",
+  !app.merkleVerify("alice", ["0x" + "00".repeat(32), app.merkleProof(NAMES4, 0).proof[1]], app.merkleRoot(NAMES4)) &&
+  !app.merkleVerify("mallory", app.merkleProof(NAMES4, 0).proof, app.merkleRoot(NAMES4)) &&
+  !app.merkleVerify("alice", app.merkleProof(NAMES4, 0).proof, app.merkleRoot(NAMES5)));
+check("Merkle verify rejects malformed proof elements and roots instead of throwing",
+  !app.merkleVerify("alice", ["0x1234"], app.merkleRoot(["alice"])) &&
+  !app.merkleVerify("alice", [], "0x1234") &&
+  !app.merkleVerify("alice", "not-an-array", app.merkleRoot(["alice"])) &&
+  !app.merkleVerify("alice", [null], app.merkleRoot(["alice"])));
+check("Merkle rejects empty lists, blank leaves, bad hex, and out-of-range indexes",
+  app.merkleRoot([]) === null &&
+  app.merkleRoot(["alice", "   "]) === null &&
+  app.merkleRoot(["0xzz"]) === null &&
+  app.merkleRoot(["0x0"]) === null &&
+  app.merkleRoot(["0x"]) === null &&
+  app.merkleRoot("alice") === null &&
+  app.merkleProof(NAMES4, 4) === null &&
+  app.merkleProof(NAMES4, -1) === null &&
+  app.merkleProof(NAMES4, 1.5) === null &&
+  app.merkleLeafHash("") === null &&
+  app.merkleLeafHash(null) === null);
+check("Merkle tool section present in index.html", html.includes("mrk-btn") && html.includes("Merkle root"));
+check("OpenZeppelin MerkleProof source linked from index.html",
+  html.includes("https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/utils/cryptography/MerkleProof.sol"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=48"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=49"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2448,6 +2448,50 @@ check("sha3 refuses malformed size and memory inputs and a non-zero region endin
   app.sha3GasCalc("137438953440", "32", "0") === null &&
   app.sha3GasCalc("0", "0", "137438953441") === null);
 check("sha3 tool section present in index.html", html.includes("sha3-btn") && html.includes("SHA3 (KECCAK256) gas calculator"));
+
+/* COPY gas (CALLDATACOPY / CODECOPY / RETURNDATACOPY) — expected
+   values produced by an independent pure-Python transcription of
+   the Yellow Paper's copy-cost group (hidden_files/oracle-copy-gas.py):
+   3 flat, 3 per 32-byte word rounded up, plus memory expansion over
+   the DESTINATION region end with zero-size copies touching nothing;
+   the three opcodes price identically. The oracle is anchored
+   in-script on hand values (the prefilled 128-byte copy at 27, an
+   empty copy at 3, 1 and 32 bytes at 9, 33 bytes at 15).
+   Vectors are [opcode, destOff, size, curMem] -> the full result. */
+check("copy controls labelled in index.html",
+  ["copy-op", "copy-dest", "copy-size", "copy-mem"].every(id => html.includes(`for="${id}"`)));
+check("COPY gas matches the Python oracle (prefill four-word copy, empty copy, 1 and 32 and 33 bytes, zero-size copy inert at a large offset, destination already held, partial growth, 100,000-byte payload, destination ending exactly at the client's bound, destination inside large memory, and a 1 MB payload — across all three opcodes)",
+  (() => { const V = [
+    [["CALLDATACOPY", "0", "128", "0"], ["CALLDATACOPY", "3", "4", "12", "12", "27", "128"]],
+    [["CODECOPY", "0", "0", "0"], ["CODECOPY", "3", "0", "0", "0", "3", "0"]],
+    [["RETURNDATACOPY", "0", "32", "0"], ["RETURNDATACOPY", "3", "1", "3", "3", "9", "32"]],
+    [["CALLDATACOPY", "0", "1", "0"], ["CALLDATACOPY", "3", "1", "3", "3", "9", "1"]],
+    [["CALLDATACOPY", "0", "33", "0"], ["CALLDATACOPY", "3", "2", "6", "6", "15", "33"]],
+    [["CODECOPY", "999999", "0", "0"], ["CODECOPY", "3", "0", "0", "0", "3", "0"]],
+    [["CODECOPY", "0", "32", "1024"], ["CODECOPY", "3", "1", "3", "0", "6", "32"]],
+    [["CALLDATACOPY", "32", "992", "32"], ["CALLDATACOPY", "3", "31", "93", "95", "191", "1024"]],
+    [["RETURNDATACOPY", "0", "100000", "0"], ["RETURNDATACOPY", "3", "3125", "9375", "28448", "37826", "100000"]],
+    [["CALLDATACOPY", "137438953408", "32", "0"], ["CALLDATACOPY", "3", "1", "3", "36028809887088637", "36028809887088643", "137438953440"]],
+    [["RETURNDATACOPY", "64", "128", "4096"], ["RETURNDATACOPY", "3", "4", "12", "0", "15", "192"]],
+    [["CODECOPY", "0", "1000000", "0"], ["CODECOPY", "3", "31250", "93750", "2001098", "2094851", "1000000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.copyGasCalc(...inp);
+    return r !== null && [r.opcode, r.baseGas, r.words, r.wordGas, r.memoryGas, r.totalGas, r.newMemBytes].join(",") === exp.join(","); }); })());
+check("copy: prefilled page values (128 bytes in fresh memory) cost exactly 27 for every opcode",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.copyGasCalc("CALLDATACOPY", g("copy-dest"), g("copy-size"), g("copy-mem"));
+    const all = ["CALLDATACOPY", "CODECOPY", "RETURNDATACOPY"].map(op => app.copyGasCalc(op, "0", "128", "0"));
+    return r !== null && r.baseGas === "3" && r.words === "4" && r.wordGas === "12" && r.memoryGas === "12" && r.totalGas === "27" &&
+      all.every(x => x !== null && x.totalGas === "27"); })());
+check("copy refuses malformed opcode, size and memory inputs and a non-zero destination ending past the client's bound",
+  app.copyGasCalc("EXTCODECOPY", "0", "0", "0") === null &&
+  app.copyGasCalc("calldatacopy", "0", "0", "0") === null &&
+  app.copyGasCalc(null, "0", "0", "0") === null &&
+  app.copyGasCalc("CALLDATACOPY", "0", "1.5", "0") === null &&
+  app.copyGasCalc("CALLDATACOPY", "-1", "0", "0") === null &&
+  app.copyGasCalc("CALLDATACOPY", "0", null, "0") === null &&
+  app.copyGasCalc("CALLDATACOPY", "137438953440", "32", "0") === null &&
+  app.copyGasCalc("CALLDATACOPY", "0", "0", "137438953441") === null);
+check("copy tool section present in index.html", html.includes("copy-btn") && html.includes("COPY gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

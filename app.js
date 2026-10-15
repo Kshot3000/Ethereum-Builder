@@ -3499,6 +3499,51 @@ function sha3GasCalc(dataOffStr, dataSizeStr, curMemStr) {
   };
 }
 
+/* COPY gas (CALLDATACOPY / CODECOPY / RETURNDATACOPY) — what
+   copying a region into memory with one of the three plain copy
+   opcodes costs, under the Yellow Paper's copy-cost group as
+   go-ethereum's copy-gas functions implement it (formulas
+   paraphrased): a flat 3 for the operation itself, 3 per 32-byte
+   word copied (the size rounds up to whole words — 1 byte pays
+   for a word, as does 32), and memory expansion for the region
+   of the frame's memory the data is written TO — the frame must
+   reach the destination end, and a zero-size copy touches
+   nothing whatever its destination offset. The three opcodes
+   price identically; they differ only in the source (the call's
+   input data, the running contract's code, or the last call's
+   return data), and the source is not memory, so the source
+   offset moves no term — only the destination, the size and the
+   frame's current memory are priced, and the data's contents
+   move no term. EXTCODECOPY is NOT one of these: copying another
+   account's code additionally pays that account's access cost
+   under EIP-2929, so it is out of scope rather than priced here.
+   Gas amounts follow the memory function's bound: a destination
+   end above 0x1FFFFFFFE0 bytes is refused, as the client's gas
+   calculation overflows there. */
+function copyGasCalc(opcodeStr, destOffStr, sizeStr, curMemStr) {
+  if (typeof opcodeStr !== "string") return null;
+  const opcode = opcodeStr.trim();
+  if (!["CALLDATACOPY", "CODECOPY", "RETURNDATACOPY"].includes(opcode)) return null;
+  const destOff = memParseBytes(destOffStr);
+  const size = memParseBytes(sizeStr);
+  const curMem = memParseBytes(curMemStr);
+  if (destOff === null || size === null || curMem === null) return null;
+  const regionEnd = size === 0n ? 0n : destOff + size;
+  if (regionEnd > MEM_MAX_BYTES) return null;
+  const curWords = (curMem + 31n) / 32n;
+  const newWords = (regionEnd + 31n) / 32n;
+  const memoryGas = newWords > curWords ? memTotalCost(newWords) - memTotalCost(curWords) : 0n;
+  const words = (size + 31n) / 32n;
+  const baseGas = 3n;
+  const wordGas = 3n * words;
+  return {
+    opcode, baseGas: baseGas.toString(), words: words.toString(),
+    wordGas: wordGas.toString(), memoryGas: memoryGas.toString(),
+    totalGas: (baseGas + wordGas + memoryGas).toString(),
+    newMemBytes: regionEnd.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4440,6 +4485,22 @@ if (typeof document !== "undefined") {
       el.textContent = `SHA3 gas: ${r.totalGas} — 30 for the operation + ${r.wordGas} for its ${r.words} word(s) + ${r.memoryGas} of memory expansion. Computed locally from the values you gave — the data contents are not read and move no term; no hash is computed here and no chain is queried.`;
     });
 
+    /* CALLDATACOPY / CODECOPY / RETURNDATACOPY gas */
+    const copyBtn = document.getElementById("copy-btn");
+    if (copyBtn) copyBtn.addEventListener("click", () => {
+      const r = copyGasCalc(
+        document.getElementById("copy-op").value,
+        document.getElementById("copy-dest").value,
+        document.getElementById("copy-size").value,
+        document.getElementById("copy-mem").value);
+      const el = document.getElementById("copy-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the destination offset, copy size and current memory size are whole numbers of bytes at most 137,438,953,440 with the destination region not reaching past that bound.";
+        return;
+      }
+      el.textContent = `${r.opcode} gas: ${r.totalGas} — 3 for the operation + ${r.wordGas} for its ${r.words} word(s) + ${r.memoryGas} of memory expansion. Computed locally from the values you gave — the source offset and the data contents are not read and move no term; nothing is copied and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4453,5 +4514,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

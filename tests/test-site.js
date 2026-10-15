@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=28"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=29"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1142,6 +1142,94 @@ check("v2q calculator refuses illiquid, impossible and malformed inputs",
   app.uniswapV2Quote("out", null, "1000000", "10000") === null);
 check("v2q tool section present in index.html", html.includes("v2q-btn") && html.includes("Uniswap V2 swap quote calculator"));
 check("UniswapV2Library linked from index.html", html.includes("https://github.com/Uniswap/v2-periphery/blob/master/contracts/libraries/UniswapV2Library.sol"));
+
+/* Uniswap V2 liquidity mint & burn — expected values produced by an
+   independent pure-Python transcription of UniswapV2Pair's mint/burn
+   formulas and Math.sqrt's Babylonian method (hidden_files/oracle-v2liq.py),
+   its sqrt cross-checked against math.isqrt on every case. Mint vectors
+   are [reserve0, reserve1, totalSupply, amount0, amount1] →
+   [liquidity, locked, newTotalSupply, sharePercent]; burn vectors are
+   [balance0, balance1, totalSupply, liquidity] → [amount0, amount1,
+   newTotalSupply]. */
+check("v2l controls labelled in index.html",
+  ["v2l-m-reserve0", "v2l-m-reserve1", "v2l-m-supply", "v2l-m-amount0", "v2l-m-amount1",
+   "v2l-b-balance0", "v2l-b-balance1", "v2l-b-supply", "v2l-b-liquidity"]
+    .every(id => html.includes(`for="${id}"`)));
+check("v2l mint into an existing pair matches the Python oracle (min of the two pro-rata sides, floored)",
+  (() => { const V = [
+    [["1000000", "1000000", "1000000", "10000", "10000"], ["10000", "0", "1010000", "0.9900"]],
+    [["1000000", "4000000", "2000000", "10000", "10000"], ["5000", "0", "2005000", "0.2493"]],
+    [["1000000", "4000000", "2000000", "10000", "40000"], ["20000", "0", "2020000", "0.9900"]],
+    [["1000000", "1000000", "1000000", "1", "1"], ["1", "0", "1000001", "0.0000"]],
+    [["123456789", "987654321", "349876543", "111111", "888888"], ["314888", "0", "350191431", "0.0899"]],
+    [["5192296858534827628530496329219095", "5192296858534827628530496329219095", "5192296858534827628530496329219095", "1000", "1000"], ["1000", "0", "5192296858534827628530496329220095", "0.0000"]],
+    [["100000000000000000000", "17", "999983", "1000000000000000", "3"], ["9", "0", "999992", "0.0009"]]
+  ]; return V.every(([inp, exp]) => { const r = app.uniswapV2Mint(...inp);
+    return r !== null && r.first === false && r.liquidity === exp[0] && r.locked === exp[1] &&
+      r.newTotalSupply === exp[2] && r.sharePercent === exp[3] &&
+      r.newReserve0 === (BigInt(inp[0]) + BigInt(inp[3])).toString() &&
+      r.newReserve1 === (BigInt(inp[1]) + BigInt(inp[4])).toString(); }); })());
+check("v2l first-deposit mint matches the Python oracle (sqrt(product) − 1000 locked)",
+  (() => { const V = [
+    [["0", "0", "0", "10000", "10000"], ["9000", "10000", "90.0000"]],
+    [["0", "0", "0", "1000000", "1000000"], ["999000", "1000000", "99.9000"]],
+    [["0", "0", "0", "20000", "5000"], ["9000", "10000", "90.0000"]],
+    [["0", "0", "0", "1001", "1001"], ["1", "1001", "0.0999"]],
+    [["0", "0", "0", "2000", "600"], ["95", "1095", "8.6757"]],
+    [["0", "0", "0", "1000000000000000000", "1000000000000000000"], ["999999999999999000", "1000000000000000000", "99.9999"]],
+    [["0", "0", "0", "999999937", "123456789"], ["351363171", "351364171", "99.9997"]]
+  ]; return V.every(([inp, exp]) => { const r = app.uniswapV2Mint(...inp);
+    return r !== null && r.first === true && r.liquidity === exp[0] && r.locked === "1000" &&
+      r.rootK === exp[1] && r.newTotalSupply === exp[1] && r.sharePercent === exp[2] &&
+      r.newReserve0 === inp[3] && r.newReserve1 === inp[4]; }); })());
+check("v2l MINIMUM_LIQUIDITY constant is the pair's 1000", app.V2_MINIMUM_LIQUIDITY === 1000n);
+check("v2l: prefilled mint page values reproduce the oracle's 20000",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.uniswapV2Mint(g("v2l-m-reserve0"), g("v2l-m-reserve1"), g("v2l-m-supply"), g("v2l-m-amount0"), g("v2l-m-amount1"));
+    return r !== null && r.liquidity === "20000" && r.sharePercent === "0.9900"; })());
+check("v2l mint refuses zero, inconsistent, overflowing and malformed inputs",
+  app.uniswapV2Mint("1000000", "1000000", "1000000", "0", "10000") === null &&
+  app.uniswapV2Mint("1000000", "1000000", "1000000", "10000", "0") === null &&
+  app.uniswapV2Mint("0", "0", "0", "1000", "1000") === null &&
+  app.uniswapV2Mint("0", "0", "0", "999", "999") === null &&
+  app.uniswapV2Mint("0", "0", "0", "3", "5") === null &&
+  app.uniswapV2Mint("0", "0", "5", "10000", "10000") === null &&
+  app.uniswapV2Mint("5", "0", "0", "10000", "10000") === null &&
+  app.uniswapV2Mint("0", "1000000", "1000000", "10000", "10000") === null &&
+  app.uniswapV2Mint("5192296858534827628530496329220095", "1000000", "1000000", "1", "1") === null &&
+  app.uniswapV2Mint("1000000", "1000000", "1000000", "1.5", "10000") === null &&
+  app.uniswapV2Mint("1000000", "1000000", "1000000", "-3", "10000") === null &&
+  app.uniswapV2Mint("1000000", "1000000", "1000000", "", "10000") === null &&
+  app.uniswapV2Mint(null, "1000000", "1000000", "10000", "10000") === null);
+check("v2l burn matches the Python oracle (pro-rata from balances, floored)",
+  (() => { const V = [
+    [["1010000", "1010000", "1010000", "10000"], ["10000", "10000", "1000000"]],
+    [["1000003", "999983", "777777", "123456"], ["158729", "158726", "654321"]],
+    [["2000000", "500000", "1000000", "1000000"], ["2000000", "500000", "0"]],
+    [["1000000", "1000000", "1000000", "1"], ["1", "1", "999999"]],
+    [["5192296858534827628530496329220095", "5192296858534827628530496329220095", "1000000000000000000000000000000", "100000000000000000000000000000"], ["519229685853482762853049632922009", "519229685853482762853049632922009", "900000000000000000000000000000"]],
+    [["987654321012345", "123456789012345", "349123456789", "98765432109"], ["279402898579969", "34925362007294", "250358024680"]]
+  ]; return V.every(([inp, exp]) => { const r = app.uniswapV2Burn(...inp);
+    return r !== null && r.amount0 === exp[0] && r.amount1 === exp[1] && r.newTotalSupply === exp[2] &&
+      r.newBalance0 === (BigInt(inp[0]) - BigInt(exp[0])).toString() &&
+      r.newBalance1 === (BigInt(inp[1]) - BigInt(exp[1])).toString(); }); })());
+check("v2l: prefilled burn page values reproduce the oracle's 5000 / 20000",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.uniswapV2Burn(g("v2l-b-balance0"), g("v2l-b-balance1"), g("v2l-b-supply"), g("v2l-b-liquidity"));
+    return r !== null && r.amount0 === "5000" && r.amount1 === "20000" && r.newTotalSupply === "2010000"; })());
+check("v2l burn refuses zero, over-supply, zero-payout and malformed inputs",
+  app.uniswapV2Burn("1000000", "1000000", "1000000", "0") === null &&
+  app.uniswapV2Burn("1000000", "1000000", "1000000", "1000001") === null &&
+  app.uniswapV2Burn("1000000", "3", "1000000", "1") === null &&
+  app.uniswapV2Burn("0", "1000000", "1000000", "1") === null &&
+  app.uniswapV2Burn("1000000", "1000000", "0", "1") === null &&
+  app.uniswapV2Burn("5192296858534827628530496329220096", "1000000", "1000000", "1") === null &&
+  app.uniswapV2Burn("1000000", "1000000", "1000000", "1.5") === null &&
+  app.uniswapV2Burn("1000000", "1000000", "1000000", null) === null);
+check("v2l tool section present in index.html", html.includes("v2l-mint-btn") && html.includes("v2l-burn-btn") && html.includes("Uniswap V2 liquidity mint"));
+check("UniswapV2Pair and Math linked from index.html",
+  html.includes("https://github.com/Uniswap/v2-core/blob/master/contracts/UniswapV2Pair.sol") &&
+  html.includes("https://github.com/Uniswap/v2-core/blob/master/contracts/libraries/Math.sol"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

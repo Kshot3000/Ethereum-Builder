@@ -631,6 +631,117 @@ function uniswapV2Quote(mode, reserveInStr, reserveOutStr, amountStr) {
   };
 }
 
+/* ---------- Uniswap V2 liquidity mint & burn (UniswapV2Pair) ----------
+   The liquidity math of UniswapV2Pair in v2-core, run locally on values
+   the user supplies (a pair's reserves, balances and total supply are
+   chain state — this tool makes no chain query, so the numbers below
+   are the contract's formulas applied to supplied values, not live
+   pool data).
+   Mint, existing pair: the pair measures the amounts actually
+   deposited (balance − reserve) and mints
+     liquidity = min(amount0 × totalSupply ÷ reserve0,
+                     amount1 × totalSupply ÷ reserve1),
+   both divisions floored, so the scarcer side relative to the pair's
+   ratio governs and an unbalanced deposit earns no credit for its
+   excess (the excess stays in the pair for all LPs). A result of 0
+   reverts in the pair (INSUFFICIENT_LIQUIDITY_MINTED) and is refused.
+   Mint, first deposit (totalSupply 0, reserves 0):
+     liquidity = sqrt(amount0 × amount1) − MINIMUM_LIQUIDITY,
+   with sqrt the Babylonian integer square root of the pair's Math
+   library (floor), and MINIMUM_LIQUIDITY = 1000 LP units minted to
+   the zero address and locked forever, so the first depositor
+   receives sqrt(product) − 1000 and the pair's total supply becomes
+   sqrt(product). A product whose root is at most 1000 mints nothing
+   to the depositor and is refused.
+   Burn: the pair pays pro-rata from its token BALANCES (not its
+   reserves — balances can exceed reserves by donations and accrued
+   fees, and the pair's comment notes balances are used so the payout
+   is pro-rata):
+     amount_i = liquidity × balance_i ÷ totalSupply, floored;
+   a payout of 0 on either side reverts (INSUFFICIENT_LIQUIDITY_BURNED)
+   and is refused, as is burning more than the total supply.
+   Reserves and post-event balances are uint112 in the pair's _update,
+   so any reserve/balance, and any reserve + deposit, above
+   2^112 − 1 is refused. Amounts are in each token's base units; LP
+   amounts are in the pair token's own base units. The pair's optional
+   protocol-fee mint (_mintFee, when the factory's feeTo is set) can
+   increase totalSupply immediately before a mint or burn; it is NOT
+   modelled — the totalSupply supplied here is taken as the supply at
+   the liquidity event itself. The depositor's pool share after a mint
+   is shown as a percent truncated to 4 decimals (display only). */
+const V2_MINIMUM_LIQUIDITY = 1000n;
+const V2_MAX112 = (1n << 112n) - 1n;
+function v2ParseUint(str) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  if (!/^\d+$/.test(s) || s.length > 78) return null;
+  return BigInt(s);
+}
+function v2Sqrt(y) {
+  if (y > 3n) {
+    let z = y;
+    let x = y / 2n + 1n;
+    while (x < z) { z = x; x = (y / x + x) / 2n; }
+    return z;
+  }
+  return y !== 0n ? 1n : 0n;
+}
+function v2SharePercent(liq, newTotalSupply) {
+  const scaled = (liq * 1000000n) / newTotalSupply;
+  return `${scaled / 10000n}.${String(scaled % 10000n).padStart(4, "0")}`;
+}
+function uniswapV2Mint(reserve0Str, reserve1Str, totalSupplyStr, amount0Str, amount1Str) {
+  const reserve0 = v2ParseUint(reserve0Str);
+  const reserve1 = v2ParseUint(reserve1Str);
+  const totalSupply = v2ParseUint(totalSupplyStr);
+  const amount0 = v2ParseUint(amount0Str);
+  const amount1 = v2ParseUint(amount1Str);
+  if (reserve0 === null || reserve1 === null || totalSupply === null || amount0 === null || amount1 === null) return null;
+  if (amount0 === 0n || amount1 === 0n) return null;
+  if (reserve0 + amount0 > V2_MAX112 || reserve1 + amount1 > V2_MAX112) return null;
+  if (totalSupply === 0n) {
+    if (reserve0 !== 0n || reserve1 !== 0n) return null;
+    const rootK = v2Sqrt(amount0 * amount1);
+    if (rootK <= V2_MINIMUM_LIQUIDITY) return null;
+    const liquidity = rootK - V2_MINIMUM_LIQUIDITY;
+    return {
+      first: true, liquidity: liquidity.toString(), locked: V2_MINIMUM_LIQUIDITY.toString(),
+      rootK: rootK.toString(), newTotalSupply: rootK.toString(),
+      newReserve0: amount0.toString(), newReserve1: amount1.toString(),
+      sharePercent: v2SharePercent(liquidity, rootK)
+    };
+  }
+  if (reserve0 === 0n || reserve1 === 0n) return null;
+  const liq0 = (amount0 * totalSupply) / reserve0;
+  const liq1 = (amount1 * totalSupply) / reserve1;
+  const liquidity = liq0 < liq1 ? liq0 : liq1;
+  if (liquidity === 0n) return null;
+  const newTotalSupply = totalSupply + liquidity;
+  return {
+    first: false, liquidity: liquidity.toString(), locked: "0", rootK: null,
+    newTotalSupply: newTotalSupply.toString(),
+    newReserve0: (reserve0 + amount0).toString(), newReserve1: (reserve1 + amount1).toString(),
+    sharePercent: v2SharePercent(liquidity, newTotalSupply)
+  };
+}
+function uniswapV2Burn(balance0Str, balance1Str, totalSupplyStr, liquidityStr) {
+  const balance0 = v2ParseUint(balance0Str);
+  const balance1 = v2ParseUint(balance1Str);
+  const totalSupply = v2ParseUint(totalSupplyStr);
+  const liquidity = v2ParseUint(liquidityStr);
+  if (balance0 === null || balance1 === null || totalSupply === null || liquidity === null) return null;
+  if (totalSupply === 0n || liquidity === 0n || liquidity > totalSupply) return null;
+  if (balance0 > V2_MAX112 || balance1 > V2_MAX112) return null;
+  const amount0 = (liquidity * balance0) / totalSupply;
+  const amount1 = (liquidity * balance1) / totalSupply;
+  if (amount0 === 0n || amount1 === 0n) return null;
+  return {
+    amount0: amount0.toString(), amount1: amount1.toString(),
+    newTotalSupply: (totalSupply - liquidity).toString(),
+    newBalance0: (balance0 - amount0).toString(), newBalance1: (balance1 - amount1).toString()
+  };
+}
+
 /* ---------- Uniswap V3 tick ⇄ sqrtPriceX96 converter (TickMath) ----------
    A Uniswap V3 pool's price is carried as sqrtPriceX96, the square
    root of the token1/token0 price in Q64.96 fixed point, and its tick
@@ -2364,6 +2475,41 @@ if (typeof document !== "undefined") {
         : `Swap quote: to receive exactly ${r.amountOut} base units out you must send ${r.amountIn} base units in (rounded up by 1, as the library rounds, so the pair's invariant check passes) · Price impact vs the pre-trade reserve ratio (includes the 0.3% fee): ${r.impactPercent}% · Reserves after this swap: ${r.newReserveIn} in / ${r.newReserveOut} out. Computed locally with UniswapV2Library's formula from the reserves you gave — not live pool data.`;
     });
 
+    /* Uniswap V2 liquidity mint & burn calculator */
+    const v2lMintBtn = document.getElementById("v2l-mint-btn");
+    if (v2lMintBtn) v2lMintBtn.addEventListener("click", () => {
+      const r = uniswapV2Mint(
+        document.getElementById("v2l-m-reserve0").value,
+        document.getElementById("v2l-m-reserve1").value,
+        document.getElementById("v2l-m-supply").value,
+        document.getElementById("v2l-m-amount0").value,
+        document.getElementById("v2l-m-amount1").value
+      );
+      const el = document.getElementById("v2l-mint-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: reserves, total supply and both deposited amounts must be whole numbers in base units, both deposited amounts at least 1, and no reserve plus its deposit may exceed 2^112 − 1 (the pair stores reserves as uint112). For a first deposit the reserves and total supply must all be 0 and the product of the amounts must have a square root above 1000; for an existing pair the reserves must be non-zero and the deposit large enough to mint at least 1 LP unit.";
+        return;
+      }
+      el.textContent = r.first
+        ? `First deposit: you mint ${r.liquidity} LP units and ${r.locked} LP units are locked forever at the zero address (the pair's MINIMUM_LIQUIDITY) — sqrt(${document.getElementById("v2l-m-amount0").value.trim()} × ${document.getElementById("v2l-m-amount1").value.trim()}) = ${r.rootK}, so the pair's total supply becomes ${r.newTotalSupply} and your share is ${r.sharePercent}%. Reserves after the deposit: ${r.newReserve0} / ${r.newReserve1}. Computed locally with UniswapV2Pair's mint math from the values you gave — not live pool data: a real pair's reserves and total supply are chain state, and the pair's optional protocol-fee mint is not modelled. Not financial advice.`
+        : `Mint: depositing ${document.getElementById("v2l-m-amount0").value.trim()} / ${document.getElementById("v2l-m-amount1").value.trim()} mints ${r.liquidity} LP units (the smaller of the two sides' pro-rata amounts governs; any excess of the other side stays in the pair). Total supply becomes ${r.newTotalSupply}, your share of the pair is ${r.sharePercent}%, and reserves after the deposit are ${r.newReserve0} / ${r.newReserve1}. Computed locally with UniswapV2Pair's mint math from the values you gave — not live pool data: a real pair's reserves and total supply are chain state, and the pair's optional protocol-fee mint is not modelled. Not financial advice.`;
+    });
+    const v2lBurnBtn = document.getElementById("v2l-burn-btn");
+    if (v2lBurnBtn) v2lBurnBtn.addEventListener("click", () => {
+      const r = uniswapV2Burn(
+        document.getElementById("v2l-b-balance0").value,
+        document.getElementById("v2l-b-balance1").value,
+        document.getElementById("v2l-b-supply").value,
+        document.getElementById("v2l-b-liquidity").value
+      );
+      const el = document.getElementById("v2l-burn-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: both pair balances, the total supply and the LP amount to burn must be whole numbers in base units, each balance at most 2^112 − 1, the burn at least 1 and no more than the total supply, and the burn must pay out at least 1 base unit of each token (the pair reverts otherwise).";
+        return;
+      }
+      el.textContent = `Burn: ${document.getElementById("v2l-b-liquidity").value.trim()} LP units pay out ${r.amount0} base units of token0 and ${r.amount1} base units of token1 — pro-rata from the pair's balances, each division floored. Total supply becomes ${r.newTotalSupply} and the pair's balances after the burn are ${r.newBalance0} / ${r.newBalance1}. Computed locally with UniswapV2Pair's burn math from the values you gave — not live pool data: a real pair's balances and total supply are chain state, and the pair's optional protocol-fee mint is not modelled. Not financial advice.`;
+    });
+
     /* Uniswap V3 tick ⇄ sqrtPriceX96 converter */
     const v3tBtn = document.getElementById("v3t-btn");
     if (v3tBtn) v3tBtn.addEventListener("click", () => {
@@ -2754,5 +2900,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

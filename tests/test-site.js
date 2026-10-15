@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=37"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=38"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1643,6 +1643,56 @@ check("compound liquidate-allowed refuses malformed inputs, a non-boolean deprec
   (() => { const P = (2n ** 200n).toString(); const Q = (2n ** 100n).toString(); return app.compoundLiquidateAllowed(P, Q, "1", "1", false) === null; })() &&
   (() => { const P = (2n ** 128n).toString(); return app.compoundLiquidateAllowed(P, P, "1", "1", false) === null; })());
 check("compound liquidate-allowed tool section present in index.html", html.includes("clqa-btn") && html.includes("Compound liquidation allowed"));
+
+/* Compound borrow allowed — expected values produced by an
+   independent pure-Python transcription of Comptroller's
+   borrowAllowed (hidden_files/oracle-compound-borrow-allowed.py)
+   in the contract's branch order: a zero oracle price returns the
+   price error FIRST (shielding an overflowing cap addition or
+   liquidity product), then the borrow cap — 0 is unlimited and
+   skips the addition, otherwise nextTotalBorrows = totalBorrows +
+   borrowAmount must stay strictly below the cap, so landing
+   exactly on it is cap-reached, a verdict that also precedes (and
+   shields) the liquidity check — then the liquidity calculator's
+   hypothetical check with the borrow applied, where shortfall > 0
+   blocks and shortfall == 0 (liquidity exhausted exactly) allows.
+   Vectors are [balance, borrowBalance, factor, rate, price,
+   borrowAmt, totalBorrows, borrowCap] -> [allowed, verdict,
+   nextTotalBorrows, liquidity, shortfall]. */
+check("compound borrow-allowed controls labelled in index.html",
+  ["cbqa-balance", "cbqa-borrow-balance", "cbqa-factor", "cbqa-rate", "cbqa-price", "cbqa-borrow-amt", "cbqa-total-borrows", "cbqa-borrow-cap"]
+    .every(id => html.includes(`for="${id}"`)));
+check("compound borrow-allowed matches the Python oracle (prefill exhausting liquidity, shortfall 1, cap exact and one under, unlimited cap at uint256-max totals, price-error and cap verdicts shielding overflows, market already at cap, snapshot chain shortfall, 2^100 balance, odd values, zero cases)",
+  (() => { const M = (2n ** 256n - 1n).toString(); const V = [
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "250000", "9000000", "10000000"], [true, "allowed", "9250000", "0", "0"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "250001", "9000000", "10000000"], [false, "insufficient-liquidity", "9250001", "0", "1"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "0", "9000000", "10000000"], [true, "allowed", "9000000", "250000", "0"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "250000", "9750000", "10000000"], [false, "borrow-cap-reached", "10000000", null, null]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "250000", "9749999", "10000000"], [true, "allowed", "9999999", "0", "0"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "250000", M, "0"], [true, "allowed", null, "0", "0"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "0", "1", M, "5"], [false, "price-error", null, null, null]],
+    [["1", "0", M, "2000000000000000000", "1000000000000000000", "10", "100", "105"], [false, "borrow-cap-reached", "110", null, null]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "0", "10000000", "10000000"], [false, "borrow-cap-reached", "10000000", null, null]],
+    [["45871559", "1004000", "800000000000000000", "21800000000000000", "2000000000000000000", "0", "0", "0"], [false, "insufficient-liquidity", null, "0", "408001"]],
+    [["1267650600228229401496703205376", "1000000", "500000000000000000", "100000000000000000", "3000000000000000000", "1000000", "0", "0"], [true, "allowed", null, "190147590034234410224499480806", "0"]],
+    [["123456789", "987654", "777777777777777777", "33333333333333333", "555555555555555555", "50000", "777000000", "888000000"], [true, "allowed", "777050000", "1201711", "0"]],
+    [["0", "0", "750000000000000000", "20000000000000000", "1000000000000000000", "0", "0", "0"], [true, "allowed", null, "0", "0"]],
+    [["50000000", "0", "0", "20000000000000000", "1000000000000000000", "1", "0", "0"], [false, "insufficient-liquidity", null, "0", "1"]]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundBorrowAllowed(...inp);
+    return r !== null && r.allowed === exp[0] && r.verdict === exp[1] && r.nextTotalBorrows === exp[2] && r.liquidity === exp[3] && r.shortfall === exp[4]; }); })());
+check("compound borrow-allowed: prefilled page values allow a borrow of exactly 250,000, exhausting the liquidity tool's 250,000 with the market total under its cap",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.compoundBorrowAllowed(g("cbqa-balance"), g("cbqa-borrow-balance"), g("cbqa-factor"), g("cbqa-rate"), g("cbqa-price"), g("cbqa-borrow-amt"), g("cbqa-total-borrows"), g("cbqa-borrow-cap"));
+    return r !== null && r.allowed === true && r.verdict === "allowed" && r.nextTotalBorrows === "9250000" && r.liquidity === "0" && r.shortfall === "0"; })());
+check("compound borrow-allowed refuses malformed inputs, an overflowing cap addition, and an overflowing liquidity product when the liquidity check is reached",
+  app.compoundBorrowAllowed("50000000", "500000", "1.5", "20000000000000000", "1000000000000000000", "250000", "9000000", "10000000") === null &&
+  app.compoundBorrowAllowed("50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "-1", "9000000", "10000000") === null &&
+  app.compoundBorrowAllowed("", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "250000", "9000000", "10000000") === null &&
+  app.compoundBorrowAllowed("50000000", "500000", "750000000000000000", "20000000000000000", null, "250000", "9000000", "10000000") === null &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundBorrowAllowed("50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "1", M, "100") === null; })() &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundBorrowAllowed("1", "0", M, "2000000000000000000", "1000000000000000000", "10", "100", "0") === null; })() &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundBorrowAllowed("1", "0", M, "2000000000000000000", "1000000000000000000", "10", "100", "1000000") === null; })());
+check("compound borrow-allowed tool section present in index.html", html.includes("cbqa-btn") && html.includes("Compound borrow allowed calculator"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

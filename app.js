@@ -2828,6 +2828,71 @@ function compoundLiquidateAllowed(borrowBalanceStr, closeFactorStr, shortfallStr
     : { allowed: true, verdict: "allowed", maxClose: maxClose.toString() };
 }
 
+/* Compound borrow allowed check — Comptroller's borrowAllowed
+   (compound-protocol, BSD-3-Clause; formulas paraphrased, not
+   copied), restricted to the parts determined by the supplied
+   numbers, in the contract's own branch order:
+     1. a zero oracle price for the borrowed market returns the
+        price error BEFORE anything else is computed — the
+        borrow-cap addition and the liquidity products are never
+        reached, so an overflow in either is not a refusal there;
+     2. the market borrow cap (a cap of 0 means unlimited, and
+        the addition is never computed then either):
+        nextTotalBorrows = totalBorrows + borrowAmount with
+        checked addition (an overflow is refused, as it reverts),
+        and the contract requires nextTotalBorrows < borrowCap,
+        so reaching the cap exactly is refused as cap-reached —
+        a verdict returned before the liquidity check runs, so
+        it shields any overflow in that check's products too;
+     3. the hypothetical liquidity check of the liquidity tool
+        above (one market, redeem 0, borrow = borrowAmount): a
+        shortfall above 0 is insufficient liquidity; a shortfall
+        of exactly 0 — the borrow exhausting the account's
+        liquidity exactly — is allowed. A product or sum above
+        the uint256 maximum inside that check is refused, as the
+        checked arithmetic reverts there, but only when the
+        check is actually reached.
+   The market-listing check, the borrow pause guardian and the
+   membership / add-to-market step are chain state, not numbers:
+   membership does not bypass this check (a non-member borrower
+   is added to the market and the check continues), so none of
+   them changes the numeric verdict and they are out of scope
+   here, as are the COMP reward updates the contract performs
+   afterwards. Balances, factor, rate, price, market totals and
+   cap are values the user supplies — a real borrow's are chain
+   state this page does not read. Nothing is queried on chain. */
+function compoundBorrowAllowed(balanceStr, borrowBalanceStr, factorStr, rateStr, priceStr, borrowAmtStr, totalBorrowsStr, borrowCapStr) {
+  const balance = v2ParseUint(balanceStr);
+  const borrowBalance = v2ParseUint(borrowBalanceStr);
+  const factor = v2ParseUint(factorStr);
+  const rate = v2ParseUint(rateStr);
+  const price = v2ParseUint(priceStr);
+  const borrowAmt = v2ParseUint(borrowAmtStr);
+  const totalBorrows = v2ParseUint(totalBorrowsStr);
+  const borrowCap = v2ParseUint(borrowCapStr);
+  if (balance === null || borrowBalance === null || factor === null ||
+      rate === null || price === null || borrowAmt === null ||
+      totalBorrows === null || borrowCap === null) return null;
+  if (price === 0n) {
+    return { allowed: false, verdict: "price-error", nextTotalBorrows: null, liquidity: null, shortfall: null };
+  }
+  let nextTotal = null;
+  if (borrowCap !== 0n) {
+    const next = totalBorrows + borrowAmt;
+    if (next > ERC4626_MAX_UINT256) return null; // checked addition reverts
+    nextTotal = next;
+    if (next >= borrowCap) { // the contract requires next < cap
+      return { allowed: false, verdict: "borrow-cap-reached", nextTotalBorrows: nextTotal.toString(), liquidity: null, shortfall: null };
+    }
+  }
+  const liq = compoundLiquidity(balanceStr, borrowBalanceStr, factorStr, rateStr, priceStr, "0", borrowAmtStr);
+  if (liq === null) return null;
+  const nt = nextTotal === null ? null : nextTotal.toString();
+  return BigInt(liq.shortfall) > 0n
+    ? { allowed: false, verdict: "insufficient-liquidity", nextTotalBorrows: nt, liquidity: liq.liquidity, shortfall: liq.shortfall }
+    : { allowed: true, verdict: "allowed", nextTotalBorrows: nt, liquidity: liq.liquidity, shortfall: liq.shortfall };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3524,6 +3589,35 @@ if (typeof document !== "undefined") {
       el.textContent = `liquidateBorrowAllowed: ${r.allowed ? "ALLOWED" : "NOT ALLOWED"} — ${detail}. Computed locally with the Comptroller's formula on the values you gave — a real account's borrow balance, shortfall and the market's close factor are chain state this page does not read, and the market-listing and cToken-side checks are separate. Not financial advice.`;
     });
 
+    /* Compound borrow allowed */
+    const cbqaBtn = document.getElementById("cbqa-btn");
+    if (cbqaBtn) cbqaBtn.addEventListener("click", () => {
+      const r = compoundBorrowAllowed(
+        document.getElementById("cbqa-balance").value,
+        document.getElementById("cbqa-borrow-balance").value,
+        document.getElementById("cbqa-factor").value,
+        document.getElementById("cbqa-rate").value,
+        document.getElementById("cbqa-price").value,
+        document.getElementById("cbqa-borrow-amt").value,
+        document.getElementById("cbqa-total-borrows").value,
+        document.getElementById("cbqa-borrow-cap").value);
+      const el = document.getElementById("cbqa-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: cToken balance, borrow balance, collateral factor, exchange rate, oracle price, borrow amount, market total borrows and borrow cap are whole numbers (up to 78 digits), and — on a path that reaches it — no cap addition, product or sum exceeds the uint256 maximum.";
+        return;
+      }
+      const detail = r.verdict === "allowed"
+        ? (r.nextTotalBorrows === null
+          ? `the market borrow cap is unlimited (0), and after the borrow the account holds liquidity ${r.liquidity} with no shortfall`
+          : `the market's total borrows would rise to ${r.nextTotalBorrows}, under its borrow cap, and after the borrow the account holds liquidity ${r.liquidity} with no shortfall`)
+        : r.verdict === "price-error"
+          ? "the borrowed market's oracle price is zero, so the check stops there — the borrow cap and the liquidity check are never reached"
+          : r.verdict === "borrow-cap-reached"
+            ? `the market's total borrows would reach ${r.nextTotalBorrows}, and the contract requires the total after a borrow to stay strictly below the borrow cap — the liquidity check is never reached`
+            : `after the borrow the account would hold a shortfall of ${r.shortfall} (the liquidity calculator's hypothetical check with this borrow applied)`;
+      el.textContent = `borrowAllowed: ${r.allowed ? "ALLOWED" : "NOT ALLOWED"} — ${detail}. Computed locally with the Comptroller's check on the values you gave — a real account's balances, factor, rate and price and the market's totals and cap are chain state this page does not read, and the market-listing, pause and membership steps are separate. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3537,5 +3631,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

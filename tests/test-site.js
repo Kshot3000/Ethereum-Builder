@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=34"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=35"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1497,6 +1497,54 @@ check("compound rate model refuses reserves above cash + borrows, a zero denomin
   (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundRateModel("0", M, "0", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000") === null; })() &&
   (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundRateModel("1000000", "9000000", "0", "0", M, "4000000000000", "800000000000000000", "100000000000000000") === null; })());
 check("compound rate model tool section present in index.html", html.includes("cirm-btn") && html.includes("Compound interest rate model calculator"));
+
+/* Compound liquidation seize tokens — expected values produced by an
+   independent pure-Python transcription of Comptroller's
+   liquidateCalculateSeizeTokens over ExponentialNoError's Exp
+   helpers (hidden_files/oracle-compound-seize.py): numerator =
+   incentive x priceBorrowed // 1e18, denominator = priceCollateral x
+   exchangeRate // 1e18, ratio = numerator x 1e18 // denominator,
+   seizeTokens = ratio x repay // 1e18, each step truncating;
+   seizeUnderlying is the redeem conversion seizeTokens x rate // 1e18.
+   Vectors are [repay, incentive, priceBorrowed, priceCollateral,
+   exchangeRate] -> [seizeTokens, seizeUnderlying, ratio]. */
+check("compound seize controls labelled in index.html",
+  ["cseize-repay", "cseize-incentive", "cseize-price-borrowed", "cseize-price-collateral", "cseize-rate"]
+    .every(id => html.includes(`for="${id}"`)));
+check("compound seize matches the Python oracle (prefill, stored-rate chain, pricier borrow, stepwise truncation, zero repay, zero incentive, truncated numerator, odd values, 2^100 repay)",
+  (() => { const V = [
+    [["100000", "1080000000000000000", "1000000000000000000", "2000000000000000000", "50000000000000000"], ["1080000", "54000", "10800000000000000000"]],
+    [["10000", "1080000000000000000", "1000000000000000000", "1000000000000000000", "21800000000000000"], ["495412", "10799", "49541284403669724770"]],
+    [["2000000", "1080000000000000000", "3000000000000000000000", "1000000000000000000", "20000000000000000"], ["324000000000", "6480000000", "162000000000000000000000"]],
+    [["100000", "1080000000000000001", "999999999999999999", "2000000000000000000", "50000000000000000"], ["1079999", "53999", "10799999999999999990"]],
+    [["0", "1080000000000000000", "1000000000000000000", "2000000000000000000", "50000000000000000"], ["0", "0", "10800000000000000000"]],
+    [["100000", "0", "1000000000000000000", "2000000000000000000", "50000000000000000"], ["0", "0", "0"]],
+    [["7", "11", "13", "1000000000000000000", "1000000000000000000"], ["0", "0", "0"]],
+    [["123456789", "1234567890123456789", "987654321987654321", "555555555555555555", "33333333333333333"], ["8128842009", "270961400", "65843620873251029971"]],
+    [["1267650600228229401496703205376", "1080000000000000000", "3000000000000000000", "7000000000000000000", "100000000000000000"], ["5867411349627804657812890293356", "586741134962780465781289029335", "4628571428571428571"]]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundSeizeTokens(...inp);
+    return r !== null && r.seizeTokens === exp[0] && r.seizeUnderlying === exp[1] && r.ratio === exp[2]; }); })());
+check("compound seize: Exp steps truncate individually, so the stepwise result differs from the one-line formula",
+  (() => { const r = app.compoundSeizeTokens("100000", "1080000000000000001", "999999999999999999", "2000000000000000000", "50000000000000000");
+    return r !== null && r.ratio === "10799999999999999990" && r.seizeTokens === "1079999" && r.seizeUnderlying === "53999"; })());
+check("compound seize: prefilled page values seize exactly 1,080,000 cTokens worth exactly 54,000 underlying",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.compoundSeizeTokens(g("cseize-repay"), g("cseize-incentive"), g("cseize-price-borrowed"), g("cseize-price-collateral"), g("cseize-rate"));
+    return r !== null && r.seizeTokens === "1080000" && r.seizeUnderlying === "54000" && r.ratio === "10800000000000000000"; })());
+check("compound seize refuses a zero price for either market, a zero or truncated-to-zero denominator, malformed and overflowing inputs",
+  app.compoundSeizeTokens("100000", "1080000000000000000", "0", "2000000000000000000", "50000000000000000") === null &&
+  app.compoundSeizeTokens("100000", "1080000000000000000", "1000000000000000000", "0", "50000000000000000") === null &&
+  app.compoundSeizeTokens("100000", "1080000000000000000", "1000000000000000000", "2000000000000000000", "0") === null &&
+  app.compoundSeizeTokens("100000", "1080000000000000000", "1000000000000000000", "3", "7") === null &&
+  app.compoundSeizeTokens("7", "11", "13", "17", "19") === null &&
+  app.compoundSeizeTokens("100000", "1.5", "1000000000000000000", "2000000000000000000", "50000000000000000") === null &&
+  app.compoundSeizeTokens("100000", "1080000000000000000", "1000000000000000000", "-3", "50000000000000000") === null &&
+  app.compoundSeizeTokens("", "1080000000000000000", "1000000000000000000", "2000000000000000000", "50000000000000000") === null &&
+  app.compoundSeizeTokens(null, "1080000000000000000", "1000000000000000000", "2000000000000000000", "50000000000000000") === null &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundSeizeTokens("100000", M, "2", "2000000000000000000", "50000000000000000") === null; })() &&
+  (() => { const P = (2n ** 200n).toString(); return app.compoundSeizeTokens("1", P, "1000000000000000000", "1000000000000000000", "1000000000000000000") === null; })() &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundSeizeTokens(M, "1080000000000000000", "1000000000000000000", "1000000000000000000", "1000000000000000000") === null; })());
+check("compound seize tool section present in index.html", html.includes("cseize-btn") && html.includes("Compound liquidation seize calculator"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

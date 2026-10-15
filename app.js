@@ -2644,6 +2644,64 @@ function compoundRateModel(cashStr, borrowsStr, reservesStr, baseStr, multStr, j
   };
 }
 
+/* Compound liquidation seize tokens — Comptroller's
+   liquidateCalculateSeizeTokens math (compound-protocol, BSD-3-Clause;
+   formulas paraphrased, not copied), over ExponentialNoError's Exp
+   helpers, every mantissa scaled by 1e18 and every step truncating
+   before the next one reads it:
+     numerator   = liquidationIncentive × priceBorrowed ÷ 1e18
+     denominator = priceCollateral × exchangeRate ÷ 1e18
+     ratio       = numerator × 1e18 ÷ denominator
+     seizeTokens = ratio × actualRepayAmount ÷ 1e18
+   Because each step truncates, the result can differ from the one-line
+   formula repay × incentive × priceBorrowed ÷ (priceCollateral ×
+   exchangeRate) whenever an intermediate product is not a multiple of
+   1e18. A zero oracle price for either market makes the contract
+   return its price error instead of a count and is refused here, as
+   is a truncated denominator of 0 (a zero exchange rate is the usual
+   way there; a tiny price × rate product truncates to 0 too), which
+   the contract's division reverts on, and any product above the
+   uint256 maximum. The redeem-equivalent underlying value reported
+   alongside (seizeTokens × exchangeRate ÷ 1e18, the exchange-rate
+   tool's conversion) is not part of the Comptroller function itself.
+   This calculation does not decide whether an account may be
+   liquidated at all — the shortfall and close-factor checks are
+   separate Comptroller steps — and a later governance-added protocol
+   seize share is not part of this function and is not modelled.
+   Prices, incentive, exchange rate and repay amount are values the
+   user supplies — a real liquidation's are oracle and chain state
+   this page does not read. Nothing is queried on chain. */
+function compoundSeizeTokens(repayStr, incentiveStr, priceBorrowedStr, priceCollateralStr, rateStr) {
+  const repay = v2ParseUint(repayStr);
+  const incentive = v2ParseUint(incentiveStr);
+  const priceBorrowed = v2ParseUint(priceBorrowedStr);
+  const priceCollateral = v2ParseUint(priceCollateralStr);
+  const rate = v2ParseUint(rateStr);
+  if (repay === null || incentive === null || priceBorrowed === null ||
+      priceCollateral === null || rate === null) return null;
+  if (priceBorrowed === 0n || priceCollateral === 0n) return null; // price error
+  const numProduct = incentive * priceBorrowed;
+  if (numProduct > ERC4626_MAX_UINT256) return null;
+  const numerator = numProduct / COMPOUND_EXP_SCALE;
+  const denProduct = priceCollateral * rate;
+  if (denProduct > ERC4626_MAX_UINT256) return null;
+  const denominator = denProduct / COMPOUND_EXP_SCALE;
+  if (denominator === 0n) return null; // the contract divides by it
+  const ratioProduct = numerator * COMPOUND_EXP_SCALE;
+  if (ratioProduct > ERC4626_MAX_UINT256) return null;
+  const ratio = ratioProduct / denominator;
+  const seizeProduct = ratio * repay;
+  if (seizeProduct > ERC4626_MAX_UINT256) return null;
+  const tokens = seizeProduct / COMPOUND_EXP_SCALE;
+  const underlyingProduct = tokens * rate;
+  if (underlyingProduct > ERC4626_MAX_UINT256) return null;
+  const underlying = underlyingProduct / COMPOUND_EXP_SCALE;
+  return {
+    seizeTokens: tokens.toString(), seizeUnderlying: underlying.toString(),
+    ratio: ratio.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3278,6 +3336,23 @@ if (typeof document !== "undefined") {
       el.textContent = `JumpRateModelV2: utilization ${r.utilization} (mantissa, ${r.regime}), borrow rate per block ${r.borrowRate} (mantissa), supply rate per block ${r.supplyRate} (mantissa, after the reserve factor). Computed locally with the rate model's formulas on the totals and parameters you gave — a real market's totals and model parameters are chain state this page does not read. Not financial advice.`;
     });
 
+    /* Compound liquidation seize tokens */
+    const cseizeBtn = document.getElementById("cseize-btn");
+    if (cseizeBtn) cseizeBtn.addEventListener("click", () => {
+      const r = compoundSeizeTokens(
+        document.getElementById("cseize-repay").value,
+        document.getElementById("cseize-incentive").value,
+        document.getElementById("cseize-price-borrowed").value,
+        document.getElementById("cseize-price-collateral").value,
+        document.getElementById("cseize-rate").value);
+      const el = document.getElementById("cseize-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: repay amount, liquidation incentive, both oracle prices and the collateral exchange rate are whole numbers (up to 78 digits), both oracle prices are non-zero, the collateral price times the exchange rate does not truncate to zero, and no product exceeds the uint256 maximum.";
+        return;
+      }
+      el.textContent = `liquidateCalculateSeizeTokens: seizing ${r.seizeTokens} collateral cTokens for the repay (ratio ${r.ratio}, mantissa), worth ${r.seizeUnderlying} collateral underlying at the stored exchange rate you gave. Computed locally with the Comptroller's Exp-step formulas on the values you gave — a real liquidation's prices, incentive and rate are oracle and chain state this page does not read, and whether the account is liquidatable at all is a separate check. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3291,5 +3366,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

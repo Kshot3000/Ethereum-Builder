@@ -302,6 +302,23 @@
     </div>
 
     <div class="tool">
+      <h3>Compound liquidation seize calculator (liquidateCalculateSeizeTokens)</h3>
+      <p>When a Compound account falls into shortfall, a liquidator repays part of its borrow and seizes collateral cTokens in return; the Comptroller prices that seizure with <a href="https://github.com/compound-finance/compound-protocol/blob/master/contracts/Comptroller.sol">liquidateCalculateSeizeTokens</a>, built from its <code>ExponentialNoError</code> Exp helpers — each step truncating before the next reads it: <code>numerator = liquidationIncentive × priceBorrowed ÷ 10<sup>18</sup></code>, <code>denominator = priceCollateral × exchangeRate ÷ 10<sup>18</sup></code>, <code>ratio = numerator × 10<sup>18</sup> ÷ denominator</code>, then <code>seizeTokens = ratio × actualRepayAmount ÷ 10<sup>18</sup></code>. Because every step truncates, the count can differ from the one-line formula <code>repay × incentive × priceBorrowed ÷ (priceCollateral × exchangeRate)</code> whenever an intermediate product is not a multiple of 10<sup>18</sup>. The calculator also shows what the seized cTokens redeem for at the same stored rate (the exchange-rate calculator's conversion — not part of the Comptroller function itself). The prefilled liquidation — repaying 100,000 of a $1 borrow against $2 collateral at a 0.05 stored exchange rate, with the Comptroller's 1.08 incentive — seizes exactly 1,080,000 cTokens, worth exactly 54,000 collateral underlying. A zero oracle price for either market is refused, as the contract returns its price error there; so are a zero exchange rate and a collateral price × rate product that truncates the denominator to zero, and any product above the uint256 maximum, as the contract reverts there. Honest scope: this prices a seizure for a repay <em>you</em> supply — it does not decide whether an account is liquidatable (the shortfall and close-factor checks are separate Comptroller steps), a later governance-added protocol seize share is not part of this function and is not modelled, and the prices, incentive and rate are values you supply — a real liquidation's are oracle and chain state, which this page does not read. This is the function's formula applied to supplied values, not live market data and not financial advice. Computed locally; nothing is liquidated and no chain is queried.</p>
+      <label for="cseize-repay">Repay amount — borrowed-market underlying the liquidator repays (base units, actualRepayAmount)</label>
+      <input id="cseize-repay" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <label for="cseize-incentive">Liquidation incentive mantissa (scaled by 1e18 — 1080000000000000000 is 1.08, the Comptroller's liquidationIncentiveMantissa)</label>
+      <input id="cseize-incentive" type="text" inputmode="numeric" spellcheck="false" value="1080000000000000000">
+      <label for="cseize-price-borrowed">Oracle price of the borrowed underlying (mantissa, scaled by 1e18 — the borrowed market's getUnderlyingPrice; 1000000000000000000 is $1)</label>
+      <input id="cseize-price-borrowed" type="text" inputmode="numeric" spellcheck="false" value="1000000000000000000">
+      <label for="cseize-price-collateral">Oracle price of the collateral underlying (mantissa, scaled by 1e18 — 2000000000000000000 is $2)</label>
+      <input id="cseize-price-collateral" type="text" inputmode="numeric" spellcheck="false" value="2000000000000000000">
+      <label for="cseize-rate">Collateral market stored exchange rate mantissa (scaled by 1e18 — 50000000000000000 is 0.05, as the exchange-rate calculator computes)</label>
+      <input id="cseize-rate" type="text" inputmode="numeric" spellcheck="false" value="50000000000000000">
+      <button id="cseize-btn" type="button">Calculate seize tokens</button>
+      <p id="cseize-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -635,6 +652,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=34"></script>
+<script src="app.js?v=35"></script>
 </body>
 </html>

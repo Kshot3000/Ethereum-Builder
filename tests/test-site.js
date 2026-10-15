@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=40"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=41"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1797,6 +1797,56 @@ check("compound transfer-allowed refuses malformed inputs, a non-boolean source-
   app.compoundTransferAllowed("50000000", "500000", "750000000000000000", "20000000000000000", "0", "10", true) === null &&
   (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundTransferAllowed("1", "0", M, "2000000000000000000", "1000000000000000000", "10", true) === null; })());
 check("compound transfer-allowed tool section present in index.html", html.includes("ctqa-btn") && html.includes("Compound transfer allowed calculator"));
+
+/* Compound exit market — expected values produced by an
+   independent pure-Python transcription of Comptroller's
+   exitMarket (hidden_files/oracle-compound-exit-market.py):
+   the contract reads the account's snapshot, refuses at once
+   if the amount owed in the market is non-zero (before every
+   membership step, price never read), and otherwise runs the
+   internal redeem check with the redeem amount set to the
+   account's FULL cToken balance. A non-member bypasses the
+   liquidity check; a member runs it, but its borrow balance is
+   the amount owed (zero on that path) and its redeem term is
+   the collateral term computed from identical inputs, so the
+   two cancel and the check completes at liquidity 0 /
+   shortfall 0 — its only remaining refusals are the zero-price
+   error and uint256 overflow. Vectors are [balance, amountOwed,
+   factor, rate, price, isMember] -> [allowed, verdict,
+   liquidity, shortfall]. */
+check("compound exit-market controls labelled in index.html",
+  ["cxqa-balance", "cxqa-owed", "cxqa-factor", "cxqa-rate", "cxqa-price", "cxqa-member"]
+    .every(id => html.includes(`for="${id}"`)));
+check("compound exit-market matches the Python oracle (prefill chain at exactly 0/0, owed of 1 refused, owed refused for member and non-member alike and shielding a zero price, non-member bypass incl. shielding zero price plus overflow with a 2^100 balance, snapshot chain account owing 1,004,000 refused, 2^100 member at 0/0, odd values, zero account, zero factor, zero balance with a borrow owed)",
+  (() => { const M = (2n ** 256n - 1n).toString(); const V = [
+    [["50000000", "0", "750000000000000000", "20000000000000000", "1000000000000000000", true], [true, "allowed", "0", "0"]],
+    [["50000000", "1", "750000000000000000", "20000000000000000", "1000000000000000000", true], [false, "nonzero-borrow-balance", null, null]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", true], [false, "nonzero-borrow-balance", null, null]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", false], [false, "nonzero-borrow-balance", null, null]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "0", true], [false, "nonzero-borrow-balance", null, null]],
+    [["50000000", "0", "750000000000000000", "20000000000000000", "1000000000000000000", false], [true, "not-in-market-bypass", null, null]],
+    [["1267650600228229401496703205376", "0", M, "2000000000000000000", "0", false], [true, "not-in-market-bypass", null, null]],
+    [["45871559", "1004000", "800000000000000000", "21800000000000000", "2000000000000000000", true], [false, "nonzero-borrow-balance", null, null]],
+    [["1267650600228229401496703205376", "0", "500000000000000000", "100000000000000000", "3000000000000000000", true], [true, "allowed", "0", "0"]],
+    [["123456789", "0", "777777777777777777", "33333333333333333", "555555555555555555", true], [true, "allowed", "0", "0"]],
+    [["0", "0", "750000000000000000", "20000000000000000", "1000000000000000000", true], [true, "allowed", "0", "0"]],
+    [["50000000", "0", "0", "20000000000000000", "1000000000000000000", true], [true, "allowed", "0", "0"]],
+    [["0", "250000", "750000000000000000", "20000000000000000", "1000000000000000000", true], [false, "nonzero-borrow-balance", null, null]]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundExitMarket(...inp);
+    return r !== null && r.allowed === exp[0] && r.verdict === exp[1] && r.liquidity === exp[2] && r.shortfall === exp[3]; }); })());
+check("compound exit-market: prefilled page values (a member owing nothing) are allowed with the check completing at exactly 0 liquidity and 0 shortfall",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.compoundExitMarket(g("cxqa-balance"), g("cxqa-owed"), g("cxqa-factor"), g("cxqa-rate"), g("cxqa-price"), true);
+    return r !== null && r.allowed === true && r.verdict === "allowed" && r.liquidity === "0" && r.shortfall === "0"; })());
+check("compound exit-market refuses malformed inputs, a non-boolean membership flag, and — only on the member path that reaches it — a zero price and an overflowing liquidity product",
+  app.compoundExitMarket("50000000", "0", "1.5", "20000000000000000", "1000000000000000000", true) === null &&
+  app.compoundExitMarket("50000000", "-1", "750000000000000000", "20000000000000000", "1000000000000000000", true) === null &&
+  app.compoundExitMarket("", "0", "750000000000000000", "20000000000000000", "1000000000000000000", true) === null &&
+  app.compoundExitMarket("50000000", "0", "750000000000000000", "20000000000000000", null, true) === null &&
+  app.compoundExitMarket("50000000", "0", "750000000000000000", "20000000000000000", "1000000000000000000", "yes") === null &&
+  app.compoundExitMarket("50000000", "0", "750000000000000000", "20000000000000000", "0", true) === null &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundExitMarket("1", "0", M, "2000000000000000000", "1000000000000000000", true) === null; })());
+check("compound exit-market tool section present in index.html", html.includes("cxqa-btn") && html.includes("Compound exit market calculator"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

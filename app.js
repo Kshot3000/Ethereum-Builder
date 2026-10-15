@@ -3002,6 +3002,70 @@ function compoundTransferAllowed(balanceStr, borrowBalanceStr, factorStr, rateSt
     : { allowed: true, verdict: "allowed", liquidity: liq.liquidity, shortfall: liq.shortfall };
 }
 
+/* Compound exit market check — Comptroller's exitMarket
+   (compound-protocol, BSD-3-Clause; formulas paraphrased, not
+   copied), restricted to the parts determined by the supplied
+   numbers. The contract first reads the account's snapshot in
+   the market — the cTokens held and the underlying owed — then
+   proceeds in this branch order:
+     1. amount owed: owing anything at all in this market
+        refuses the exit as a nonzero borrow balance, and
+        nothing else is read — price, factor and membership are
+        never reached, so a zero price or an overflowing
+        product is not a refusal on that path, and a non-member
+        owing a balance is refused here too, before every
+        membership step;
+     2. the internal redeem check of the redeem tool, with the
+        redeem amount set to the account's FULL cToken balance:
+        a non-member bypasses the liquidity check entirely and
+        the exit succeeds (there is no membership to remove);
+        a member runs the hypothetical liquidity check of the
+        liquidity tool (one market, redeem = full balance,
+        borrow 0). On this path the borrow balance inside that
+        check is the amount owed — already established as 0 —
+        and the redeem term is computed from exactly the same
+        inputs as the collateral term, so the two cancel
+        identically: liquidity and shortfall both come out 0
+        whenever the check is reached and completes, and the
+        only refusals it can still produce here are its own
+        errors — a zero oracle price, and any product or sum
+        above the uint256 maximum, as the contract errors or
+        reverts there.
+   The market-listing check precedes the membership step inside
+   the internal check, on chain state, not a number, so the
+   verdicts here are for a listed market and listing is out of
+   scope, as is the snapshot read itself (assumed to succeed;
+   its inputs are the snapshot tool's). In the full contract
+   the liquidity check sums over every market the account has
+   entered, so a real exit can be refused for a shortfall
+   arising from OTHER markets' borrows once this market's
+   collateral is removed; this one-market form is exact for an
+   account entered in a single market. Balances, factor, rate,
+   price and membership are values the user supplies — a real
+   account's are chain state this page does not read. Nothing
+   is queried on chain. */
+function compoundExitMarket(balanceStr, owedStr, factorStr, rateStr, priceStr, isMember) {
+  const balance = v2ParseUint(balanceStr);
+  const owed = v2ParseUint(owedStr);
+  const factor = v2ParseUint(factorStr);
+  const rate = v2ParseUint(rateStr);
+  const price = v2ParseUint(priceStr);
+  if (balance === null || owed === null || factor === null ||
+      rate === null || price === null) return null;
+  if (typeof isMember !== "boolean") return null;
+  if (owed !== 0n) {
+    return { allowed: false, verdict: "nonzero-borrow-balance", liquidity: null, shortfall: null };
+  }
+  if (!isMember) {
+    return { allowed: true, verdict: "not-in-market-bypass", liquidity: null, shortfall: null };
+  }
+  const liq = compoundLiquidity(balanceStr, owedStr, factorStr, rateStr, priceStr, balanceStr, "0");
+  if (liq === null) return null;
+  return BigInt(liq.shortfall) > 0n
+    ? { allowed: false, verdict: "insufficient-liquidity", liquidity: liq.liquidity, shortfall: liq.shortfall }
+    : { allowed: true, verdict: "allowed", liquidity: liq.liquidity, shortfall: liq.shortfall };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3775,6 +3839,29 @@ if (typeof document !== "undefined") {
       el.textContent = `transferAllowed: ${r.allowed ? "ALLOWED" : "NOT ALLOWED"} — ${detail}. The destination account is never read by this gate. Computed locally with the Comptroller's check on the values you gave — a real account's balances, factor, rate, price and membership are chain state this page does not read, and the market-listing check, the transfer pause guardian and the cToken-side steps are separate. Not financial advice.`;
     });
 
+    /* Compound exit market */
+    const cxqaBtn = document.getElementById("cxqa-btn");
+    if (cxqaBtn) cxqaBtn.addEventListener("click", () => {
+      const r = compoundExitMarket(
+        document.getElementById("cxqa-balance").value,
+        document.getElementById("cxqa-owed").value,
+        document.getElementById("cxqa-factor").value,
+        document.getElementById("cxqa-rate").value,
+        document.getElementById("cxqa-price").value,
+        document.getElementById("cxqa-member").value === "yes");
+      const el = document.getElementById("cxqa-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: cToken balance, amount owed, collateral factor, exchange rate and oracle price are whole numbers (up to 78 digits), and — on the member path that reaches it — the oracle price is non-zero and no product or sum exceeds the uint256 maximum.";
+        return;
+      }
+      const detail = r.verdict === "nonzero-borrow-balance"
+        ? "the account still owes underlying in this market, and the Comptroller refuses the exit at that first step — the liquidity check is never reached"
+        : r.verdict === "not-in-market-bypass"
+          ? "the account has not entered this market and owes nothing in it, so the Comptroller bypasses the liquidity check entirely — no liquidity is computed and there is no membership to remove"
+          : `the liquidity check runs with the full balance as the redeem amount, so its collateral and redeem terms cancel exactly — the check completes with liquidity ${r.liquidity} and shortfall ${r.shortfall}`;
+      el.textContent = `exitMarket: ${r.allowed ? "ALLOWED" : "NOT ALLOWED"} — ${detail}. Computed locally with the Comptroller's check on the values you gave — a real account's balances, factor, rate, price and membership are chain state this page does not read, and the market-listing check and the snapshot read are separate. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3788,5 +3875,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

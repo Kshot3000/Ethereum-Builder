@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=43"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=44"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2198,6 +2198,54 @@ check("sstore refuses malformed words, a word above 2^256 − 1, and a non-boole
   app.sstoreGas("1", "1", null, true) === null &&
   app.sstoreGas(null, "1", "0", true) === null);
 check("sstore tool section present in index.html", html.includes("sst-btn") && html.includes("SSTORE gas"));
+
+/* Memory expansion gas — expected values produced by an
+   independent pure-Python transcription of the Yellow Paper
+   memory-cost function C(w) = 3w + floor(w^2 / 512) charged
+   as the difference on growth (hidden_files/oracle-memory.py),
+   itself anchored in-script on hand values (1 word = 3,
+   32 words = 98, 512 words = 2,048, the quadratic term first
+   non-zero at 23 words), the no-growth rule, byte-to-word
+   rounding, and a telescoping assert that stepwise expansions
+   sum to the one-shot delta. Vectors are
+   [currentBytes, newBytes] -> the full result object. */
+check("memory controls labelled in index.html",
+  ["mem-current", "mem-new"].every(id => html.includes(`for="${id}"`)));
+check("memory expansion gas matches the Python oracle (empty and one-shot growths, word rounding on both sides, no-growth and shrink at 0, the 23-word quadratic onset inside the 33-to-65 step, 512 words at exactly 2,048, MiB-scale growth, and the client's 0x1FFFFFFFE0-byte maximum held and reached)",
+  (() => { const V = [
+    [["0", "0"], ["0", "0", "0", "0", "0", "0", "0"]],
+    [["0", "1"], ["0", "1", "0", "1", "0", "3", "3"]],
+    [["0", "32"], ["0", "32", "0", "1", "0", "3", "3"]],
+    [["0", "33"], ["0", "33", "0", "2", "0", "6", "6"]],
+    [["0", "1024"], ["0", "1024", "0", "32", "0", "98", "98"]],
+    [["1024", "1024"], ["1024", "1024", "32", "32", "98", "98", "0"]],
+    [["1024", "2048"], ["1024", "2048", "32", "64", "98", "200", "102"]],
+    [["33", "65"], ["33", "65", "2", "3", "6", "9", "3"]],
+    [["1", "32768"], ["1", "32768", "1", "1024", "3", "5120", "5117"]],
+    [["0", "16384"], ["0", "16384", "0", "512", "0", "2048", "2048"]],
+    [["16384", "16385"], ["16384", "16385", "512", "513", "2048", "2053", "5"]],
+    [["0", "1048576"], ["0", "1048576", "0", "32768", "0", "2195456", "2195456"]],
+    [["999", "100000"], ["999", "100000", "32", "3125", "98", "28448", "28350"]],
+    [["0", "2097152"], ["0", "2097152", "0", "65536", "0", "8585216", "8585216"]],
+    [["123456789", "987654321"], ["123456789", "987654321", "3858025", "30864198", "29082583646", "1860636964045", "1831554380399"]],
+    [["137438953440", "137438953440"], ["137438953440", "137438953440", "4294967295", "4294967295", "36028809887088637", "36028809887088637", "0"]],
+    [["0", "137438953440"], ["0", "137438953440", "0", "4294967295", "0", "36028809887088637", "36028809887088637"]]
+  ]; return V.every(([inp, exp]) => { const r = app.memoryGas(...inp);
+    return r !== null && [r.currentBytes, r.newBytes, r.currentWords, r.newWords, r.totalBefore, r.totalAfter, r.expansionGas].join(",") === exp.join(","); }); })());
+check("memory: prefilled page values grow empty memory to 1,024 bytes (32 words, exactly 98 gas)",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.memoryGas(g("mem-current"), g("mem-new"));
+    return r !== null && r.expansionGas === "98" && r.newWords === "32" && r.totalAfter === "98"; })());
+check("memory refuses malformed sizes and any size above 0x1FFFFFFFE0 bytes",
+  app.memoryGas("-1", "0") === null &&
+  app.memoryGas("1.5", "0") === null &&
+  app.memoryGas("", "0") === null &&
+  app.memoryGas("0", "137438953441") === null &&
+  app.memoryGas("9999999999999", "0") === null &&
+  app.memoryGas("0x10", "0") === null &&
+  app.memoryGas(null, "0") === null &&
+  app.memoryGas("0", 1024) === null);
+check("memory tool section present in index.html", html.includes("mem-btn") && html.includes("Memory expansion gas"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -3207,6 +3207,53 @@ function sstoreGas(originalStr, currentStr, newStr, isCold) {
   return { gas: gas.toString(), refundDelta: refund.toString(), branch };
 }
 
+/* Memory expansion gas — the EVM prices memory in 32-byte
+   words with the Yellow Paper's memory-cost function (as
+   implemented by go-ethereum's memoryGasCost with its
+   MemoryGas = 3 and QuadCoeffDiv = 512 parameters; formulas
+   paraphrased): holding w words costs, in total,
+   C(w) = 3w + floor(w^2 / 512) — a linear term plus a
+   quadratic term that first becomes non-zero at 23 words
+   (23^2 = 529 >= 512) and reaches the linear term's scale
+   at 512 words. An operation that grows memory is charged
+   only the difference, C(new words) - C(current words),
+   and nothing when it does not grow memory; the client
+   tracks the running total (its lastGasCost), so stepwise
+   expansions telescope to the one-shot difference. Byte
+   sizes round up to whole words on both sides. A new size
+   above 0x1FFFFFFFE0 bytes (137,438,953,440) overflows the
+   client's gas calculation and is refused, as the client
+   refuses it; a current size above that bound could never
+   have been allocated and is refused too. This is the
+   expansion charge only — an operation's own static and
+   per-word costs (an MSTORE's base cost, a copier's per-word
+   charge, KECCAK256's per-word charge) are separate and are
+   not modelled. */
+const MEM_MAX_BYTES = 137438953440n;
+function memParseBytes(str) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  if (!/^\d+$/.test(s) || s.length > 12) return null;
+  const v = BigInt(s);
+  return v <= MEM_MAX_BYTES ? v : null;
+}
+function memTotalCost(words) { return 3n * words + (words * words) / 512n; }
+function memoryGas(currentStr, newStr) {
+  const cur = memParseBytes(currentStr);
+  const fresh = memParseBytes(newStr);
+  if (cur === null || fresh === null) return null;
+  const curWords = (cur + 31n) / 32n;
+  const newWords = (fresh + 31n) / 32n;
+  const totalBefore = memTotalCost(curWords);
+  const totalAfter = memTotalCost(newWords);
+  return {
+    currentBytes: cur.toString(), newBytes: fresh.toString(),
+    currentWords: curWords.toString(), newWords: newWords.toString(),
+    totalBefore: totalBefore.toString(), totalAfter: totalAfter.toString(),
+    expansionGas: (newWords > curWords ? totalAfter - totalBefore : 0n).toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4045,6 +4092,22 @@ if (typeof document !== "undefined") {
       el.textContent = `SSTORE gas: ${r.gas} — ${branchText}, and ${refundText}. Computed locally with the net-metering branch table on the values you gave — a real write's values are chain and transaction state this page does not read, and the transaction-level refund cap (a fifth of gas used) is applied at the end of a transaction, not to this one write.`;
     });
 
+    /* Memory expansion gas */
+    const memBtn = document.getElementById("mem-btn");
+    if (memBtn) memBtn.addEventListener("click", () => {
+      const r = memoryGas(
+        document.getElementById("mem-current").value,
+        document.getElementById("mem-new").value);
+      const el = document.getElementById("mem-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: both sizes are whole numbers of bytes, at most 137,438,953,440 (0x1FFFFFFFE0) — the largest size whose gas the client can compute without overflowing.";
+        return;
+      }
+      el.textContent = r.expansionGas === "0"
+        ? `No expansion charge: memory already holds ${r.currentWords} word(s) (${r.currentBytes} bytes requested) and the new size needs ${r.newWords} word(s), so nothing grows. Computed locally — this is the expansion charge only, not any operation's own cost.`
+        : `Memory expansion gas: ${r.expansionGas} — memory grows from ${r.currentWords} word(s) (total cost ${r.totalBefore}) to ${r.newWords} word(s) (total cost ${r.totalAfter}), and only the difference is charged. Computed locally — this is the expansion charge only; the operation that touches the memory charges its own static and per-word costs on top.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4058,5 +4121,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

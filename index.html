@@ -471,6 +471,17 @@
     </div>
 
     <div class="tool">
+      <h3>Memory expansion gas calculator</h3>
+      <p>Storage has the branch table above; memory — the EVM's byte-addressable scratch space that every call frame starts empty — has a formula instead, and it is the one part of an operation's price that depends on everything the frame has already touched. Memory is priced in 32-byte words by the Yellow Paper's cost function (the rule go-ethereum's <code>memoryGasCost</code> implements, with its parameters of 3 gas per word and a quadratic divisor of 512): holding <em>w</em> words costs, in total, <code>3w + floor(w² ÷ 512)</code>. An operation that grows memory pays only the increase — the new total minus the total for the size already held — and an operation that stays inside the size already paid for pays no expansion charge at all, which is why a frame's expansions telescope: growing in steps costs exactly the one-shot growth to the same size. The quadratic term is the point: it is zero below 23 words, equals the linear term's scale at 512 words (16 KiB, total 2,048), and dominates beyond it, so memory stays cheap for scratch work and punishing to hoard. Byte sizes round up to whole words on both sides, and a new size above 137,438,953,440 bytes (0x1FFFFFFFE0) is refused, as the client's gas calculation overflows there. The prefilled growth — from empty to 1,024 bytes — is 32 words and exactly 98 gas. Honest scope: this is the expansion charge only, from sizes <em>you</em> supply — the operation that touches memory (an <code>MSTORE</code>, a copy, a hash, a call) charges its own static and per-word costs on top, which are not modelled here, and a real frame's current size is execution state this page does not read. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="mem-current">Current memory size (bytes — what this call frame has already allocated)</label>
+      <input id="mem-current" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="mem-new">New memory size (bytes — the size the operation needs memory to reach)</label>
+      <input id="mem-new" type="text" inputmode="numeric" spellcheck="false" value="1024">
+      <button id="mem-btn" type="button">Calculate expansion gas</button>
+      <p id="mem-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -804,6 +815,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=43"></script>
+<script src="app.js?v=44"></script>
 </body>
 </html>

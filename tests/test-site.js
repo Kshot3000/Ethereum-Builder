@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=35"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=36"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1545,6 +1545,55 @@ check("compound seize refuses a zero price for either market, a zero or truncate
   (() => { const P = (2n ** 200n).toString(); return app.compoundSeizeTokens("1", P, "1000000000000000000", "1000000000000000000", "1000000000000000000") === null; })() &&
   (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundSeizeTokens(M, "1080000000000000000", "1000000000000000000", "1000000000000000000", "1000000000000000000") === null; })());
 check("compound seize tool section present in index.html", html.includes("cseize-btn") && html.includes("Compound liquidation seize calculator"));
+
+/* Compound hypothetical account liquidity — expected values produced
+   by an independent pure-Python transcription of Comptroller's
+   getHypotheticalAccountLiquidityInternal for one market over
+   ExponentialNoError's Exp helpers
+   (hidden_files/oracle-compound-liquidity.py): tokensToDenom =
+   (factor x rate // 1e18) x price // 1e18 in two truncating steps,
+   collateral = tokensToDenom x balance // 1e18, borrowPlusEffects =
+   price x borrow // 1e18 + tokensToDenom x redeem // 1e18 + price x
+   borrowAmount // 1e18, then liquidity/shortfall by comparison
+   (equality lands in the shortfall branch with both 0). Vectors are
+   [balance, borrowBalance, factor, rate, price, redeem, borrowAmt]
+   -> [tokensToDenom, collateral, borrowPlusEffects, liquidity,
+   shortfall]. */
+check("compound liquidity controls labelled in index.html",
+  ["cliq-balance", "cliq-borrow-balance", "cliq-factor", "cliq-rate", "cliq-price", "cliq-redeem", "cliq-borrow-amt"]
+    .every(id => html.includes(`for="${id}"`)));
+check("compound liquidity matches the Python oracle (prefill, shortfall, equality, redeem effect, borrow effect, snapshot chain, stepwise truncation, zero balances, zero factor, 2^100 balance, odd values)",
+  (() => { const V = [
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "0", "0"], ["15000000000000000", "750000", "500000", "250000", "0"]],
+    [["50000000", "900000", "750000000000000000", "20000000000000000", "1000000000000000000", "0", "0"], ["15000000000000000", "750000", "900000", "0", "150000"]],
+    [["50000000", "750000", "750000000000000000", "20000000000000000", "1000000000000000000", "0", "0"], ["15000000000000000", "750000", "750000", "0", "0"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "10000000", "0"], ["15000000000000000", "750000", "650000", "100000", "0"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "0", "100000"], ["15000000000000000", "750000", "600000", "150000", "0"]],
+    [["45871559", "1004000", "800000000000000000", "21800000000000000", "2000000000000000000", "0", "0"], ["34880000000000000", "1599999", "2008000", "0", "408001"]],
+    [["45871559", "1004", "750000000000000001", "21800000000000000", "3000000000000000000000", "0", "0"], ["49050000000000000000", "2249999968", "3012000", "2246987968", "0"]],
+    [["0", "0", "750000000000000000", "20000000000000000", "1000000000000000000", "0", "0"], ["15000000000000000", "0", "0", "0", "0"]],
+    [["50000000", "500000", "0", "20000000000000000", "1000000000000000000", "0", "0"], ["0", "0", "500000", "0", "500000"]],
+    [["1267650600228229401496703205376", "1000000", "500000000000000000", "100000000000000000", "3000000000000000000", "0", "0"], ["150000000000000000", "190147590034234410224505480806", "3000000", "190147590034234410224502480806", "0"]],
+    [["123456789", "987654", "777777777777777777", "33333333333333333", "555555555555555555", "1000000", "50000"], ["14403292181069958", "1778184", "590876", "1187308", "0"]]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundLiquidity(...inp);
+    return r !== null && r.tokensToDenom === exp[0] && r.collateral === exp[1] && r.borrowPlusEffects === exp[2] && r.liquidity === exp[3] && r.shortfall === exp[4]; }); })());
+check("compound liquidity: the two Exp steps truncate individually, so tokensToDenom differs from the one-line product at a $3000 price",
+  (() => { const r = app.compoundLiquidity("45871559", "1004", "750000000000000001", "21800000000000000", "3000000000000000000000", "0", "0");
+    return r !== null && r.tokensToDenom === "49050000000000000000" && r.tokensToDenom !== "49050000000000000065"; })());
+check("compound liquidity: prefilled page values hold exactly 250,000 of liquidity with no shortfall",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.compoundLiquidity(g("cliq-balance"), g("cliq-borrow-balance"), g("cliq-factor"), g("cliq-rate"), g("cliq-price"), g("cliq-redeem"), g("cliq-borrow-amt"));
+    return r !== null && r.tokensToDenom === "15000000000000000" && r.collateral === "750000" && r.borrowPlusEffects === "500000" && r.liquidity === "250000" && r.shortfall === "0"; })());
+check("compound liquidity refuses a zero oracle price, malformed and overflowing inputs",
+  app.compoundLiquidity("50000000", "500000", "750000000000000000", "20000000000000000", "0", "0", "0") === null &&
+  app.compoundLiquidity("50000000", "500000", "1.5", "20000000000000000", "1000000000000000000", "0", "0") === null &&
+  app.compoundLiquidity("50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "-3", "0") === null &&
+  app.compoundLiquidity("", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "0", "0") === null &&
+  app.compoundLiquidity(null, "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "0", "0") === null &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundLiquidity("1", "0", M, "2000000000000000000", "1000000000000000000", "0", "0") === null; })() &&
+  (() => { const P = (2n ** 200n).toString(); const Q = (2n ** 100n).toString(); return app.compoundLiquidity("0", P, "1000000000000000000", "1000000000000000000", Q, "0", "0") === null; })() &&
+  (() => { const P = (2n ** 200n).toString(); const Q = (2n ** 100n).toString(); return app.compoundLiquidity(P, "0", "1000000000000000000", "1000000000000000000", Q, "0", "0") === null; })());
+check("compound liquidity tool section present in index.html", html.includes("cliq-btn") && html.includes("Compound account liquidity calculator"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

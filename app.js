@@ -2702,6 +2702,82 @@ function compoundSeizeTokens(repayStr, incentiveStr, priceBorrowedStr, priceColl
   };
 }
 
+/* Compound hypothetical account liquidity — Comptroller's
+   getHypotheticalAccountLiquidityInternal math (compound-protocol,
+   BSD-3-Clause; formulas paraphrased, not copied) restricted to one
+   entered market, over ExponentialNoError's Exp helpers, every
+   mantissa scaled by 1e18:
+     tokensToDenom = (collateralFactor × exchangeRate ÷ 1e18)
+                     × oraclePrice ÷ 1e18   — two Exp multiplications,
+                     each truncating before the next reads it, so the
+                     factor can differ from the one-line product
+                     ÷ 1e36 whenever an intermediate product is not a
+                     multiple of 1e18 and the price is large enough
+                     to amplify the discarded remainder
+     sumCollateral        = tokensToDenom × cTokenBalance ÷ 1e18
+     sumBorrowPlusEffects = oraclePrice × borrowBalance ÷ 1e18
+                          + tokensToDenom × redeemTokens ÷ 1e18
+                          + oraclePrice × borrowAmount ÷ 1e18
+   Each scalar term is a mul_ScalarTruncate (product ÷ 1e18,
+   truncating once) added with checked addition. If sumCollateral >
+   sumBorrowPlusEffects the account's liquidity is the difference
+   and its shortfall is 0; otherwise (equality included) liquidity
+   is 0 and shortfall is sumBorrowPlusEffects − sumCollateral. A zero
+   oracle price makes the contract return its price error instead of
+   a result and is refused here, as is any product or running sum
+   above the uint256 maximum, where the checked arithmetic reverts.
+   The contract sums over every market the account has entered; this
+   one-market form is exact for an account in a single market and
+   otherwise gives that market's contribution plus the hypothetical
+   redeem/borrow effects on it (the modify-market effects the
+   redeem/borrow guards check). Balances are the stored snapshot
+   values (the snapshot tool's outputs) — the stored exchange rate
+   is used without accruing interest, exactly as the contract's own
+   note states. Balances, factor, rate and price are values the user
+   supplies — a real account's are chain state this page does not
+   read. Nothing is queried on chain. */
+function compoundLiquidity(balanceStr, borrowBalanceStr, factorStr, rateStr, priceStr, redeemStr, borrowAmtStr) {
+  const balance = v2ParseUint(balanceStr);
+  const borrowBalance = v2ParseUint(borrowBalanceStr);
+  const factor = v2ParseUint(factorStr);
+  const rate = v2ParseUint(rateStr);
+  const price = v2ParseUint(priceStr);
+  const redeem = v2ParseUint(redeemStr);
+  const borrowAmt = v2ParseUint(borrowAmtStr);
+  if (balance === null || borrowBalance === null || factor === null ||
+      rate === null || price === null || redeem === null ||
+      borrowAmt === null) return null;
+  if (price === 0n) return null; // the contract returns its price error
+  const stepProduct = factor * rate;
+  if (stepProduct > ERC4626_MAX_UINT256) return null;
+  const step = stepProduct / COMPOUND_EXP_SCALE;
+  const denomProduct = step * price;
+  if (denomProduct > ERC4626_MAX_UINT256) return null;
+  const tokensToDenom = denomProduct / COMPOUND_EXP_SCALE;
+  const collateralProduct = tokensToDenom * balance;
+  if (collateralProduct > ERC4626_MAX_UINT256) return null;
+  const collateral = collateralProduct / COMPOUND_EXP_SCALE;
+  const borrowProduct = price * borrowBalance;
+  if (borrowProduct > ERC4626_MAX_UINT256) return null;
+  let total = borrowProduct / COMPOUND_EXP_SCALE;
+  const redeemProduct = tokensToDenom * redeem;
+  if (redeemProduct > ERC4626_MAX_UINT256) return null;
+  total += redeemProduct / COMPOUND_EXP_SCALE;
+  if (total > ERC4626_MAX_UINT256) return null;
+  const borrowAmtProduct = price * borrowAmt;
+  if (borrowAmtProduct > ERC4626_MAX_UINT256) return null;
+  total += borrowAmtProduct / COMPOUND_EXP_SCALE;
+  if (total > ERC4626_MAX_UINT256) return null;
+  const liquid = collateral > total;
+  return {
+    tokensToDenom: tokensToDenom.toString(),
+    collateral: collateral.toString(),
+    borrowPlusEffects: total.toString(),
+    liquidity: (liquid ? collateral - total : 0n).toString(),
+    shortfall: (liquid ? 0n : total - collateral).toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3353,6 +3429,25 @@ if (typeof document !== "undefined") {
       el.textContent = `liquidateCalculateSeizeTokens: seizing ${r.seizeTokens} collateral cTokens for the repay (ratio ${r.ratio}, mantissa), worth ${r.seizeUnderlying} collateral underlying at the stored exchange rate you gave. Computed locally with the Comptroller's Exp-step formulas on the values you gave — a real liquidation's prices, incentive and rate are oracle and chain state this page does not read, and whether the account is liquidatable at all is a separate check. Not financial advice.`;
     });
 
+    /* Compound hypothetical account liquidity */
+    const cliqBtn = document.getElementById("cliq-btn");
+    if (cliqBtn) cliqBtn.addEventListener("click", () => {
+      const r = compoundLiquidity(
+        document.getElementById("cliq-balance").value,
+        document.getElementById("cliq-borrow-balance").value,
+        document.getElementById("cliq-factor").value,
+        document.getElementById("cliq-rate").value,
+        document.getElementById("cliq-price").value,
+        document.getElementById("cliq-redeem").value,
+        document.getElementById("cliq-borrow-amt").value);
+      const el = document.getElementById("cliq-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: cToken balance, borrow balance, collateral factor, exchange rate, oracle price, hypothetical redeem and hypothetical borrow are whole numbers (up to 78 digits), the oracle price is non-zero, and no product or sum exceeds the uint256 maximum.";
+        return;
+      }
+      el.textContent = `getHypotheticalAccountLiquidity (one market): tokens-to-denom factor ${r.tokensToDenom} (mantissa) · collateral value ${r.collateral} · borrows plus hypothetical effects ${r.borrowPlusEffects} · liquidity ${r.liquidity} · shortfall ${r.shortfall} (all in the oracle's normalised price units). Computed locally with the Comptroller's Exp-step formulas on the values you gave — a real account's balances, factor, rate and price are chain state this page does not read, and an account in more markets sums the same per-market terms across all of them. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3366,5 +3461,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

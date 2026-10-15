@@ -319,6 +319,27 @@
     </div>
 
     <div class="tool">
+      <h3>Compound account liquidity calculator (getHypotheticalAccountLiquidity)</h3>
+      <p>Whether a Compound account may borrow or redeem — and whether it is liquidatable at all, the check the seize calculator above does not perform — is decided by the Comptroller's <a href="https://github.com/compound-finance/compound-protocol/blob/master/contracts/Comptroller.sol">getHypotheticalAccountLiquidity</a>, which weighs collateral against borrows in the oracle's normalised price units with its <code>ExponentialNoError</code> Exp helpers. This calculator applies that math to <em>one</em> market: <code>tokensToDenom = (collateralFactor × exchangeRate ÷ 10<sup>18</sup>) × oraclePrice ÷ 10<sup>18</sup></code> — two multiplications, each truncating before the next reads it, so the factor can differ from the one-line product whenever an intermediate product is not a multiple of 10<sup>18</sup> and the price is large enough to amplify the discarded remainder — then <code>collateral = tokensToDenom × cTokenBalance ÷ 10<sup>18</sup></code> against <code>borrows + effects = oraclePrice × borrowBalance ÷ 10<sup>18</sup> + tokensToDenom × hypotheticalRedeem ÷ 10<sup>18</sup> + oraclePrice × hypotheticalBorrow ÷ 10<sup>18</sup></code>, each term truncating once. Collateral above the borrow side is liquidity; anything else (equality included) leaves the difference as shortfall — a shortfall above zero is what makes an account liquidatable and what blocks a redeem or borrow. The prefilled account — 50,000,000 cTokens at a 0.02 stored rate and a 0.75 collateral factor against a $1 oracle price, owing 500,000 — holds exactly 750,000 of collateral value against 500,000 of borrows, so its liquidity is exactly 250,000 with no shortfall; raise the borrow to 900,000 and the same account shows a 150,000 shortfall. A zero oracle price is refused, as the contract returns its price error there; so is any product or sum above the uint256 maximum, as the checked arithmetic reverts there. Honest scope: the contract sums these terms over <em>every</em> market an account has entered — this one-market form is exact for an account in a single market and otherwise gives that market's contribution plus the hypothetical effects on it. Balances, factor, rate and price are values <em>you</em> supply — a real account's are chain state, which this page does not read — and the stored exchange rate is used without accruing interest, exactly as the contract's own note states. This is the function's formula applied to supplied values, not live market data and not financial advice. Computed locally; nothing is borrowed, redeemed or liquidated and no chain is queried.</p>
+      <label for="cliq-balance">Account cToken balance (base units — the snapshot calculator's cToken balance)</label>
+      <input id="cliq-balance" type="text" inputmode="numeric" spellcheck="false" value="50000000">
+      <label for="cliq-borrow-balance">Account borrow balance — underlying owed (base units — the snapshot calculator's borrow balance)</label>
+      <input id="cliq-borrow-balance" type="text" inputmode="numeric" spellcheck="false" value="500000">
+      <label for="cliq-factor">Market collateral factor mantissa (scaled by 1e18 — 750000000000000000 is 0.75)</label>
+      <input id="cliq-factor" type="text" inputmode="numeric" spellcheck="false" value="750000000000000000">
+      <label for="cliq-rate">Market stored exchange rate mantissa (scaled by 1e18 — 20000000000000000 is 0.02, as the exchange-rate calculator computes)</label>
+      <input id="cliq-rate" type="text" inputmode="numeric" spellcheck="false" value="20000000000000000">
+      <label for="cliq-price">Oracle price of the underlying (mantissa, scaled by 1e18 — the market's getUnderlyingPrice; 1000000000000000000 is $1)</label>
+      <input id="cliq-price" type="text" inputmode="numeric" spellcheck="false" value="1000000000000000000">
+      <label for="cliq-redeem">Hypothetical redeem — cTokens redeemed from this market in the check (0 for a plain liquidity reading)</label>
+      <input id="cliq-redeem" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="cliq-borrow-amt">Hypothetical borrow — underlying borrowed from this market in the check (0 for a plain liquidity reading)</label>
+      <input id="cliq-borrow-amt" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <button id="cliq-btn" type="button">Calculate liquidity</button>
+      <p id="cliq-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -652,6 +673,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=35"></script>
+<script src="app.js?v=36"></script>
 </body>
 </html>

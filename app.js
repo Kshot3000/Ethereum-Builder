@@ -2346,6 +2346,60 @@ function recoverTransactionSender(input) {
   return { sender, type: d.type, chainId: d.chainId, signingHash: d.signingHash, txHash: d.txHash, authorizations };
 }
 
+/* ---------- ERC-4626 vault conversion calculator ----------
+   A tokenized vault (ERC-4626) prices its shares against the assets
+   it holds with one exchange rate, applied with the virtual-offset
+   construction OpenZeppelin's ERC4626 uses against the first-deposit
+   inflation attack: conversions act as if the vault also held
+   10^offset virtual shares and 1 virtual asset, so
+     assets -> shares: amount × (totalSupply + 10^offset) ÷ (totalAssets + 1)
+     shares -> assets: amount × (totalAssets + 1) ÷ (totalSupply + 10^offset)
+   The offset is the vault's _decimalsOffset() (0 in OpenZeppelin's
+   default, which already makes the attack unprofitable; larger
+   offsets make it orders of magnitude more expensive). Rounding
+   follows the EIP-4626 preview functions and always favours the
+   vault: previewDeposit and previewRedeem round DOWN, previewMint
+   and previewWithdraw round UP. Amounts are in base units; a result
+   above the uint256 maximum is refused, as the contract's mulDiv
+   reverts there. This is the conversion math applied to values the
+   user supplies — a real vault's totalAssets and totalSupply are
+   chain state this page does not read — and a vault's own deposit /
+   withdrawal limits (maxDeposit and friends, balances, allowances)
+   are not modelled. Nothing is deposited or queried on chain. */
+const ERC4626_MAX_UINT256 = (1n << 256n) - 1n;
+function erc4626Convert(mode, totalAssetsStr, totalSupplyStr, amountStr, offsetStr) {
+  const totalAssets = v2ParseUint(totalAssetsStr);
+  const totalSupply = v2ParseUint(totalSupplyStr);
+  const amount = v2ParseUint(amountStr);
+  if (totalAssets === null || totalSupply === null || amount === null) return null;
+  if (typeof offsetStr !== "string") return null;
+  const off = offsetStr.trim();
+  if (!/^\d+$/.test(off) || off.length > 3) return null;
+  const offset = BigInt(off);
+  if (offset > 255n) return null; // _decimalsOffset() returns a uint8
+  const virtualShares = 10n ** offset;
+  let numerator, denominator, ceil, inputUnit, outputUnit, fn;
+  if (mode === "deposit") {
+    numerator = amount * (totalSupply + virtualShares); denominator = totalAssets + 1n;
+    ceil = false; inputUnit = "assets"; outputUnit = "shares"; fn = "previewDeposit";
+  } else if (mode === "mint") {
+    numerator = amount * (totalAssets + 1n); denominator = totalSupply + virtualShares;
+    ceil = true; inputUnit = "shares"; outputUnit = "assets"; fn = "previewMint";
+  } else if (mode === "withdraw") {
+    numerator = amount * (totalSupply + virtualShares); denominator = totalAssets + 1n;
+    ceil = true; inputUnit = "assets"; outputUnit = "shares"; fn = "previewWithdraw";
+  } else if (mode === "redeem") {
+    numerator = amount * (totalAssets + 1n); denominator = totalSupply + virtualShares;
+    ceil = false; inputUnit = "shares"; outputUnit = "assets"; fn = "previewRedeem";
+  } else return null;
+  const result = ceil ? (numerator + denominator - 1n) / denominator : numerator / denominator;
+  if (result > ERC4626_MAX_UINT256) return null;
+  return {
+    result: result.toString(), rounding: ceil ? "up" : "down", fn,
+    inputUnit, outputUnit, virtualShares: virtualShares.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -2887,6 +2941,23 @@ if (typeof document !== "undefined") {
       el.textContent = `Data: ${r.byteLength} byte(s) — ${r.zeroBytes} zero, ${r.nonzeroBytes} non-zero (${r.tokens} calldata token(s), costing ${r.dataCost} gas at the standard rate) · Access list: ${r.accessCost} gas · Creation: ${r.createCost} gas · Authorizations: ${r.authCost} gas · Standard intrinsic cost: ${r.standard} gas · EIP-7623 calldata floor: ${r.floor} gas · Minimum gas limit: ${r.minimum} gas${r.floorBinds ? " — the calldata floor binds, because this transaction is data-heavy relative to its other intrinsic costs" : ""}. This is the minimum before execution, not a prediction of total gas used: execution costs more, and L2s add their own fees. Computed locally from the values you gave — not live network data.`;
     });
 
+    /* ERC-4626 vault conversion */
+    const vaultBtn = document.getElementById("vault-btn");
+    if (vaultBtn) vaultBtn.addEventListener("click", () => {
+      const mode = document.getElementById("vault-mode").value;
+      const r = erc4626Convert(mode,
+        document.getElementById("vault-assets").value,
+        document.getElementById("vault-supply").value,
+        document.getElementById("vault-amount").value,
+        document.getElementById("vault-offset").value);
+      const el = document.getElementById("vault-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: total assets, total supply and amount are whole numbers in base units (up to 78 digits), the decimals offset is a whole number from 0 to 255, and the result must fit in a uint256.";
+        return;
+      }
+      el.textContent = `${r.fn}: ${document.getElementById("vault-amount").value.trim()} ${r.inputUnit} → ${r.result} ${r.outputUnit} (rounded ${r.rounding}, in the vault's favour; virtual shares ${r.virtualShares}, virtual assets 1). Computed locally with the ERC-4626 conversion math on the totals you gave — a real vault's totals are chain state this page does not read, and its deposit/withdrawal limits are not modelled. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -2900,5 +2971,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

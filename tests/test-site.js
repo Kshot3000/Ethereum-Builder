@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=29"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=30"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1230,6 +1230,76 @@ check("v2l tool section present in index.html", html.includes("v2l-mint-btn") &&
 check("UniswapV2Pair and Math linked from index.html",
   html.includes("https://github.com/Uniswap/v2-core/blob/master/contracts/UniswapV2Pair.sol") &&
   html.includes("https://github.com/Uniswap/v2-core/blob/master/contracts/libraries/Math.sol"));
+
+/* ERC-4626 vault conversion — expected values produced by an independent
+   pure-Python transcription of the ERC-4626 preview semantics with the
+   virtual-offset construction (hidden_files/oracle-erc4626.py): assets to
+   shares multiplies by (totalSupply + 10^offset) / (totalAssets + 1) and
+   shares to assets by the inverse, with deposit/redeem rounding down and
+   mint/withdraw rounding up (the Python ceil is -(-a // b), a different
+   shape from the JS form). Vectors are [totalAssets, totalSupply, amount,
+   offset] -> result. */
+check("vault controls labelled in index.html",
+  ["vault-mode", "vault-assets", "vault-supply", "vault-amount", "vault-offset"]
+    .every(id => html.includes(`for="${id}"`)));
+check("vault previewDeposit matches the Python oracle (assets -> shares, floored, virtual offset)",
+  (() => { const V = [
+    [["1000000", "1000000", "10000", "0"], "10000"],
+    [["0", "0", "1000", "0"], "1000"],
+    [["0", "0", "1000", "3"], "1000000"],
+    [["100", "30", "7", "0"], "2"],
+    [["1000000", "1", "1000", "0"], "0"],
+    [["1000000", "1", "1000", "3"], "1"],
+    [["2000000", "1000000", "10000", "0"], "5000"],
+    [["1606938044258990275541962092341162602522202993782792835313721", "803469022129495137770981046170581301261101496891396417657477", "98765432109876543210", "6"], "49382716054938271605"]
+  ]; return V.every(([inp, exp]) => { const r = app.erc4626Convert("deposit", ...inp);
+    return r !== null && r.result === exp && r.rounding === "down" && r.fn === "previewDeposit" &&
+      r.inputUnit === "assets" && r.outputUnit === "shares"; }); })());
+check("vault previewMint matches the Python oracle (shares -> assets, rounded up)",
+  (() => { const V = [
+    [["100", "30", "7", "0"], "23"],
+    [["0", "0", "1000", "3"], "1"],
+    [["1000000", "1000000", "10000", "0"], "10000"],
+    [["1606938044258990275541962092341162602522202993782792835313721", "803469022129495137770981046170581301261101496891396417657477", "98765432109876543210", "6"], "197530864219753086420"]
+  ]; return V.every(([inp, exp]) => { const r = app.erc4626Convert("mint", ...inp);
+    return r !== null && r.result === exp && r.rounding === "up" && r.fn === "previewMint"; }); })());
+check("vault previewWithdraw matches the Python oracle (assets -> shares, rounded up)",
+  (() => { const V = [
+    [["100", "30", "7", "0"], "3"],
+    [["0", "0", "5", "0"], "5"],
+    [["2000000", "1000000", "10000", "0"], "5001"],
+    [["1000000", "1000000", "10000", "0"], "10000"]
+  ]; return V.every(([inp, exp]) => { const r = app.erc4626Convert("withdraw", ...inp);
+    return r !== null && r.result === exp && r.rounding === "up" && r.fn === "previewWithdraw"; }); })());
+check("vault previewRedeem matches the Python oracle (shares -> assets, floored)",
+  (() => { const V = [
+    [["100", "30", "7", "0"], "22"],
+    [["0", "0", "1000", "3"], "1"],
+    [["1000000", "1000000", "10000", "0"], "10000"],
+    [["1606938044258990275541962092341162602522202993782792835313721", "803469022129495137770981046170581301261101496891396417657477", "98765432109876543210", "6"], "197530864219753086419"]
+  ]; return V.every(([inp, exp]) => { const r = app.erc4626Convert("redeem", ...inp);
+    return r !== null && r.result === exp && r.rounding === "down" && r.fn === "previewRedeem"; }); })());
+check("vault: prefilled page values reproduce the oracle's 10000-share deposit",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.erc4626Convert("deposit", g("vault-assets"), g("vault-supply"), g("vault-amount"), g("vault-offset"));
+    return r !== null && r.result === "10000" && r.virtualShares === "1"; })());
+check("vault: a zero amount converts to zero in every mode, as the previews return",
+  ["deposit", "mint", "withdraw", "redeem"].every(m => { const r = app.erc4626Convert(m, "100", "30", "0", "0"); return r !== null && r.result === "0"; }));
+check("vault refuses malformed, out-of-uint8-offset and uint256-overflowing inputs",
+  app.erc4626Convert("deposit", "1000000", "1000000", "1.5", "0") === null &&
+  app.erc4626Convert("deposit", "1000000", "1000000", "-3", "0") === null &&
+  app.erc4626Convert("deposit", "1000000", "1000000", "", "0") === null &&
+  app.erc4626Convert("deposit", "1000000", "1000000", "10000", "256") === null &&
+  app.erc4626Convert("deposit", "1000000", "1000000", "10000", "-1") === null &&
+  app.erc4626Convert("deposit", "1000000", "1000000", "10000", "1.5") === null &&
+  app.erc4626Convert("deposit", "1000000", "1000000", "10000", null) === null &&
+  app.erc4626Convert("bogus", "1000000", "1000000", "10000", "0") === null &&
+  app.erc4626Convert("deposit", null, "1000000", "10000", "0") === null &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.erc4626Convert("deposit", "0", M, M, "0") === null; })());
+check("vault tool section present in index.html", html.includes("vault-btn") && html.includes("ERC-4626 vault conversion calculator"));
+check("ERC-4626 EIP and OpenZeppelin ERC4626 linked from index.html",
+  html.includes("https://eips.ethereum.org/EIPS/eip-4626") &&
+  html.includes("https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/extensions/ERC4626.sol"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

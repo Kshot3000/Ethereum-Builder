@@ -380,6 +380,27 @@
     </div>
 
     <div class="tool">
+      <h3>Compound redeem allowed calculator (redeemAllowed)</h3>
+      <p>The borrow calculator above runs the Comptroller's gate before a borrow; this one runs its gate before a redeem — <a href="https://github.com/compound-finance/compound-protocol/blob/master/contracts/Comptroller.sol">redeemAllowed</a>, in its own branch order (compound-protocol, BSD-3-Clause; formulas paraphrased). First comes membership, and here — opposite to the borrow gate — it decides everything: if the redeemer has not entered the market, the internal check returns no error at once and the liquidity check is never run, so a zero oracle price or an overflowing liquidity product is not a refusal on that path and the redeem amount is never weighed by this gate at all. Only for a member does the hypothetical liquidity check run (the calculator above, on this market, with the proposed redeem applied): a shortfall above zero blocks the redeem as insufficient liquidity, while a shortfall of exactly zero — the redeem exhausting the account's liquidity exactly — is allowed. The prefilled account chains the liquidity calculator: 50,000,000 cTokens at a 0.02 stored rate and a 0.75 collateral factor against a $1 price, owing 500,000, holds 250,000 of liquidity, and each cToken's redeem effect is 0.015 of underlying truncating once over the whole redeem, so redeeming 10,000,000 cTokens leaves exactly 100,000 of liquidity, redeeming 16,666,667 exhausts it exactly (its effect floors to exactly 250,000 — and the next cToken still floors there), and the first shortfall, of exactly 1, appears only at 16,666,734 cTokens. Honest scope: the market-listing check precedes the membership step on chain state, not a number, so these verdicts are for a listed market and listing is not modelled here, and neither are the COMP reward updates afterwards or the cToken-side steps — a redeem above the account's cToken balance fails there, not in this gate. The same internal check also underlies cToken transfers and exiting a market in the contract. Balances, factor, rate, price and membership are values <em>you</em> supply — a real redeem's are chain state, which this page does not read — so this is the function's check applied to supplied values, not live market data and not financial advice. Computed locally; nothing is redeemed and no chain is queried.</p>
+      <label for="crqa-balance">Account cToken balance in this market (base units — the snapshot calculator's cToken balance)</label>
+      <input id="crqa-balance" type="text" inputmode="numeric" spellcheck="false" value="50000000">
+      <label for="crqa-borrow-balance">Account borrow balance — underlying already owed (base units — the snapshot calculator's borrow balance)</label>
+      <input id="crqa-borrow-balance" type="text" inputmode="numeric" spellcheck="false" value="500000">
+      <label for="crqa-factor">Market collateral factor mantissa (scaled by 1e18 — 750000000000000000 is 0.75)</label>
+      <input id="crqa-factor" type="text" inputmode="numeric" spellcheck="false" value="750000000000000000">
+      <label for="crqa-rate">Market stored exchange rate mantissa (scaled by 1e18 — 20000000000000000 is 0.02, as the exchange-rate calculator computes)</label>
+      <input id="crqa-rate" type="text" inputmode="numeric" spellcheck="false" value="20000000000000000">
+      <label for="crqa-price">Oracle price of this market's underlying (mantissa, scaled by 1e18 — the market's getUnderlyingPrice; 1000000000000000000 is $1)</label>
+      <input id="crqa-price" type="text" inputmode="numeric" spellcheck="false" value="1000000000000000000">
+      <label for="crqa-redeem">Proposed redeem amount — cTokens the account would redeem (base units)</label>
+      <input id="crqa-redeem" type="text" inputmode="numeric" spellcheck="false" value="10000000">
+      <label for="crqa-member">Has the account entered (joined) this market?</label>
+      <select id="crqa-member"><option value="yes" selected>Yes — entered market (hypothetical liquidity check runs)</option><option value="no">No — not entered (the Comptroller bypasses the liquidity check)</option></select>
+      <button id="crqa-btn" type="button">Check redeem</button>
+      <p id="crqa-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -713,6 +734,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=38"></script>
+<script src="app.js?v=39"></script>
 </body>
 </html>

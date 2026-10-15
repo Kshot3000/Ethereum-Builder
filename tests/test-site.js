@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=38"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=39"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1693,6 +1693,59 @@ check("compound borrow-allowed refuses malformed inputs, an overflowing cap addi
   (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundBorrowAllowed("1", "0", M, "2000000000000000000", "1000000000000000000", "10", "100", "0") === null; })() &&
   (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundBorrowAllowed("1", "0", M, "2000000000000000000", "1000000000000000000", "10", "100", "1000000") === null; })());
 check("compound borrow-allowed tool section present in index.html", html.includes("cbqa-btn") && html.includes("Compound borrow allowed calculator"));
+
+/* Compound redeem allowed — expected values produced by an
+   independent pure-Python transcription of Comptroller's
+   redeemAllowed / redeemAllowedInternal
+   (hidden_files/oracle-compound-redeem-allowed.py) in the
+   contract's branch order: a redeemer who has NOT entered the
+   market bypasses the liquidity check entirely (no error at
+   once — a zero price or an overflowing product is never
+   computed, and the redeem amount is never weighed by this
+   gate), while a member runs the liquidity calculator's
+   hypothetical check with the redeem applied, where shortfall
+   > 0 blocks and shortfall == 0 (liquidity exhausted exactly)
+   allows. Because each cToken's effect (0.015 underlying at the
+   prefill) truncates once over the whole redeem, exhaustion at
+   16,666,667 cTokens is a plateau — the next cToken still floors
+   to the same effect — and the first shortfall of 1 appears
+   only at 16,666,734. Vectors are [balance, borrowBalance,
+   factor, rate, price, redeemTokens, isMember] -> [allowed,
+   verdict, liquidity, shortfall]. */
+check("compound redeem-allowed controls labelled in index.html",
+  ["crqa-balance", "crqa-borrow-balance", "crqa-factor", "crqa-rate", "crqa-price", "crqa-redeem", "crqa-member"]
+    .every(id => html.includes(`for="${id}"`)));
+check("compound redeem-allowed matches the Python oracle (prefill, exact exhaustion and its truncation plateau, first shortfall 1, non-member bypass incl. shielding zero price plus overflow and a redeem above the balance, snapshot chain account in shortfall blocked at zero redeem, full-balance redeem blocked, 2^100 balance, odd values, zero cases)",
+  (() => { const M = (2n ** 256n - 1n).toString(); const V = [
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "10000000", true], [true, "allowed", "100000", "0"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "16666667", true], [true, "allowed", "0", "0"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "16666668", true], [true, "allowed", "0", "0"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "16666734", true], [false, "insufficient-liquidity", "0", "1"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "0", true], [true, "allowed", "250000", "0"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "10000000", false], [true, "not-in-market-bypass", null, null]],
+    [["1", "0", M, "2000000000000000000", "0", "10", false], [true, "not-in-market-bypass", null, null]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "60000000", false], [true, "not-in-market-bypass", null, null]],
+    [["45871559", "1004000", "800000000000000000", "21800000000000000", "2000000000000000000", "0", true], [false, "insufficient-liquidity", "0", "408001"]],
+    [["1267650600228229401496703205376", "1000000", "500000000000000000", "100000000000000000", "3000000000000000000", "1000000", true], [true, "allowed", "190147590034234410224502330806", "0"]],
+    [["123456789", "987654", "777777777777777777", "33333333333333333", "555555555555555555", "50000", true], [true, "allowed", "1228768", "0"]],
+    [["0", "0", "750000000000000000", "20000000000000000", "1000000000000000000", "0", true], [true, "allowed", "0", "0"]],
+    [["50000000", "0", "0", "20000000000000000", "1000000000000000000", "1", true], [true, "allowed", "0", "0"]],
+    [["50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "50000000", true], [false, "insufficient-liquidity", "0", "500000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundRedeemAllowed(...inp);
+    return r !== null && r.allowed === exp[0] && r.verdict === exp[1] && r.liquidity === exp[2] && r.shortfall === exp[3]; }); })());
+check("compound redeem-allowed: prefilled page values (a member redeeming 10,000,000 cTokens) leave exactly 100,000 of the liquidity tool's 250,000",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.compoundRedeemAllowed(g("crqa-balance"), g("crqa-borrow-balance"), g("crqa-factor"), g("crqa-rate"), g("crqa-price"), g("crqa-redeem"), true);
+    return r !== null && r.allowed === true && r.verdict === "allowed" && r.liquidity === "100000" && r.shortfall === "0"; })());
+check("compound redeem-allowed refuses malformed inputs, a non-boolean membership flag, and — only on the member path that reaches it — a zero price and an overflowing liquidity product",
+  app.compoundRedeemAllowed("50000000", "500000", "1.5", "20000000000000000", "1000000000000000000", "10000000", true) === null &&
+  app.compoundRedeemAllowed("50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "-1", true) === null &&
+  app.compoundRedeemAllowed("", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "10000000", true) === null &&
+  app.compoundRedeemAllowed("50000000", "500000", "750000000000000000", "20000000000000000", null, "10000000", true) === null &&
+  app.compoundRedeemAllowed("50000000", "500000", "750000000000000000", "20000000000000000", "1000000000000000000", "10000000", "yes") === null &&
+  app.compoundRedeemAllowed("50000000", "500000", "750000000000000000", "20000000000000000", "0", "10", true) === null &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundRedeemAllowed("1", "0", M, "2000000000000000000", "1000000000000000000", "10", true) === null; })());
+check("compound redeem-allowed tool section present in index.html", html.includes("crqa-btn") && html.includes("Compound redeem allowed calculator"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

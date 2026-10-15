@@ -2893,6 +2893,57 @@ function compoundBorrowAllowed(balanceStr, borrowBalanceStr, factorStr, rateStr,
     : { allowed: true, verdict: "allowed", nextTotalBorrows: nt, liquidity: liq.liquidity, shortfall: liq.shortfall };
 }
 
+/* Compound redeem allowed check — Comptroller's redeemAllowed /
+   redeemAllowedInternal (compound-protocol, BSD-3-Clause;
+   formulas paraphrased, not copied), restricted to the parts
+   determined by the supplied numbers, in the contract's own
+   branch order:
+     1. membership: if the redeemer is not 'in' (has not entered)
+        the market, the internal check returns no error at once —
+        the liquidity check is never run, so a zero oracle price
+        or an overflowing liquidity product is not a refusal on
+        that path, and the redeem amount is never weighed at all
+        by this gate;
+     2. member path: the hypothetical liquidity check of the
+        liquidity tool above (one market, redeem = redeemTokens,
+        borrow 0): a shortfall above 0 is insufficient liquidity;
+        a shortfall of exactly 0 — the redeem exhausting the
+        account's liquidity exactly — is allowed. A zero oracle
+        price and any product or sum above the uint256 maximum
+        inside that check are refused, as the contract errors or
+        reverts there, but only when the check is actually
+        reached.
+   The market-listing check precedes the membership step on
+   chain state, not a number, so the verdicts here are for a
+   listed market and listing is out of scope, as are the COMP
+   reward updates afterwards and the cToken-side steps (a
+   redeem above the account's cToken balance fails there, not
+   in this gate, which is why the bypass path never weighs the
+   amount). The same internal check also underlies cToken
+   transfers and exiting a market in the contract. Balances,
+   factor, rate, price and membership are values the user
+   supplies — a real account's are chain state this page does
+   not read. Nothing is queried on chain. */
+function compoundRedeemAllowed(balanceStr, borrowBalanceStr, factorStr, rateStr, priceStr, redeemStr, isMember) {
+  const balance = v2ParseUint(balanceStr);
+  const borrowBalance = v2ParseUint(borrowBalanceStr);
+  const factor = v2ParseUint(factorStr);
+  const rate = v2ParseUint(rateStr);
+  const price = v2ParseUint(priceStr);
+  const redeem = v2ParseUint(redeemStr);
+  if (balance === null || borrowBalance === null || factor === null ||
+      rate === null || price === null || redeem === null) return null;
+  if (typeof isMember !== "boolean") return null;
+  if (!isMember) {
+    return { allowed: true, verdict: "not-in-market-bypass", liquidity: null, shortfall: null };
+  }
+  const liq = compoundLiquidity(balanceStr, borrowBalanceStr, factorStr, rateStr, priceStr, redeemStr, "0");
+  if (liq === null) return null;
+  return BigInt(liq.shortfall) > 0n
+    ? { allowed: false, verdict: "insufficient-liquidity", liquidity: liq.liquidity, shortfall: liq.shortfall }
+    : { allowed: true, verdict: "allowed", liquidity: liq.liquidity, shortfall: liq.shortfall };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3618,6 +3669,30 @@ if (typeof document !== "undefined") {
       el.textContent = `borrowAllowed: ${r.allowed ? "ALLOWED" : "NOT ALLOWED"} — ${detail}. Computed locally with the Comptroller's check on the values you gave — a real account's balances, factor, rate and price and the market's totals and cap are chain state this page does not read, and the market-listing, pause and membership steps are separate. Not financial advice.`;
     });
 
+    /* Compound redeem allowed */
+    const crqaBtn = document.getElementById("crqa-btn");
+    if (crqaBtn) crqaBtn.addEventListener("click", () => {
+      const r = compoundRedeemAllowed(
+        document.getElementById("crqa-balance").value,
+        document.getElementById("crqa-borrow-balance").value,
+        document.getElementById("crqa-factor").value,
+        document.getElementById("crqa-rate").value,
+        document.getElementById("crqa-price").value,
+        document.getElementById("crqa-redeem").value,
+        document.getElementById("crqa-member").value === "yes");
+      const el = document.getElementById("crqa-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: cToken balance, borrow balance, collateral factor, exchange rate, oracle price and redeem amount are whole numbers (up to 78 digits), and — on the member path that reaches it — the oracle price is non-zero and no product or sum exceeds the uint256 maximum.";
+        return;
+      }
+      const detail = r.verdict === "not-in-market-bypass"
+        ? "the account has not entered this market, so the Comptroller bypasses the liquidity check entirely — no liquidity is computed and the redeem amount is not weighed by this gate"
+        : r.verdict === "allowed"
+          ? `after the redeem the account holds liquidity ${r.liquidity} with no shortfall`
+          : `after the redeem the account would hold a shortfall of ${r.shortfall} (the liquidity calculator's hypothetical check with this redeem applied)`;
+      el.textContent = `redeemAllowed: ${r.allowed ? "ALLOWED" : "NOT ALLOWED"} — ${detail}. Computed locally with the Comptroller's check on the values you gave — a real account's balances, factor, rate, price and membership are chain state this page does not read, and the market-listing check and the cToken-side steps are separate. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3631,5 +3706,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -340,6 +340,23 @@
     </div>
 
     <div class="tool">
+      <h3>Compound liquidation allowed &amp; max repay calculator (liquidateBorrowAllowed)</h3>
+      <p>The liquidity calculator above decides whether an account has a shortfall — but a liquidator still may not repay as much as they like: the Comptroller's <a href="https://github.com/compound-finance/compound-protocol/blob/master/contracts/Comptroller.sol">liquidateBorrowAllowed</a> caps one liquidation's repay at the market's close factor times the borrow balance. This calculator runs that check (compound-protocol, BSD-3-Clause; formulas paraphrased). On the standard path the account must first have a shortfall above zero — with none, the check stops there and the cap is never computed — then <code>maxClose = closeFactor × borrowBalance ÷ 10<sup>18</sup></code>, one truncating multiplication, and a repay above maxClose is refused as too much repay while a repay of exactly maxClose is allowed; a close-factor product above the uint256 maximum is refused, as the checked arithmetic reverts there. Governance sets the stored close factor inside 0.05–0.9 in the current source; the check itself just multiplies by whatever factor it is given. If the borrowed market is deprecated, the contract takes a different path entirely: shortfall and close factor are never read, and the only bound is that the repay cannot exceed the total borrow balance. The prefilled account chains the two tools around it: owing 900,000, the liquidity calculator's account shows a 150,000 shortfall, and at a 0.5 close factor its maximum close amount is exactly 450,000 — so the seize calculator's prefilled repay of 100,000 is allowed, and 450,001 would not be. Honest scope: whether the borrowed and collateral markets are listed is a listing check on chain state, not a number, and is not modelled here, and neither are the cToken-side liquidation checks; the seize size for an allowed repay is the seize calculator above. Borrow balance, close factor and shortfall are values <em>you</em> supply — a real account's are chain state, which this page does not read — so this is the function's formula applied to supplied values, not live market data and not financial advice. Computed locally; nothing is liquidated and no chain is queried.</p>
+      <label for="clqa-borrow-balance">Account borrow balance in the borrowed market — underlying owed (base units — the snapshot calculator's borrow balance)</label>
+      <input id="clqa-borrow-balance" type="text" inputmode="numeric" spellcheck="false" value="900000">
+      <label for="clqa-close-factor">Market close factor mantissa (scaled by 1e18 — 500000000000000000 is 0.5)</label>
+      <input id="clqa-close-factor" type="text" inputmode="numeric" spellcheck="false" value="500000000000000000">
+      <label for="clqa-shortfall">Account shortfall (the liquidity calculator's shortfall — 0 means not liquidatable)</label>
+      <input id="clqa-shortfall" type="text" inputmode="numeric" spellcheck="false" value="150000">
+      <label for="clqa-repay">Proposed repay amount — underlying the liquidator repays (base units — the seize calculator's repay amount)</label>
+      <input id="clqa-repay" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <label for="clqa-deprecated">Is the borrowed market deprecated?</label>
+      <select id="clqa-deprecated"><option value="no" selected>No — standard path (shortfall + close factor)</option><option value="yes">Yes — deprecated path (repay capped only by the borrow balance)</option></select>
+      <button id="clqa-btn" type="button">Check liquidation</button>
+      <p id="clqa-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -673,6 +690,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=36"></script>
+<script src="app.js?v=37"></script>
 </body>
 </html>

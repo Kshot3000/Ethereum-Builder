@@ -2778,6 +2778,56 @@ function compoundLiquidity(balanceStr, borrowBalanceStr, factorStr, rateStr, pri
   };
 }
 
+/* Compound liquidation allowed check — Comptroller's
+   liquidateBorrowAllowed (compound-protocol, BSD-3-Clause;
+   formulas paraphrased, not copied), restricted to the parts
+   determined by the supplied numbers, all mantissas scaled by
+   1e18. Standard path (borrowed market not deprecated): the
+   borrower must have shortfall > 0 — the shortfall the liquidity
+   tool computes — else the contract returns its
+   insufficient-shortfall error, and it returns BEFORE the
+   close-factor product is ever computed, so an overflowing
+   product is not a refusal in that case. Then
+     maxClose = closeFactor × borrowBalance ÷ 1e18
+   one mul_ScalarTruncate (the product truncates once), and a
+   repay above maxClose returns the too-much-repay error; a repay
+   of exactly maxClose is allowed. A product above the uint256
+   maximum is refused, as the checked arithmetic reverts there.
+   Deprecated path: the contract lets a deprecated market's
+   accounts be liquidated without reading shortfall or the close
+   factor at all; the only bound is repay ≤ borrowBalance (it
+   requires that). Whether the two markets are listed is a listing
+   check on chain state, not a number, and is out of scope here,
+   as are the cToken-side liquidation checks. Governance sets the
+   stored close factor inside 0.05–0.9 in the current source; the
+   check itself just multiplies by whatever factor it is given.
+   Borrow balance, close factor and shortfall are values the user
+   supplies — a real account's are chain state this page does not
+   read. Nothing is queried on chain. */
+function compoundLiquidateAllowed(borrowBalanceStr, closeFactorStr, shortfallStr, repayStr, deprecated) {
+  const borrowBalance = v2ParseUint(borrowBalanceStr);
+  const closeFactor = v2ParseUint(closeFactorStr);
+  const shortfall = v2ParseUint(shortfallStr);
+  const repay = v2ParseUint(repayStr);
+  if (borrowBalance === null || closeFactor === null ||
+      shortfall === null || repay === null) return null;
+  if (typeof deprecated !== "boolean") return null;
+  if (deprecated) {
+    return repay > borrowBalance
+      ? { allowed: false, verdict: "exceeds-borrow", maxClose: null }
+      : { allowed: true, verdict: "allowed", maxClose: null };
+  }
+  if (shortfall === 0n) {
+    return { allowed: false, verdict: "insufficient-shortfall", maxClose: null };
+  }
+  const product = closeFactor * borrowBalance;
+  if (product > ERC4626_MAX_UINT256) return null;
+  const maxClose = product / COMPOUND_EXP_SCALE;
+  return repay > maxClose
+    ? { allowed: false, verdict: "too-much-repay", maxClose: maxClose.toString() }
+    : { allowed: true, verdict: "allowed", maxClose: maxClose.toString() };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3448,6 +3498,32 @@ if (typeof document !== "undefined") {
       el.textContent = `getHypotheticalAccountLiquidity (one market): tokens-to-denom factor ${r.tokensToDenom} (mantissa) · collateral value ${r.collateral} · borrows plus hypothetical effects ${r.borrowPlusEffects} · liquidity ${r.liquidity} · shortfall ${r.shortfall} (all in the oracle's normalised price units). Computed locally with the Comptroller's Exp-step formulas on the values you gave — a real account's balances, factor, rate and price are chain state this page does not read, and an account in more markets sums the same per-market terms across all of them. Not financial advice.`;
     });
 
+    /* Compound liquidation allowed / max repay */
+    const clqaBtn = document.getElementById("clqa-btn");
+    if (clqaBtn) clqaBtn.addEventListener("click", () => {
+      const r = compoundLiquidateAllowed(
+        document.getElementById("clqa-borrow-balance").value,
+        document.getElementById("clqa-close-factor").value,
+        document.getElementById("clqa-shortfall").value,
+        document.getElementById("clqa-repay").value,
+        document.getElementById("clqa-deprecated").value === "yes");
+      const el = document.getElementById("clqa-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: borrow balance, close factor, shortfall and repay amount are whole numbers (up to 78 digits), and the close factor times the borrow balance does not exceed the uint256 maximum.";
+        return;
+      }
+      const detail = r.verdict === "allowed"
+        ? (r.maxClose === null
+          ? "the deprecated-market path places no close-factor cap on the repay, only the borrow balance itself"
+          : `the repay is at or under the maximum close amount of ${r.maxClose}`)
+        : r.verdict === "insufficient-shortfall"
+          ? "the account has no shortfall, so it is not liquidatable at all — the close-factor cap is never reached"
+          : r.verdict === "too-much-repay"
+            ? `the repay exceeds the maximum close amount of ${r.maxClose} (close factor × borrow balance, truncated)`
+            : "a deprecated market's repay cannot exceed the total borrow balance";
+      el.textContent = `liquidateBorrowAllowed: ${r.allowed ? "ALLOWED" : "NOT ALLOWED"} — ${detail}. Computed locally with the Comptroller's formula on the values you gave — a real account's borrow balance, shortfall and the market's close factor are chain state this page does not read, and the market-listing and cToken-side checks are separate. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3461,5 +3537,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

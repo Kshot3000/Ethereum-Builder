@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=36"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=37"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1594,6 +1594,55 @@ check("compound liquidity refuses a zero oracle price, malformed and overflowing
   (() => { const P = (2n ** 200n).toString(); const Q = (2n ** 100n).toString(); return app.compoundLiquidity("0", P, "1000000000000000000", "1000000000000000000", Q, "0", "0") === null; })() &&
   (() => { const P = (2n ** 200n).toString(); const Q = (2n ** 100n).toString(); return app.compoundLiquidity(P, "0", "1000000000000000000", "1000000000000000000", Q, "0", "0") === null; })());
 check("compound liquidity tool section present in index.html", html.includes("cliq-btn") && html.includes("Compound account liquidity calculator"));
+
+/* Compound liquidation allowed — expected values produced by an
+   independent pure-Python transcription of Comptroller's
+   liquidateBorrowAllowed (hidden_files/
+   oracle-compound-liquidate-allowed.py): standard path requires
+   shortfall > 0 (checked BEFORE the close-factor product, so an
+   overflowing product there still yields the shortfall verdict),
+   then maxClose = closeFactor x borrowBalance // 1e18 truncating
+   once and repay <= maxClose; the deprecated path reads neither
+   shortfall nor factor and caps the repay at the borrow balance.
+   Vectors are [borrowBalance, closeFactor, shortfall, repay,
+   deprecated] -> [allowed, verdict, maxClose]. */
+check("compound liquidate-allowed controls labelled in index.html",
+  ["clqa-borrow-balance", "clqa-close-factor", "clqa-shortfall", "clqa-repay", "clqa-deprecated"]
+    .every(id => html.includes(`for="${id}"`)));
+check("compound liquidate-allowed matches the Python oracle (prefill, maxClose boundary, too much, no shortfall, truncation, zero cases, factor above 1e18, 2^100 borrow, deprecated paths)",
+  (() => { const V = [
+    [["900000", "500000000000000000", "150000", "100000", false], [true, "allowed", "450000"]],
+    [["900000", "500000000000000000", "150000", "450000", false], [true, "allowed", "450000"]],
+    [["900000", "500000000000000000", "150000", "450001", false], [false, "too-much-repay", "450000"]],
+    [["900000", "500000000000000000", "0", "1", false], [false, "insufficient-shortfall", null]],
+    [["1606938044258990275541962092341162602522202993782792835301376", "1267650600228229401496703205376", "0", "1", false], [false, "insufficient-shortfall", null]],
+    [["999999", "333333333333333333", "1", "333332", false], [true, "allowed", "333332"]],
+    [["999999", "333333333333333333", "1", "333333", false], [false, "too-much-repay", "333332"]],
+    [["0", "500000000000000000", "1", "0", false], [true, "allowed", "0"]],
+    [["0", "500000000000000000", "1", "1", false], [false, "too-much-repay", "0"]],
+    [["1000000", "0", "7", "0", false], [true, "allowed", "0"]],
+    [["1000", "1500000000000000000", "5", "1200", false], [true, "allowed", "1500"]],
+    [["1267650600228229401496703205376", "500000000000000000", "1", "633825300114114700748351602688", false], [true, "allowed", "633825300114114700748351602688"]],
+    [["987654321", "425000000000000000", "42", "400000000", false], [true, "allowed", "419753086"]],
+    [["5000", "0", "0", "5000", true], [true, "allowed", null]],
+    [["5000", "0", "0", "5001", true], [false, "exceeds-borrow", null]],
+    [["5000", "1000000000000000000", "999", "1", true], [true, "allowed", null]]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundLiquidateAllowed(...inp);
+    return r !== null && r.allowed === exp[0] && r.verdict === exp[1] && r.maxClose === exp[2]; }); })());
+check("compound liquidate-allowed: prefilled page values allow the seize tool's 100,000 repay with a 450,000 maximum close amount",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.compoundLiquidateAllowed(g("clqa-borrow-balance"), g("clqa-close-factor"), g("clqa-shortfall"), g("clqa-repay"), false);
+    return r !== null && r.allowed === true && r.verdict === "allowed" && r.maxClose === "450000" &&
+      html.includes('id="clqa-deprecated"') && html.includes('<option value="no" selected>'); })());
+check("compound liquidate-allowed refuses malformed inputs, a non-boolean deprecated flag, and an overflowing close-factor product when a shortfall makes it reachable",
+  app.compoundLiquidateAllowed("900000", "1.5", "150000", "100000", false) === null &&
+  app.compoundLiquidateAllowed("900000", "500000000000000000", "150000", "-1", false) === null &&
+  app.compoundLiquidateAllowed("", "500000000000000000", "150000", "100000", false) === null &&
+  app.compoundLiquidateAllowed(null, "500000000000000000", "150000", "100000", false) === null &&
+  app.compoundLiquidateAllowed("900000", "500000000000000000", "150000", "100000", "no") === null &&
+  (() => { const P = (2n ** 200n).toString(); const Q = (2n ** 100n).toString(); return app.compoundLiquidateAllowed(P, Q, "1", "1", false) === null; })() &&
+  (() => { const P = (2n ** 128n).toString(); return app.compoundLiquidateAllowed(P, P, "1", "1", false) === null; })());
+check("compound liquidate-allowed tool section present in index.html", html.includes("clqa-btn") && html.includes("Compound liquidation allowed"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

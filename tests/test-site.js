@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=42"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=43"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2141,6 +2141,63 @@ check("v3s calculator refuses equal/out-of-range ticks, bad bounds and malformed
   app.uniswapV3SwapStep("in", "0", "-1000", "1000", null, "3000") === null);
 check("v3s tool section present in index.html", html.includes("v3s-btn") && html.includes("Uniswap V3 swap step"));
 check("SwapMath linked from index.html", html.includes("https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/SwapMath.sol"));
+
+/* SSTORE gas & refund — expected values produced by an
+   independent pure-Python transcription of the net-metering
+   branch table with current-mainnet parameters
+   (hidden_files/oracle-sstore.py), itself anchored in-script
+   on the EIPs' published write-sequence tables: 17 cumulative
+   refund rows and 3 warm gas sums reproduced exactly
+   (including the 0→1→0 restore at 19,900 and the 1→0→1→0
+   sequence at 7,600). Vectors are [original, current, new,
+   cold] -> [gas, refundDelta, branch], spanning every
+   zero/equality class of the three values. */
+check("sstore controls labelled in index.html",
+  ["sst-original", "sst-current", "sst-new", "sst-access"]
+    .every(id => html.includes(`for="${id}"`)));
+check("sstore gas & refund match the Python oracle across every zero/equality class (no-op warm and cold, clean set warm and cold, clean clear warm and cold at exactly 5,000/4,800, clean reset, dirty restore to a zero original at 19,900, dirty restore to a non-zero original at the net −2,000 after the clears removal, dirty re-clear at 4,800, dirty restore at 2,800, a negative-only dirty change at −4,800, plain dirty writes, and 2^255-scale values)",
+  (() => { const V = [
+    [["0", "0", "0", false], ["100", "0", "no-op"]],
+    [["0", "0", "0", true], ["2200", "0", "no-op"]],
+    [["0", "0", "1", true], ["22100", "0", "clean-set"]],
+    [["0", "0", "1", false], ["20000", "0", "clean-set"]],
+    [["1", "1", "1", false], ["100", "0", "no-op"]],
+    [["1", "1", "0", false], ["2900", "4800", "clean-clear"]],
+    [["1", "1", "0", true], ["5000", "4800", "clean-clear"]],
+    [["1", "1", "2", false], ["2900", "0", "clean-reset"]],
+    [["0", "1", "0", false], ["100", "19900", "dirty"]],
+    [["0", "1", "2", false], ["100", "0", "dirty"]],
+    [["0", "1", "1", false], ["100", "0", "no-op"]],
+    [["1", "0", "1", false], ["100", "-2000", "dirty"]],
+    [["1", "0", "2", false], ["100", "-4800", "dirty"]],
+    [["1", "0", "0", false], ["100", "0", "no-op"]],
+    [["1", "2", "0", false], ["100", "4800", "dirty"]],
+    [["1", "2", "1", false], ["100", "2800", "dirty"]],
+    [["1", "2", "3", false], ["100", "0", "dirty"]],
+    [["1", "2", "2", true], ["2200", "0", "no-op"]],
+    [[(2n ** 255n).toString(), (2n ** 255n).toString(), "0", true], ["5000", "4800", "clean-clear"]],
+    [["0", "5", "0", true], ["2200", "19900", "dirty"]]
+  ]; return V.every(([inp, exp]) => { const r = app.sstoreGas(...inp);
+    return r !== null && r.gas === exp[0] && r.refundDelta === exp[1] && r.branch === exp[2]; }); })());
+check("sstore: prefilled page values clear a cold untouched slot (5,000 gas, 4,800 refund credit, hex inputs agree)",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const cold = new RegExp(`id="sst-access"[^>]*>[\\s\\S]*?<option value="cold" selected`).test(html);
+    const r = app.sstoreGas(g("sst-original"), g("sst-current"), g("sst-new"), cold);
+    const h = app.sstoreGas("0x1", "0x01", "0x0", true);
+    return r !== null && r.gas === "5000" && r.refundDelta === "4800" && r.branch === "clean-clear" &&
+      h !== null && h.gas === "5000" && h.refundDelta === "4800"; })());
+check("sstore refuses malformed words, a word above 2^256 − 1, and a non-boolean cold flag",
+  app.sstoreGas("-1", "0", "0", false) === null &&
+  app.sstoreGas("1.5", "0", "0", false) === null &&
+  app.sstoreGas("", "0", "0", false) === null &&
+  app.sstoreGas("0x", "0", "0", false) === null &&
+  app.sstoreGas("0xZZ", "0", "0", false) === null &&
+  app.sstoreGas((2n ** 256n).toString(), "0", "0", false) === null &&
+  app.sstoreGas("0x" + "ff".repeat(33), "0", "0", false) === null &&
+  app.sstoreGas("1", "1", "0", "yes") === null &&
+  app.sstoreGas("1", "1", null, true) === null &&
+  app.sstoreGas(null, "1", "0", true) === null);
+check("sstore tool section present in index.html", html.includes("sst-btn") && html.includes("SSTORE gas"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

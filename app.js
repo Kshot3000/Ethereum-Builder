@@ -3137,6 +3137,76 @@ function modexpGas(baseLenStr, expLenStr, modLenStr, expHeadHex) {
   };
 }
 
+/* SSTORE gas — the cost and refund-counter change of one
+   SSTORE under net gas metering (EIP-2200, CC0; formulas
+   paraphrased) with the parameter values current mainnet
+   applies: the warm storage read cost is 100 and a slot's
+   first touch in a transaction adds a 2,100 cold surcharge
+   (EIP-2929, CC0), the reset cost is 2,900 (5,000 minus the
+   cold cost, which is now charged separately), and the
+   clearing schedule is 4,800 with the transaction refund
+   capped at a fifth of gas used (EIP-3529, CC0 — the cap is
+   transaction-level and is not applied to this one write).
+   Only whether each of the slot's three values — original
+   (at the transaction's start), current (before this write)
+   and new (being written) — is zero, and how they compare,
+   decides the branch:
+     no-op (new = current): 100;
+     clean (current = original): 20,000 for a set from zero,
+       otherwise 2,900, plus a 4,800 refund-counter credit
+       when a clean write clears the slot to zero;
+     dirty (current differs from original): 100, and the
+       refund counter moves — minus 4,800 when a slot that
+       was cleared earlier in the transaction is written
+       away from zero again, plus 4,800 when this write
+       clears it, and, when the write restores the original
+       value, plus 19,900 (set cost minus 100) for a zero
+       original or 2,800 (reset cost minus 100) for a
+       non-zero one — so a dirty refund change can be
+       negative.
+   Values are uint256 words in decimal or 0x hex; anything
+   else is refused. The EIP-2200 stipend guard (a write
+   fails when the remaining gas is at most 2,300) is a
+   validity rule about the call frame, not part of this
+   price, and is not modelled. */
+function sstoreParseWord(str) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  let v;
+  if (/^0[xX][0-9a-fA-F]+$/.test(s)) {
+    if (s.length > 66) return null;
+    v = BigInt(s);
+  } else if (/^\d+$/.test(s)) {
+    if (s.length > 78) return null;
+    v = BigInt(s);
+  } else return null;
+  return v <= (1n << 256n) - 1n ? v : null;
+}
+function sstoreGas(originalStr, currentStr, newStr, isCold) {
+  const original = sstoreParseWord(originalStr);
+  const current = sstoreParseWord(currentStr);
+  const fresh = sstoreParseWord(newStr);
+  if (original === null || current === null || fresh === null) return null;
+  if (typeof isCold !== "boolean") return null;
+  let gas, refund = 0n, branch;
+  if (fresh === current) {
+    gas = 100n; branch = "no-op";
+  } else if (current === original) {
+    if (original === 0n) { gas = 20000n; branch = "clean-set"; }
+    else if (fresh === 0n) { gas = 2900n; refund = 4800n; branch = "clean-clear"; }
+    else { gas = 2900n; branch = "clean-reset"; }
+  } else {
+    gas = 100n; branch = "dirty";
+    if (original !== 0n) {
+      if (current === 0n) refund -= 4800n;
+      if (fresh === 0n) refund += 4800n;
+    }
+    if (fresh === original) refund += original === 0n ? 19900n : 2800n;
+  }
+  if (isCold) gas += 2100n;
+  return { gas: gas.toString(), refundDelta: refund.toString(), branch };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3949,6 +4019,32 @@ if (typeof document !== "undefined") {
       el.textContent = `ModExp gas — under EIP-2565 (Berlin–Pectra): ${r.gas2565} gas (multiplication complexity ${r.complexity2565}, iteration count ${r.iteration2565}). Under EIP-7883 (Fusaka, the current mainnet schedule): ${r.gas7883} gas (complexity ${r.complexity7883}, iteration count ${r.iteration7883}). Computed locally from the lengths and exponent head you gave — which schedule applies is the chain's fork state, and no chain is queried.`;
     });
 
+    /* SSTORE gas */
+    const sstBtn = document.getElementById("sst-btn");
+    if (sstBtn) sstBtn.addEventListener("click", () => {
+      const r = sstoreGas(
+        document.getElementById("sst-original").value,
+        document.getElementById("sst-current").value,
+        document.getElementById("sst-new").value,
+        document.getElementById("sst-access").value === "cold");
+      const el = document.getElementById("sst-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the original, current and new values are each a uint256 word — a whole number in decimal or 0x hex, at most 2^256 − 1.";
+        return;
+      }
+      const branchText = {
+        "no-op": "a no-op — the new value equals the current value, so only the warm read cost is charged",
+        "clean-set": "a clean set — the slot is untouched in this transaction and rises from zero",
+        "clean-clear": "a clean clear — the slot is untouched in this transaction and is cleared to zero",
+        "clean-reset": "a clean reset — the slot is untouched in this transaction and changes between non-zero values",
+        "dirty": "a dirty write — the slot was already changed earlier in this transaction, so only the warm cost is charged and the refund counter absorbs the difference"
+      }[r.branch];
+      const refundText = r.refundDelta === "0"
+        ? "the refund counter does not change"
+        : `the refund counter ${r.refundDelta.startsWith("-") ? "falls" : "rises"} by ${r.refundDelta.replace("-", "")}`;
+      el.textContent = `SSTORE gas: ${r.gas} — ${branchText}, and ${refundText}. Computed locally with the net-metering branch table on the values you gave — a real write's values are chain and transaction state this page does not read, and the transaction-level refund cap (a fifth of gas used) is applied at the end of a transaction, not to this one write.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3962,5 +4058,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

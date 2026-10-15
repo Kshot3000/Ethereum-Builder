@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=50"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=51"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2540,6 +2540,46 @@ check("extcodecopy refuses a non-boolean warmth flag, malformed size and memory 
   app.extCodeCopyGasCalc(true, "137438953440", "32", "0") === null &&
   app.extCodeCopyGasCalc(false, "0", "0", "137438953441") === null);
 check("extcodecopy tool section present in index.html", html.includes("ext-copy-btn") && html.includes("EXTCODECOPY gas calculator"));
+
+/* Account-access gas (BALANCE / EXTCODESIZE / EXTCODEHASH) —
+   expected values produced by an independent pure-Python
+   transcription of EIP-2929's account-access pricing
+   (hidden_files/oracle-account-access-gas.py): the access
+   charge is the whole cost -- 2,600 cold / 100 warm, no other
+   term. The oracle is anchored in-script on hand values
+   (prefilled BALANCE cold 2,600 / warm 100, all three opcodes
+   agreeing at each warmth, cold-warm difference exactly
+   2,500). Vectors are [opcode, isCold] -> the full result. */
+check("account access controls labelled in index.html",
+  ["acct-op", "acct-access"].every(id => html.includes(`for="${id}"`)));
+check("account access gas matches the Python oracle (all three opcodes, cold and warm)",
+  (() => { const V = [
+    [["BALANCE", true], ["BALANCE", "2600", "2600"]],
+    [["BALANCE", false], ["BALANCE", "100", "100"]],
+    [["EXTCODESIZE", true], ["EXTCODESIZE", "2600", "2600"]],
+    [["EXTCODESIZE", false], ["EXTCODESIZE", "100", "100"]],
+    [["EXTCODEHASH", true], ["EXTCODEHASH", "2600", "2600"]],
+    [["EXTCODEHASH", false], ["EXTCODEHASH", "100", "100"]]
+  ]; return V.every(([inp, exp]) => { const r = app.accountAccessGasCalc(...inp);
+    return r !== null && [r.opcode, r.accessGas, r.totalGas].join(",") === exp.join(","); }); })());
+check("account access: prefilled page values (BALANCE, cold) cost exactly 2,600, warm 100, differing by exactly 2,500, with all three opcodes agreeing at each warmth",
+  (() => { const cold = app.accountAccessGasCalc("BALANCE", true);
+    const warm = app.accountAccessGasCalc("BALANCE", false);
+    const ops = ["BALANCE", "EXTCODESIZE", "EXTCODEHASH"];
+    return cold !== null && warm !== null && html.includes('id="acct-op"') && html.includes('<option value="BALANCE" selected>') &&
+      html.includes('id="acct-access"') && html.includes('<option value="cold" selected>') &&
+      cold.accessGas === "2600" && cold.totalGas === "2600" && warm.totalGas === "100" &&
+      (BigInt(cold.totalGas) - BigInt(warm.totalGas)).toString() === "2500" &&
+      ops.every(op => app.accountAccessGasCalc(op, true).totalGas === "2600" && app.accountAccessGasCalc(op, false).totalGas === "100"); })());
+check("account access refuses opcodes outside the three priced (EXTCODECOPY and the CALL family carry extra terms), a lowercase opcode, a null opcode, and a non-boolean warmth flag",
+  app.accountAccessGasCalc("EXTCODECOPY", true) === null &&
+  app.accountAccessGasCalc("CALL", true) === null &&
+  app.accountAccessGasCalc("balance", true) === null &&
+  app.accountAccessGasCalc(null, true) === null &&
+  app.accountAccessGasCalc("BALANCE", "cold") === null &&
+  app.accountAccessGasCalc("BALANCE", null) === null &&
+  app.accountAccessGasCalc("BALANCE", 1) === null);
+check("account access tool section present in index.html", html.includes("acct-btn") && html.includes("Account access gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

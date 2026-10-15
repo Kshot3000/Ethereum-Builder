@@ -482,6 +482,33 @@
     </div>
 
     <div class="tool">
+      <h3>CALL gas calculator (EIP-2929 / EIP-150)</h3>
+      <p>Memory expansion is one ingredient of the EVM's most-used opcode: a <code>CALL</code>. Its price is a stack of rules charged in order, before any forwarding is worked out. First the <em>access</em> cost (<a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a>): 2,600 if the target address is <em>cold</em> — not yet accessed in this transaction — and 100 if it is already warm. Then, if the call carries value, 9,000 for the transfer, plus 25,000 more if the target account is <em>empty</em> (nonce 0, balance 0, no code — funding it creates the account). Then the memory expansion above, for the input and output regions together: the frame must reach the larger of the two region ends, and a region of size 0 touches nothing whatever its offset. Only then does forwarding follow <a href="https://eips.ethereum.org/EIPS/eip-150">EIP-150</a>'s all-but-one-64th rule: of what remains after those costs, at most <code>R − floor(R ÷ 64)</code> can be forwarded — the caller always keeps at least a 64th in reserve — and the callee receives the smaller of the requested gas and that cap, <em>plus</em>, when the call carries value, a 2,300 stipend that is added for the callee and is not deducted from the caller (the rule that made the old fixed-stipend <code>transfer</code> idiom work at all). If the frame's gas does not cover the call's own cost, the CALL runs out of gas and forwards nothing. The prefilled call — a cold call carrying 1 ETH to an existing account, 100,000 gas available, 1,000,000 requested — pays 11,600 of its own costs, is capped at forwarding 87,019, delivers 89,319 to the callee with the stipend, and keeps exactly its 1,381 reserve (floor(88,400 ÷ 64)). Gas the callee does not use returns to the caller afterwards; this prices the split at the moment of the call. Honest scope: only <code>CALL</code> is modelled — <code>CALLCODE</code>, <code>DELEGATECALL</code> and <code>STATICCALL</code> share the access and forwarding rules but differ on the value terms — a call the caller cannot fund fails for a non-gas reason that is not modelled, and warmth, target state, value and memory are values <em>you</em> supply, not execution state this page reads. Computed locally; no call is made and no chain is queried.</p>
+      <label for="call-available">Gas available (the calling frame's remaining gas just before the CALL)</label>
+      <input id="call-available" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <label for="call-requested">Gas requested (the CALL's gas argument — what the caller asks to forward)</label>
+      <input id="call-requested" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="call-value">Value carried (wei — decimal or 0x hex; only zero vs non-zero changes the price)</label>
+      <input id="call-value" type="text" inputmode="numeric" spellcheck="false" value="1000000000000000000">
+      <label for="call-access">Target address access in this transaction</label>
+      <select id="call-access"><option value="cold" selected>Cold — first access of this address in the transaction (2,600)</option><option value="warm">Warm — address already accessed in this transaction (100)</option></select>
+      <label for="call-target">Target account state</label>
+      <select id="call-target"><option value="existing" selected>Existing / non-empty — has a nonce, a balance, or code</option><option value="empty">Empty — nonce 0, balance 0, no code (+25,000 when value is carried)</option></select>
+      <label for="call-mem">Current memory size (bytes — what the calling frame has already allocated)</label>
+      <input id="call-mem" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="call-in-off">Input region offset (bytes)</label>
+      <input id="call-in-off" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="call-in-size">Input region size (bytes — 0 touches nothing)</label>
+      <input id="call-in-size" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="call-out-off">Output region offset (bytes)</label>
+      <input id="call-out-off" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="call-out-size">Output region size (bytes — 0 touches nothing)</label>
+      <input id="call-out-size" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <button id="call-btn" type="button">Calculate CALL gas</button>
+      <p id="call-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -815,6 +842,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=44"></script>
+<script src="app.js?v=45"></script>
 </body>
 </html>

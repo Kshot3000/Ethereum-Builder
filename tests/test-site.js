@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=44"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=45"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2246,6 +2246,67 @@ check("memory refuses malformed sizes and any size above 0x1FFFFFFFE0 bytes",
   app.memoryGas(null, "0") === null &&
   app.memoryGas("0", 1024) === null);
 check("memory tool section present in index.html", html.includes("mem-btn") && html.includes("Memory expansion gas"));
+
+/* CALL gas — expected values produced by an independent
+   pure-Python transcription of the published rules
+   (hidden_files/oracle-call-gas.py): EIP-2929 access
+   (2,600 cold / 100 warm, charged before forwarding),
+   9,000 value transfer and 25,000 empty-target surcharge
+   (the latter only with value), memory expansion over the
+   larger region end with zero-size regions touching
+   nothing, EIP-150 forwarding capped at R - floor(R/64)
+   of the post-cost remainder, and the 2,300 value stipend
+   added for the callee without being deducted from the
+   caller. The oracle is anchored in-script on hand values
+   (the prefilled call's 11,600 / 87,019 / 89,319 / 1,381
+   split, remainder 63 forwarding whole and 64 forwarding
+   63, the empty-target surcharge's value condition) and on
+   a conservation assert (base + forwarded + retained =
+   available, stipend extra) over every non-OOG vector.
+   Vectors are [available, requested, value, cold, empty,
+   curMem, inOff, inSize, outOff, outSize] -> the full
+   result object. */
+check("call controls labelled in index.html",
+  ["call-available", "call-requested", "call-value", "call-access", "call-target", "call-mem", "call-in-off", "call-in-size", "call-out-off", "call-out-size"].every(id => html.includes(`for="${id}"`)));
+check("CALL gas matches the Python oracle (prefill cap-bound split, warm/cold access, empty-target surcharge only with value, requested at/above/under the cap, remainders 63 and 64, memory as the larger region end with zero-size regions inert, growth vs already-held memory, out-of-gas below the base, exactly-the-base forwarding 0, a zero request still delivering the stipend, and 10^12-scale gas)",
+  (() => { const V = [
+    [["100000", "1000000", "1000000000000000000", true, false, "0", "0", "0", "0", "0"], ["2600", "9000", "0", "0", "11600", "0", "false", "88400", "87019", "87019", "2300", "89319", "1381"]],
+    [["10000", "5000", "0", false, false, "0", "0", "0", "0", "0"], ["100", "0", "0", "0", "100", "0", "false", "9900", "9746", "5000", "0", "5000", "4900"]],
+    [["10000", "5000", "0", true, true, "0", "0", "0", "0", "0"], ["2600", "0", "0", "0", "2600", "0", "false", "7400", "7285", "5000", "0", "5000", "2400"]],
+    [["100000", "5000", "1", true, true, "0", "0", "0", "0", "0"], ["2600", "9000", "25000", "0", "36600", "0", "false", "63400", "62410", "5000", "2300", "7300", "58400"]],
+    [["100000", "5000", "1", false, true, "0", "0", "0", "0", "0"], ["100", "9000", "25000", "0", "34100", "0", "false", "65900", "64871", "5000", "2300", "7300", "60900"]],
+    [["100000", "87019", "1000000000000000000", true, false, "0", "0", "0", "0", "0"], ["2600", "9000", "0", "0", "11600", "0", "false", "88400", "87019", "87019", "2300", "89319", "1381"]],
+    [["100000", "87020", "1000000000000000000", true, false, "0", "0", "0", "0", "0"], ["2600", "9000", "0", "0", "11600", "0", "false", "88400", "87019", "87019", "2300", "89319", "1381"]],
+    [["163", "1000", "0", false, false, "0", "0", "0", "0", "0"], ["100", "0", "0", "0", "100", "0", "false", "63", "63", "63", "0", "63", "0"]],
+    [["164", "1000", "0", false, false, "0", "0", "0", "0", "0"], ["100", "0", "0", "0", "100", "0", "false", "64", "63", "63", "0", "63", "1"]],
+    [["100000", "1000", "0", false, false, "0", "0", "64", "128", "32"], ["100", "0", "0", "15", "115", "160", "false", "99885", "98325", "1000", "0", "1000", "98885"]],
+    [["100000", "1000", "0", false, false, "0", "999999", "0", "0", "0"], ["100", "0", "0", "0", "100", "0", "false", "99900", "98340", "1000", "0", "1000", "98900"]],
+    [["100000", "1000", "0", false, false, "1024", "0", "2048", "0", "0"], ["100", "0", "0", "102", "202", "2048", "false", "99798", "98239", "1000", "0", "1000", "98798"]],
+    [["100000", "1000", "0", false, false, "2048", "0", "1024", "0", "0"], ["100", "0", "0", "0", "100", "1024", "false", "99900", "98340", "1000", "0", "1000", "98900"]],
+    [["1000", "5000", "0", true, false, "0", "0", "0", "0", "0"], ["2600", "0", "0", "0", "2600", "0", "true", "0", "0", "0", "0", "0", "0"]],
+    [["2600", "5000", "0", true, false, "0", "0", "0", "0", "0"], ["2600", "0", "0", "0", "2600", "0", "false", "0", "0", "0", "0", "0", "0"]],
+    [["100000", "0", "7", true, false, "0", "0", "0", "0", "0"], ["2600", "9000", "0", "0", "11600", "0", "false", "88400", "87019", "0", "2300", "2300", "88400"]],
+    [["1000000000000", "100000000000", "5", true, true, "1024", "0", "4096", "8192", "4096"], ["2600", "9000", "25000", "1342", "37942", "12288", "false", "999999962058", "984374962651", "100000000000", "2300", "100000002300", "899999962058"]],
+    [["50000", "44100", "0", true, false, "0", "0", "0", "0", "0"], ["2600", "0", "0", "0", "2600", "0", "false", "47400", "46660", "44100", "0", "44100", "3300"]]
+  ]; return V.every(([inp, exp]) => { const r = app.callGasCalc(...inp);
+    return r !== null && [r.accessGas, r.transferGas, r.newAccountGas, r.memoryGas, r.baseGas, r.newMemBytes, String(r.outOfGas), r.remaining, r.capGas, r.forwardedGas, r.stipend, r.calleeGas, r.callerRetained].join(",") === exp.join(","); }); })());
+check("call: prefilled page values split 100,000 into an 11,600 base, 87,019 forwarded, 89,319 delivered and the 1,381 reserve",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.callGasCalc(g("call-available"), g("call-requested"), g("call-value"),
+      html.includes('id="call-access"><option value="cold" selected'),
+      html.includes('id="call-target"><option value="empty" selected'),
+      g("call-mem"), g("call-in-off"), g("call-in-size"), g("call-out-off"), g("call-out-size"));
+    return r !== null && r.baseGas === "11600" && r.forwardedGas === "87019" && r.calleeGas === "89319" && r.callerRetained === "1381"; })());
+check("call refuses malformed gas, value and memory inputs and region ends past the client's bound",
+  app.callGasCalc("-1", "0", "0", true, false, "0", "0", "0", "0", "0") === null &&
+  app.callGasCalc("100000", "1.5", "0", true, false, "0", "0", "0", "0", "0") === null &&
+  app.callGasCalc("100000", "0", "0x" + "ff".repeat(33), true, false, "0", "0", "0", "0", "0") === null &&
+  app.callGasCalc("100000", "0", "0", "yes", false, "0", "0", "0", "0", "0") === null &&
+  app.callGasCalc("100000", "0", "0", true, false, "137438953441", "0", "0", "0", "0") === null &&
+  app.callGasCalc("100000", "0", "0", true, false, "0", "137438953440", "32", "0", "0") === null &&
+  app.callGasCalc("100000", "0", "0", true, false, "0", "0", "0", "0", null) === null &&
+  app.callGasCalc(null, "0", "0", true, false, "0", "0", "0", "0", "0") === null);
+check("call tool section present in index.html", html.includes("call-btn") && html.includes("CALL gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

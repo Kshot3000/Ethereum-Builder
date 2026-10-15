@@ -3254,6 +3254,91 @@ function memoryGas(currentStr, newStr) {
   };
 }
 
+/* CALL gas — what one CALL opcode costs the caller and what
+   the callee actually receives, under the rules current
+   mainnet applies (EIP-2929, EIP-150, EIP-161; all CC0,
+   formulas paraphrased, cross-checked against go-ethereum's
+   gasCall / callGas). The call's own cost (its base) is
+   charged first, before any forwarding is calculated:
+   - account access: 2,600 if the target address is cold
+     (not yet accessed in this transaction), 100 if warm
+     (EIP-2929);
+   - 9,000 if the call carries value (value > 0);
+   - 25,000 more if it carries value and the target account
+     is empty — nonce 0, balance 0, no code (EIP-161's notion
+     of empty; funding such an account creates it);
+   - memory expansion (the function above) for the input and
+     output regions: the frame must reach the larger of the
+     two region ends, and a region of size 0 touches nothing
+     whatever its offset.
+   If the frame's available gas is below the base, the CALL
+   itself runs out of gas and forwards nothing. Otherwise,
+   of the remainder R, at most R - floor(R / 64) can be
+   forwarded (EIP-150's all-but-one-64th rule, as the client
+   computes it: R - R/64 with integer division), and the
+   callee receives min(requested, that cap) plus — when the
+   call carries value — a 2,300 stipend that is added for
+   the callee and is NOT deducted from the caller. Gas the
+   callee does not use returns to the caller afterwards;
+   what is modelled here is the split at the moment of the
+   call. Only CALL is modelled — CALLCODE, DELEGATECALL and
+   STATICCALL share the access and forwarding rules but
+   differ on the value terms — and a call the caller cannot
+   fund (balance below the value) fails for a non-gas reason
+   that is not modelled. Gas amounts are whole numbers; the
+   value is a uint256 word in wei (decimal or 0x hex), of
+   which only zero-vs-non-zero matters to the price. Memory
+   sizes and offsets follow the memory function's bound: a
+   region end above 0x1FFFFFFFE0 bytes is refused, as the
+   client's gas calculation overflows there. */
+function callParseGas(str) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  if (!/^\d+$/.test(s) || s.length > 78) return null;
+  const v = BigInt(s);
+  return v < (1n << 256n) ? v : null;
+}
+function callGasCalc(availableStr, requestedStr, valueStr, isCold, targetEmpty,
+    curMemStr, inOffStr, inSizeStr, outOffStr, outSizeStr) {
+  const available = callParseGas(availableStr);
+  const requested = callParseGas(requestedStr);
+  const value = sstoreParseWord(valueStr);
+  const curMem = memParseBytes(curMemStr);
+  if (available === null || requested === null || value === null || curMem === null ||
+      typeof isCold !== "boolean" || typeof targetEmpty !== "boolean") return null;
+  const inOff = memParseBytes(inOffStr), inSize = memParseBytes(inSizeStr);
+  const outOff = memParseBytes(outOffStr), outSize = memParseBytes(outSizeStr);
+  if (inOff === null || inSize === null || outOff === null || outSize === null) return null;
+  const inEnd = inSize === 0n ? 0n : inOff + inSize;
+  const outEnd = outSize === 0n ? 0n : outOff + outSize;
+  if (inEnd > MEM_MAX_BYTES || outEnd > MEM_MAX_BYTES) return null;
+  const newMem = inEnd > outEnd ? inEnd : outEnd;
+  const accessGas = isCold ? 2600n : 100n;
+  const transferGas = value > 0n ? 9000n : 0n;
+  const newAccountGas = value > 0n && targetEmpty ? 25000n : 0n;
+  const curWords = (curMem + 31n) / 32n;
+  const newWords = (newMem + 31n) / 32n;
+  const memoryGas = newWords > curWords ? memTotalCost(newWords) - memTotalCost(curWords) : 0n;
+  const baseGas = accessGas + transferGas + newAccountGas + memoryGas;
+  const zero = {
+    accessGas: accessGas.toString(), transferGas: transferGas.toString(),
+    newAccountGas: newAccountGas.toString(), memoryGas: memoryGas.toString(),
+    baseGas: baseGas.toString(), newMemBytes: newMem.toString()
+  };
+  if (available < baseGas) {
+    return { ...zero, outOfGas: true, remaining: "0", capGas: "0",
+      forwardedGas: "0", stipend: "0", calleeGas: "0", callerRetained: "0" };
+  }
+  const remaining = available - baseGas;
+  const capGas = remaining - remaining / 64n;
+  const forwardedGas = requested < capGas ? requested : capGas;
+  const stipend = value > 0n ? 2300n : 0n;
+  return { ...zero, outOfGas: false, remaining: remaining.toString(),
+    capGas: capGas.toString(), forwardedGas: forwardedGas.toString(),
+    stipend: stipend.toString(), calleeGas: (forwardedGas + stipend).toString(),
+    callerRetained: (remaining - forwardedGas).toString() };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4108,6 +4193,32 @@ if (typeof document !== "undefined") {
         : `Memory expansion gas: ${r.expansionGas} — memory grows from ${r.currentWords} word(s) (total cost ${r.totalBefore}) to ${r.newWords} word(s) (total cost ${r.totalAfter}), and only the difference is charged. Computed locally — this is the expansion charge only; the operation that touches the memory charges its own static and per-word costs on top.`;
     });
 
+    /* CALL gas */
+    const callBtn = document.getElementById("call-btn");
+    if (callBtn) callBtn.addEventListener("click", () => {
+      const r = callGasCalc(
+        document.getElementById("call-available").value,
+        document.getElementById("call-requested").value,
+        document.getElementById("call-value").value,
+        document.getElementById("call-access").value === "cold",
+        document.getElementById("call-target").value === "empty",
+        document.getElementById("call-mem").value,
+        document.getElementById("call-in-off").value,
+        document.getElementById("call-in-size").value,
+        document.getElementById("call-out-off").value,
+        document.getElementById("call-out-size").value);
+      const el = document.getElementById("call-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: available and requested gas are whole numbers below 2^256, the value is a uint256 word in wei (decimal or 0x hex), and the memory sizes and offsets are whole numbers of bytes at most 137,438,953,440 with no region reaching past that bound.";
+        return;
+      }
+      if (r.outOfGas) {
+        el.textContent = `Out of gas before the call begins: the call's own cost is ${r.baseGas} gas (access ${r.accessGas} + value transfer ${r.transferGas} + new account ${r.newAccountGas} + memory expansion ${r.memoryGas}), which is more than the gas available — the CALL fails and nothing is forwarded. Computed locally — no call is made and no chain is queried.`;
+        return;
+      }
+      el.textContent = `CALL gas: the call's own cost is ${r.baseGas} (access ${r.accessGas} + value transfer ${r.transferGas} + new account ${r.newAccountGas} + memory expansion ${r.memoryGas}), leaving ${r.remaining}; at most ${r.capGas} of that can be forwarded (the all-but-one-64th cap), so the callee receives ${r.calleeGas} — ${r.forwardedGas} forwarded${r.stipend === "0" ? "" : ` plus the ${r.stipend} value stipend, which is not deducted from the caller`} — and the caller keeps ${r.callerRetained} for itself at the moment of the call (gas the callee does not use returns afterwards). Computed locally from the values you gave — a real call's warmth, target and memory are execution state this page does not read; no call is made and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4121,5 +4232,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

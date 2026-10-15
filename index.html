@@ -509,6 +509,25 @@
     </div>
 
     <div class="tool">
+      <h3>CREATE &amp; CREATE2 gas calculator (EIP-3860 / EIP-170)</h3>
+      <p>A call forwards gas; a creation spends it in stages, and each stage has its own rule. First an <em>upfront</em> cost is deducted before the initcode runs: 32,000 for the operation itself; a metering charge on the initcode of 2 gas per 32-byte word (<a href="https://eips.ethereum.org/EIPS/eip-3860">EIP-3860</a>, charged for both opcodes so that initcode is paid for like calldata), plus 6 more per word under <code>CREATE2</code>, which hashes the initcode to derive the new address; and memory expansion for the region of the creator's memory the initcode is read from — the frame must reach the region end, and a zero-size region touches nothing whatever its offset. Of what remains, the initcode itself receives all but one 64th under <a href="https://eips.ethereum.org/EIPS/eip-150">EIP-150</a>'s rule — the same split the CALL calculator above applies — and the creator keeps the 64th at the moment of creation; gas the initcode leaves unused returns afterwards. Only when the initcode finishes and returns the runtime code does the last charge land: a <em>code deposit</em> of 200 per deployed byte, paid from the gas then remaining — if that cannot cover it, the creation fails. Two size limits fail a creation outright rather than pricing it: initcode above 49,152 bytes is refused by EIP-3860 (the limit is twice the code maximum), and runtime code above 24,576 bytes can never be deposited (<a href="https://eips.ethereum.org/EIPS/eip-170">EIP-170</a>). Note what is <em>absent</em>: unlike a CALL carrying value, a creation charges nothing for moving its endowment — the value terms simply do not appear in this opcode's price. The prefilled creation — a <code>CREATE</code> with 500,000 gas available, 1,000 bytes of initcode at offset 0 in fresh memory, returning 800 bytes of code — pays 32,162 upfront (32,000 + 64 of word charges over 32 words + 98 of memory expansion), forwards 460,529 to the initcode, keeps exactly 7,309 in reserve, and owes a 160,000 deposit on success: 192,162 of fixed charges before the initcode's own execution. Honest scope: this prices a creation by opcode inside a frame — a contract-creation <em>transaction</em> folds the initcode into its intrinsic gas instead — the initcode's own execution (the opcodes it runs) is not modelled, a creation that fails because the target address is already occupied is not modelled, and the sizes and memory state are values <em>you</em> supply, not execution state this page reads. Computed locally; nothing is deployed and no chain is queried.</p>
+      <label for="crg-available">Gas available (the creating frame's remaining gas just before the CREATE / CREATE2)</label>
+      <input id="crg-available" type="text" inputmode="numeric" spellcheck="false" value="500000">
+      <label for="crg-opcode">Opcode</label>
+      <select id="crg-opcode"><option value="create" selected>CREATE — 2 gas per initcode word</option><option value="create2">CREATE2 — 8 gas per initcode word (2 metering + 6 address hashing)</option></select>
+      <label for="crg-init-size">Initcode size (bytes — the code read from memory and executed; at most 49,152)</label>
+      <input id="crg-init-size" type="text" inputmode="numeric" spellcheck="false" value="1000">
+      <label for="crg-init-off">Initcode offset (bytes — where the initcode starts in the creator's memory; a size of 0 touches nothing)</label>
+      <input id="crg-init-off" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="crg-mem">Current memory size (bytes — what the creating frame has already allocated)</label>
+      <input id="crg-mem" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="crg-deployed">Deployed code size (bytes — the runtime code the initcode returns; at most 24,576)</label>
+      <input id="crg-deployed" type="text" inputmode="numeric" spellcheck="false" value="800">
+      <button id="crg-btn" type="button">Calculate creation gas</button>
+      <p id="crg-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -842,6 +861,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=45"></script>
+<script src="app.js?v=46"></script>
 </body>
 </html>

@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=45"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=46"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2307,6 +2307,62 @@ check("call refuses malformed gas, value and memory inputs and region ends past 
   app.callGasCalc("100000", "0", "0", true, false, "0", "0", "0", "0", null) === null &&
   app.callGasCalc(null, "0", "0", true, false, "0", "0", "0", "0", "0") === null);
 check("call tool section present in index.html", html.includes("call-btn") && html.includes("CALL gas calculator"));
+
+/* CREATE / CREATE2 gas — expected values produced by an
+   independent pure-Python transcription of the published
+   rules (hidden_files/oracle-create-gas.py): an upfront
+   cost of 32,000 plus initcode metering at 2 per word
+   (EIP-3860), 6 more per word under CREATE2 for the address
+   hash, plus memory expansion over the initcode region end
+   with zero-size regions touching nothing; of the remainder
+   the initcode receives R - floor(R/64) (EIP-150); a code
+   deposit of 200 per deployed byte lands on success, with
+   initcode above 49,152 (EIP-3860) and deployed code above
+   24,576 (EIP-170) failing the creation outright. The oracle
+   is anchored in-script on hand values (the prefilled
+   creation's 32,162 / 460,529 / 7,309 / 160,000 figures,
+   remainders 63 and 64, both size-limit boundaries) and on
+   a conservation assert (upfront + forwarded + retained =
+   available) over every forwarded vector. Vectors are
+   [available, opcode, initSize, initOff, curMem, deployed]
+   -> the full result object. */
+check("create controls labelled in index.html",
+  ["crg-available", "crg-opcode", "crg-init-size", "crg-init-off", "crg-mem", "crg-deployed"].every(id => html.includes(`for="${id}"`)));
+check("CREATE / CREATE2 gas matches the Python oracle (prefill split and deposit, CREATE2 word premium, empty initcode, zero-size region inert at any offset, both size maxima at once, initcode one byte over the EIP-3860 limit refused, deployed code one byte over the EIP-170 limit failing at the deposit, out-of-gas one below and exactly at the upfront cost, remainders 63 and 64, already-held vs growing memory, a 33-byte CREATE2 initcode, and a 10^12-scale CREATE2 at both maxima)",
+  (() => { const V = [
+    [["500000", "create", "1000", "0", "0", "800"], ["32", "64", "98", "32162", "1000", "false", "false", "467838", "460529", "7309", "false", "160000", "192162"]],
+    [["500000", "create2", "1000", "0", "0", "800"], ["32", "256", "98", "32354", "1000", "false", "false", "467646", "460340", "7306", "false", "160000", "192354"]],
+    [["100000", "create", "0", "0", "0", "0"], ["0", "0", "0", "32000", "0", "false", "false", "68000", "66938", "1062", "false", "0", "32000"]],
+    [["100000", "create", "0", "999999", "0", "0"], ["0", "0", "0", "32000", "0", "false", "false", "68000", "66938", "1062", "false", "0", "32000"]],
+    [["10000000", "create", "49152", "0", "0", "24576"], ["1536", "3072", "9216", "44288", "49152", "false", "false", "9955712", "9800154", "155558", "false", "4915200", "4959488"]],
+    [["10000000", "create", "49153", "0", "0", "0"], ["1537", "3074", "9225", "44299", "49153", "true", "false", "0", "0", "0", "false", "0", "0"]],
+    [["500000", "create", "1000", "0", "0", "24577"], ["32", "64", "98", "32162", "1000", "false", "false", "467838", "460529", "7309", "true", "0", "32162"]],
+    [["32161", "create", "1000", "0", "0", "800"], ["32", "64", "98", "32162", "1000", "false", "true", "0", "0", "0", "false", "160000", "192162"]],
+    [["32162", "create", "1000", "0", "0", "800"], ["32", "64", "98", "32162", "1000", "false", "false", "0", "0", "0", "false", "160000", "192162"]],
+    [["32063", "create", "0", "0", "0", "0"], ["0", "0", "0", "32000", "0", "false", "false", "63", "63", "0", "false", "0", "32000"]],
+    [["32064", "create", "0", "0", "0", "0"], ["0", "0", "0", "32000", "0", "false", "false", "64", "63", "1", "false", "0", "32000"]],
+    [["100000", "create", "1024", "0", "2048", "0"], ["32", "64", "0", "32064", "1024", "false", "false", "67936", "66875", "1061", "false", "0", "32064"]],
+    [["100000", "create", "1024", "1024", "1024", "0"], ["32", "64", "102", "32166", "2048", "false", "false", "67834", "66775", "1059", "false", "0", "32166"]],
+    [["100000", "create2", "33", "0", "0", "0"], ["2", "16", "6", "32022", "33", "false", "false", "67978", "66916", "1062", "false", "0", "32022"]],
+    [["1000000000000", "create2", "49152", "0", "0", "24576"], ["1536", "12288", "9216", "53504", "49152", "false", "false", "999999946496", "984374947332", "15624999164", "false", "4915200", "4968704"]]
+  ]; return V.every(([inp, exp]) => { const r = app.createGasCalc(...inp);
+    return r !== null && [r.initcodeWords, r.wordGas, r.memoryGas, r.upfrontGas, r.newMemBytes, String(r.initcodeTooLarge), String(r.outOfGas), r.remaining, r.forwardedGas, r.creatorRetained, String(r.codeTooLarge), r.depositGas, r.fixedGas].join(",") === exp.join(","); }); })());
+check("create: prefilled page values pay 32,162 upfront, forward 460,529, keep the 7,309 reserve and owe a 160,000 deposit (192,162 fixed)",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.createGasCalc(g("crg-available"),
+      html.includes('id="crg-opcode"><option value="create2" selected') ? "create2" : "create",
+      g("crg-init-size"), g("crg-init-off"), g("crg-mem"), g("crg-deployed"));
+    return r !== null && r.upfrontGas === "32162" && r.forwardedGas === "460529" && r.creatorRetained === "7309" && r.depositGas === "160000" && r.fixedGas === "192162"; })());
+check("create refuses malformed gas, size and opcode inputs and region ends past the client's bound",
+  app.createGasCalc("-1", "create", "0", "0", "0", "0") === null &&
+  app.createGasCalc("100000", "create3", "0", "0", "0", "0") === null &&
+  app.createGasCalc("100000", null, "0", "0", "0", "0") === null &&
+  app.createGasCalc("100000", "create", "1.5", "0", "0", "0") === null &&
+  app.createGasCalc("100000", "create", "32", "137438953440", "0", "0") === null &&
+  app.createGasCalc("100000", "create", "0", "0", "0", "137438953441") === null &&
+  app.createGasCalc("100000", "create", "0", "0", "0", null) === null &&
+  app.createGasCalc(null, "create", "0", "0", "0", "0") === null);
+check("create tool section present in index.html", html.includes("crg-btn") && html.includes("CREATE &amp; CREATE2 gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

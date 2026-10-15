@@ -3339,6 +3339,92 @@ function callGasCalc(availableStr, requestedStr, valueStr, isCold, targetEmpty,
     callerRetained: (remaining - forwardedGas).toString() };
 }
 
+/* CREATE / CREATE2 gas — what deploying a contract with one
+   CREATE or CREATE2 opcode costs, under the rules current
+   mainnet applies (EIP-3860, EIP-170, EIP-150; all CC0,
+   formulas paraphrased, cross-checked against go-ethereum's
+   gasCreateEip3860 / gasCreate2Eip3860 and its CreateGas,
+   CreateDataGas and InitCodeWordGas parameters). The charges
+   land in order:
+   - an upfront cost, deducted before the initcode runs:
+     32,000 for the operation itself; a per-word charge on the
+     initcode of 2 per 32-byte word (EIP-3860's metering,
+     charged for both opcodes), plus 6 more per word under
+     CREATE2 for hashing the initcode into the new address;
+     and memory expansion for the region of the creator's
+     memory the initcode is read from — the frame must reach
+     the region end, and a zero-size region touches nothing
+     whatever its offset;
+   - of the remainder R, the initcode receives
+     R - floor(R / 64) under EIP-150's all-but-one-64th rule
+     and the creator keeps the rest at the moment of creation
+     (gas the initcode leaves unused returns afterwards);
+     if the available gas is below the upfront cost the
+     creation runs out of gas and nothing is forwarded;
+   - after the initcode runs and returns the runtime code, a
+     code deposit of 200 per deployed byte, charged on success
+     from the gas then remaining (kept plus returned) — if
+     that cannot pay it, the creation fails.
+   Two size limits are validity rules that fail the creation
+   outright: initcode above 49,152 bytes (EIP-3860's
+   maximum, twice the code maximum) is refused by the
+   client's gas calculation itself, and runtime code above
+   24,576 bytes (EIP-170) can never be deposited. This is a
+   creation by opcode inside a frame — a contract-creation
+   transaction additionally folds the initcode into its
+   intrinsic gas. The value a creation carries moves no gas
+   term (unlike CALL there is no transfer or new-account
+   charge here), the initcode's own execution — the opcodes
+   it runs — is not modelled, and neither is a creation that
+   fails because the target address is already occupied. Gas
+   amounts are whole numbers below 2^256; sizes follow the
+   memory function's bound: a region end above 0x1FFFFFFFE0
+   bytes is refused, as the client's gas calculation
+   overflows there. */
+const CREATE_MAX_INITCODE = 49152n;
+const CREATE_MAX_CODE = 24576n;
+function createGasCalc(availableStr, opcode, initSizeStr, initOffStr, curMemStr, deployedStr) {
+  const available = callParseGas(availableStr);
+  const initSize = memParseBytes(initSizeStr);
+  const initOff = memParseBytes(initOffStr);
+  const curMem = memParseBytes(curMemStr);
+  const deployed = memParseBytes(deployedStr);
+  if (available === null || initSize === null || initOff === null || curMem === null ||
+      deployed === null || (opcode !== "create" && opcode !== "create2")) return null;
+  const regionEnd = initSize === 0n ? 0n : initOff + initSize;
+  if (regionEnd > MEM_MAX_BYTES) return null;
+  const initWords = (initSize + 31n) / 32n;
+  const wordGas = initWords * (opcode === "create2" ? 8n : 2n);
+  const curWords = (curMem + 31n) / 32n;
+  const newWords = (regionEnd + 31n) / 32n;
+  const memoryGas = newWords > curWords ? memTotalCost(newWords) - memTotalCost(curWords) : 0n;
+  const upfrontGas = 32000n + wordGas + memoryGas;
+  const base = {
+    initcodeWords: initWords.toString(), wordGas: wordGas.toString(),
+    memoryGas: memoryGas.toString(), upfrontGas: upfrontGas.toString(),
+    newMemBytes: regionEnd.toString()
+  };
+  if (initSize > CREATE_MAX_INITCODE) {
+    return { ...base, initcodeTooLarge: true, outOfGas: false, remaining: "0",
+      forwardedGas: "0", creatorRetained: "0", codeTooLarge: false,
+      depositGas: "0", fixedGas: "0" };
+  }
+  const codeTooLarge = deployed > CREATE_MAX_CODE;
+  const depositGas = codeTooLarge ? 0n : 200n * deployed;
+  const fixedGas = upfrontGas + depositGas;
+  if (available < upfrontGas) {
+    return { ...base, initcodeTooLarge: false, outOfGas: true, remaining: "0",
+      forwardedGas: "0", creatorRetained: "0", codeTooLarge,
+      depositGas: depositGas.toString(), fixedGas: fixedGas.toString() };
+  }
+  const remaining = available - upfrontGas;
+  const forwardedGas = remaining - remaining / 64n;
+  return { ...base, initcodeTooLarge: false, outOfGas: false,
+    remaining: remaining.toString(), forwardedGas: forwardedGas.toString(),
+    creatorRetained: (remaining - forwardedGas).toString(), codeTooLarge,
+    depositGas: depositGas.toString(), fixedGas: fixedGas.toString() };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4219,6 +4305,36 @@ if (typeof document !== "undefined") {
       el.textContent = `CALL gas: the call's own cost is ${r.baseGas} (access ${r.accessGas} + value transfer ${r.transferGas} + new account ${r.newAccountGas} + memory expansion ${r.memoryGas}), leaving ${r.remaining}; at most ${r.capGas} of that can be forwarded (the all-but-one-64th cap), so the callee receives ${r.calleeGas} — ${r.forwardedGas} forwarded${r.stipend === "0" ? "" : ` plus the ${r.stipend} value stipend, which is not deducted from the caller`} — and the caller keeps ${r.callerRetained} for itself at the moment of the call (gas the callee does not use returns afterwards). Computed locally from the values you gave — a real call's warmth, target and memory are execution state this page does not read; no call is made and no chain is queried.`;
     });
 
+    /* CREATE / CREATE2 gas */
+    const createGasBtn = document.getElementById("crg-btn");
+    if (createGasBtn) createGasBtn.addEventListener("click", () => {
+      const r = createGasCalc(
+        document.getElementById("crg-available").value,
+        document.getElementById("crg-opcode").value,
+        document.getElementById("crg-init-size").value,
+        document.getElementById("crg-init-off").value,
+        document.getElementById("crg-mem").value,
+        document.getElementById("crg-deployed").value);
+      const el = document.getElementById("crg-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the gas available is a whole number below 2^256, and the initcode size and offset, current memory size and deployed code size are whole numbers of bytes at most 137,438,953,440 with the initcode region not reaching past that bound.";
+        return;
+      }
+      const opName = document.getElementById("crg-opcode").value === "create2" ? "CREATE2" : "CREATE";
+      if (r.initcodeTooLarge) {
+        el.textContent = `Creation fails before it starts: the initcode is over EIP-3860's 49,152-byte maximum, which the client's gas calculation itself refuses — nothing is charged and no gas is forwarded. Computed locally — no creation is made and no chain is queried.`;
+        return;
+      }
+      if (r.outOfGas) {
+        el.textContent = `Out of gas before the initcode runs: the ${opName} upfront cost is ${r.upfrontGas} gas (32,000 for the operation + ${r.wordGas} of initcode word charges + ${r.memoryGas} of memory expansion), which is more than the gas available — the creation fails and nothing is forwarded. Computed locally — no creation is made and no chain is queried.`;
+        return;
+      }
+      const depositText = r.codeTooLarge
+        ? `the initcode would return more than EIP-170's 24,576-byte maximum code size, so the creation fails at the deposit step and no deposit is charged`
+        : `storing the returned code then costs a ${r.depositGas} code deposit (200 per byte), charged from the gas remaining when the initcode finishes — the fixed charges come to ${r.fixedGas} in all, before the initcode's own execution`;
+      el.textContent = `${opName} gas: the upfront cost is ${r.upfrontGas} (32,000 for the operation + ${r.wordGas} of initcode word charges over ${r.initcodeWords} word(s) + ${r.memoryGas} of memory expansion), leaving ${r.remaining}; the initcode receives ${r.forwardedGas} of that (the all-but-one-64th rule) and the creator keeps ${r.creatorRetained} at the moment of creation (gas the initcode does not use returns afterwards); ${depositText}. Computed locally from the values you gave — the initcode's own execution is not modelled, and sizes and memory are values you supply, not execution state this page reads; no creation is made and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4232,5 +4348,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

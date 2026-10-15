@@ -3425,6 +3425,44 @@ function createGasCalc(availableStr, opcode, initSizeStr, initOffStr, curMemStr,
     depositGas: depositGas.toString(), fixedGas: fixedGas.toString() };
 }
 
+/* LOG0-LOG4 gas — what emitting one event log costs, under the
+   Yellow Paper's log-cost terms as go-ethereum's gasLog and its
+   LogGas / LogTopicGas / LogGasBytes parameters implement them
+   (formulas paraphrased): a flat 375 for the operation itself,
+   375 per topic (the opcode's number, 0 to 4, is its topic
+   count — LOG3 is what an ERC-20 Transfer emits: the signature
+   topic plus the two indexed addresses), 8 per byte of log data,
+   and memory expansion for the region of the frame's memory the
+   data is read from — the frame must reach the region end, and
+   a zero-size region touches nothing whatever its offset. The
+   topic values and the data's contents move no term; only the
+   counts and sizes are priced. Gas amounts follow the memory
+   function's bound: a region end above 0x1FFFFFFFE0 bytes is
+   refused, as the client's gas calculation overflows there. */
+function logGasCalc(topicsStr, dataOffStr, dataSizeStr, curMemStr) {
+  if (typeof topicsStr !== "string" || !/^[0-4]$/.test(topicsStr.trim())) return null;
+  const topics = BigInt(topicsStr.trim());
+  const dataOff = memParseBytes(dataOffStr);
+  const dataSize = memParseBytes(dataSizeStr);
+  const curMem = memParseBytes(curMemStr);
+  if (dataOff === null || dataSize === null || curMem === null) return null;
+  const regionEnd = dataSize === 0n ? 0n : dataOff + dataSize;
+  if (regionEnd > MEM_MAX_BYTES) return null;
+  const curWords = (curMem + 31n) / 32n;
+  const newWords = (regionEnd + 31n) / 32n;
+  const memoryGas = newWords > curWords ? memTotalCost(newWords) - memTotalCost(curWords) : 0n;
+  const baseGas = 375n;
+  const topicGas = 375n * topics;
+  const dataGas = 8n * dataSize;
+  return {
+    topics: topics.toString(), baseGas: baseGas.toString(),
+    topicGas: topicGas.toString(), dataGas: dataGas.toString(),
+    memoryGas: memoryGas.toString(),
+    totalGas: (baseGas + topicGas + dataGas + memoryGas).toString(),
+    newMemBytes: regionEnd.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4335,6 +4373,22 @@ if (typeof document !== "undefined") {
       el.textContent = `${opName} gas: the upfront cost is ${r.upfrontGas} (32,000 for the operation + ${r.wordGas} of initcode word charges over ${r.initcodeWords} word(s) + ${r.memoryGas} of memory expansion), leaving ${r.remaining}; the initcode receives ${r.forwardedGas} of that (the all-but-one-64th rule) and the creator keeps ${r.creatorRetained} at the moment of creation (gas the initcode does not use returns afterwards); ${depositText}. Computed locally from the values you gave — the initcode's own execution is not modelled, and sizes and memory are values you supply, not execution state this page reads; no creation is made and no chain is queried.`;
     });
 
+    /* LOG0-LOG4 gas */
+    const logBtn = document.getElementById("log-btn");
+    if (logBtn) logBtn.addEventListener("click", () => {
+      const r = logGasCalc(
+        document.getElementById("log-topics").value,
+        document.getElementById("log-off").value,
+        document.getElementById("log-size").value,
+        document.getElementById("log-mem").value);
+      const el = document.getElementById("log-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the topic count is a whole number from 0 to 4, and the data offset, data size and current memory size are whole numbers of bytes at most 137,438,953,440 with the data region not reaching past that bound.";
+        return;
+      }
+      el.textContent = `LOG${r.topics} gas: ${r.totalGas} — 375 for the operation + ${r.topicGas} for its ${r.topics} topic(s) + ${r.dataGas} for the data bytes + ${r.memoryGas} of memory expansion. Computed locally from the values you gave — the topic values and data contents are not read and move no term; no log is emitted and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4348,5 +4402,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

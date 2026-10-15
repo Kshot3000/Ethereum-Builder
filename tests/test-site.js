@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=46"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=47"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2363,6 +2363,50 @@ check("create refuses malformed gas, size and opcode inputs and region ends past
   app.createGasCalc("100000", "create", "0", "0", "0", null) === null &&
   app.createGasCalc(null, "create", "0", "0", "0", "0") === null);
 check("create tool section present in index.html", html.includes("crg-btn") && html.includes("CREATE &amp; CREATE2 gas calculator"));
+
+/* LOG0-LOG4 gas — expected values produced by an independent
+   pure-Python transcription of the Yellow Paper's log-cost
+   terms (hidden_files/oracle-log-gas.py): 375 flat, 375 per
+   topic, 8 per data byte, plus memory expansion over the data
+   region end with zero-size regions touching nothing. The
+   oracle is anchored in-script on hand values (the prefilled
+   Transfer-shaped LOG3 at 1,759, a bare LOG0 at 375, LOG4 at
+   1,875, 1 and 33 data bytes). Vectors are
+   [topics, dataOff, dataSize, curMem] -> the full result. */
+check("log controls labelled in index.html",
+  ["log-topics", "log-off", "log-size", "log-mem"].every(id => html.includes(`for="${id}"`)));
+check("LOG gas matches the Python oracle (prefill Transfer-shaped LOG3, bare LOG0, max topics, 1 and 33 data bytes, zero-size region inert at a large offset, region already held, partial growth, 100,000-byte payload, region ending exactly at the client's bound, region inside large memory, and a 1 MB payload)",
+  (() => { const V = [
+    [["3", "0", "32", "0"], ["3", "375", "1125", "256", "3", "1759", "32"]],
+    [["0", "0", "0", "0"], ["0", "375", "0", "0", "0", "375", "0"]],
+    [["4", "0", "0", "0"], ["4", "375", "1500", "0", "0", "1875", "0"]],
+    [["0", "0", "1", "0"], ["0", "375", "0", "8", "3", "386", "1"]],
+    [["0", "0", "33", "0"], ["0", "375", "0", "264", "6", "645", "33"]],
+    [["2", "999999", "0", "0"], ["2", "375", "750", "0", "0", "1125", "0"]],
+    [["0", "0", "32", "1024"], ["0", "375", "0", "256", "0", "631", "32"]],
+    [["1", "32", "992", "32"], ["1", "375", "375", "7936", "95", "8781", "1024"]],
+    [["4", "0", "100000", "0"], ["4", "375", "1500", "800000", "28448", "830323", "100000"]],
+    [["0", "137438953408", "32", "0"], ["0", "375", "0", "256", "36028809887088637", "36028809887089268", "137438953440"]],
+    [["3", "64", "128", "4096"], ["3", "375", "1125", "1024", "0", "2524", "192"]],
+    [["2", "0", "1000000", "0"], ["2", "375", "750", "8000000", "2001098", "10002223", "1000000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.logGasCalc(...inp);
+    return r !== null && [r.topics, r.baseGas, r.topicGas, r.dataGas, r.memoryGas, r.totalGas, r.newMemBytes].join(",") === exp.join(","); }); })());
+check("log: prefilled page values (LOG3, 32 data bytes in fresh memory) cost exactly 1,759",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.logGasCalc(
+      html.includes('value="3" selected') ? "3" : "0",
+      g("log-off"), g("log-size"), g("log-mem"));
+    return r !== null && r.baseGas === "375" && r.topicGas === "1125" && r.dataGas === "256" && r.memoryGas === "3" && r.totalGas === "1759"; })());
+check("log refuses malformed topic, size and memory inputs and a non-zero region ending past the client's bound",
+  app.logGasCalc("5", "0", "0", "0") === null &&
+  app.logGasCalc("-1", "0", "0", "0") === null &&
+  app.logGasCalc("1.5", "0", "0", "0") === null &&
+  app.logGasCalc(null, "0", "0", "0") === null &&
+  app.logGasCalc("0", "0", "1.5", "0") === null &&
+  app.logGasCalc("0", "137438953440", "32", "0") === null &&
+  app.logGasCalc("0", "0", "0", "137438953441") === null &&
+  app.logGasCalc("0", null, "0", "0") === null);
+check("log tool section present in index.html", html.includes("log-btn") && html.includes("LOG gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

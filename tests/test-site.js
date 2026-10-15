@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=30"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=31"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1300,6 +1300,72 @@ check("vault tool section present in index.html", html.includes("vault-btn") && 
 check("ERC-4626 EIP and OpenZeppelin ERC4626 linked from index.html",
   html.includes("https://eips.ethereum.org/EIPS/eip-4626") &&
   html.includes("https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/extensions/ERC4626.sol"));
+
+/* Compound cToken exchange rate & mint/redeem — expected values produced
+   by an independent pure-Python transcription of CToken's stored-rate and
+   conversion math (hidden_files/oracle-compound.py): the rate is the
+   initial mantissa at zero supply and (cash + borrows - reserves) * 1e18
+   // supply afterwards; mint and redeemUnderlying divide the amount by
+   the rate (amount * 1e18 // rate), redeem multiplies (tokens * rate
+   // 1e18), and every step truncates. Vectors are
+   [cash, borrows, reserves, supply, initialRate, amount] -> result. */
+check("compound controls labelled in index.html",
+  ["comp-mode", "comp-cash", "comp-borrows", "comp-reserves", "comp-supply", "comp-initial", "comp-amount"]
+    .every(id => html.includes(`for="${id}"`)));
+check("compound exchangeRateStored matches the Python oracle (initial at zero supply, truncated afterwards)",
+  (() => { const V = [
+    [["8000000", "3000000", "100000", "500000000", "200000000000000000000000000", "0"], "21800000000000000"],
+    [["0", "0", "0", "0", "200000000000000000000000000", "0"], "200000000000000000000000000"],
+    [["100", "7", "3", "30", "1000000000000000000", "0"], "3466666666666666666"],
+    [["50", "50", "100", "30", "1000000000000000000", "0"], "0"],
+    [["1606938044258990275541962092341162602522202993782792835301376", "803469022129495137770981046170581301261101496891396417650688", "12345", "1569275433846670190958947355801916604025588861116008628224", "1000000000000000000", "0"], "1535999999999999999999"]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundCToken("rate", ...inp);
+    return r !== null && r.result === exp && r.exchangeRate === exp && r.fn === "exchangeRateStored"; }); })());
+check("compound mint matches the Python oracle (amount x 1e18 // rate, truncated)",
+  (() => { const V = [
+    [["8000000", "3000000", "100000", "500000000", "200000000000000000000000000", "1000000"], "45871559"],
+    [["100", "7", "3", "30", "1000000000000000000", "7"], "2"],
+    [["0", "0", "0", "0", "200000000000000000000000000", "1000000000000000000"], "5000000000"],
+    [["1606938044258990275541962092341162602522202993782792835301376", "803469022129495137770981046170581301261101496891396417650688", "12345", "1569275433846670190958947355801916604025588861116008628224", "1000000000000000000", "98765432109876543210"], "64300411529867541"]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundCToken("mint", ...inp);
+    return r !== null && r.result === exp && r.fn === "mint" && r.inputUnit === "underlying" && r.outputUnit === "cTokens"; }); })());
+check("compound redeem matches the Python oracle (tokens x rate // 1e18, truncated — the mint round trip pays 999999, not 1000000)",
+  (() => { const V = [
+    [["8000000", "3000000", "100000", "500000000", "200000000000000000000000000", "45871559"], "999999"],
+    [["100", "7", "3", "30", "1000000000000000000", "7"], "24"]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundCToken("redeemTokens", ...inp);
+    return r !== null && r.result === exp && r.fn === "redeem" && r.inputUnit === "cTokens" && r.outputUnit === "underlying"; }); })());
+check("compound redeemUnderlying matches the Python oracle (amount x 1e18 // rate, truncated)",
+  (() => { const V = [
+    [["8000000", "3000000", "100000", "500000000", "200000000000000000000000000", "999999"], "45871513"],
+    [["100", "7", "3", "30", "1000000000000000000", "22"], "6"]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundCToken("redeemAmount", ...inp);
+    return r !== null && r.result === exp && r.fn === "redeemUnderlying"; }); })());
+check("compound: prefilled page values reproduce the oracle's rate and 45871559-cToken mint",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const args = [g("comp-cash"), g("comp-borrows"), g("comp-reserves"), g("comp-supply"), g("comp-initial"), g("comp-amount")];
+    const rate = app.compoundCToken("rate", ...args);
+    const mint = app.compoundCToken("mint", ...args);
+    return rate !== null && rate.result === "21800000000000000" && mint !== null && mint.result === "45871559"; })());
+check("compound: a zero amount converts to zero in every conversion mode",
+  ["mint", "redeemTokens", "redeemAmount"].every(m => { const r = app.compoundCToken(m, "100", "7", "3", "30", "1000000000000000000", "0"); return r !== null && r.result === "0"; }));
+check("compound refuses reserves above cash + borrows, zero rates for conversions, malformed and overflowing inputs",
+  app.compoundCToken("rate", "100", "0", "101", "30", "1000000000000000000", "0") === null &&
+  app.compoundCToken("rate", "0", "0", "0", "0", "0", "0") === null &&
+  app.compoundCToken("mint", "50", "50", "100", "30", "1000000000000000000", "10") === null &&
+  app.compoundCToken("redeemAmount", "50", "50", "100", "30", "1000000000000000000", "10") === null &&
+  app.compoundCToken("mint", "100", "7", "3", "30", "1000000000000000000", "1.5") === null &&
+  app.compoundCToken("mint", "100", "7", "3", "30", "1000000000000000000", "-3") === null &&
+  app.compoundCToken("mint", "100", "7", "3", "30", "1000000000000000000", "") === null &&
+  app.compoundCToken("mint", "100", "7", "3", "30", "1000000000000000000", null) === null &&
+  app.compoundCToken("bogus", "100", "7", "3", "30", "1000000000000000000", "10") === null &&
+  app.compoundCToken("mint", null, "7", "3", "30", "1000000000000000000", "10") === null &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundCToken("mint", "0", "0", "0", "0", "1", M) === null; })() &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundCToken("rate", M, "0", "0", "1", "1000000000000000000", "0") === null; })());
+check("compound tool section present in index.html", html.includes("comp-btn") && html.includes("Compound cToken exchange rate"));
+check("CToken and ExponentialNoError linked from index.html",
+  html.includes("https://github.com/compound-finance/compound-protocol/blob/master/contracts/CToken.sol") &&
+  html.includes("https://github.com/compound-finance/compound-protocol/blob/master/contracts/ExponentialNoError.sol"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

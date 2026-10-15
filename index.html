@@ -222,6 +222,27 @@
     </div>
 
     <div class="tool">
+      <h3>Compound cToken exchange rate &amp; mint/redeem calculator</h3>
+      <p>A Compound money market prices its cTokens with one exchange rate, computed the way <a href="https://github.com/compound-finance/compound-protocol/blob/master/contracts/CToken.sol">CToken</a> computes it: while no cTokens exist the stored rate is the market's initial exchange rate mantissa, and afterwards it is <code>(cash + totalBorrows − totalReserves) × 10<sup>18</sup> ÷ totalSupply</code>, truncated — so the rate only grows as borrows accrue interest faster than reserves skim their share. Conversions run through the same rate with <a href="https://github.com/compound-finance/compound-protocol/blob/master/contracts/ExponentialNoError.sol">ExponentialNoError</a>'s truncating Exp math: minting mints <code>amount × 10<sup>18</sup> ÷ rate</code> cTokens, redeeming cTokens pays <code>tokens × rate ÷ 10<sup>18</sup></code> underlying, and redeeming a chosen underlying amount burns <code>amount × 10<sup>18</sup> ÷ rate</code> cTokens. Note the contrast with the ERC-4626 tool above: Compound truncates <em>every</em> step and never rounds up, so the prefilled market (8,000,000 cash, 3,000,000 borrows, 100,000 reserves, 500,000,000 cTokens supplied; rate 21800000000000000) mints 45,871,559 cTokens for 1,000,000 underlying, and redeeming exactly those cTokens pays back 999,999 — one base unit stays in the market. Amounts are in base units of each token (cTokens have 8 decimals, the underlying usually 18, which is why an initial rate like cDAI's 2×10<sup>26</sup> looks large: it is the per-token rate scaled by 10<sup>18</sup> across that decimal gap). Honest scope: totals are values <em>you</em> supply — a real market's cash, borrows, reserves and supply are chain state, which this page does not read — interest accrual up to the current block (<code>exchangeRateCurrent</code>) is not performed, and Comptroller liquidity checks, cash-availability checks and borrow/repay are not modelled. This is CToken's formula applied to supplied values, not live market data and not financial advice. Computed locally; nothing is supplied or redeemed and no chain is queried.</p>
+      <label for="comp-mode">Mode</label>
+      <select id="comp-mode"><option value="rate" selected>exchangeRateStored — show the market's stored exchange rate</option><option value="mint">mint — I supply underlying, show the cTokens minted (truncated)</option><option value="redeemTokens">redeem — I redeem cTokens, show the underlying paid out (truncated)</option><option value="redeemAmount">redeemUnderlying — I want an underlying amount, show the cTokens burned (truncated)</option></select>
+      <label for="comp-cash">Market cash — underlying held by the market (base units)</label>
+      <input id="comp-cash" type="text" inputmode="numeric" spellcheck="false" value="8000000">
+      <label for="comp-borrows">Market total borrows (base units of underlying)</label>
+      <input id="comp-borrows" type="text" inputmode="numeric" spellcheck="false" value="3000000">
+      <label for="comp-reserves">Market total reserves (base units of underlying)</label>
+      <input id="comp-reserves" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <label for="comp-supply">Total supply of cTokens (base units)</label>
+      <input id="comp-supply" type="text" inputmode="numeric" spellcheck="false" value="500000000">
+      <label for="comp-initial">Initial exchange rate mantissa (used only while total supply is 0 — 200000000000000000000000000 is cDAI's)</label>
+      <input id="comp-initial" type="text" inputmode="numeric" spellcheck="false" value="200000000000000000000000000">
+      <label for="comp-amount">Amount (base units — underlying in mint/redeemUnderlying modes, cTokens in redeem mode; ignored for the rate)</label>
+      <input id="comp-amount" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <button id="comp-btn" type="button">Calculate</button>
+      <p id="comp-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -555,6 +576,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=30"></script>
+<script src="app.js?v=31"></script>
 </body>
 </html>

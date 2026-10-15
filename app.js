@@ -2400,6 +2400,69 @@ function erc4626Convert(mode, totalAssetsStr, totalSupplyStr, amountStr, offsetS
   };
 }
 
+/* Compound cToken exchange rate & mint/redeem — CToken's own math
+   (compound-protocol, BSD-3-Clause; formulas paraphrased, not copied):
+   the stored exchange rate is the market's initialExchangeRateMantissa
+   while totalSupply is 0, and afterwards
+   (cash + totalBorrows − totalReserves) × 1e18 ÷ totalSupply,
+   truncated. Conversions divide or multiply by that rate through
+   ExponentialNoError's Exp helpers, which truncate at every step —
+   unlike ERC-4626 there is NO round-up anywhere: minting mints
+   amount × 1e18 ÷ rate cTokens, redeeming cTokens pays
+   tokens × rate ÷ 1e18 underlying, and redeeming a chosen underlying
+   amount burns amount × 1e18 ÷ rate cTokens. Reserves above
+   cash + borrows are refused (the contract's subtraction reverts),
+   as are a zero initial rate, a zero computed rate for a conversion
+   (the contract divides by it), and any rate or result above the
+   uint256 maximum (the contract's scaled multiplication reverts).
+   Amounts are in base units of each token. This is the stored-rate
+   math applied to values the user supplies — a real market's cash,
+   borrows, reserves and supply are chain state this page does not
+   read, interest accrual up to the current block
+   (exchangeRateCurrent) is not performed, and Comptroller liquidity
+   checks, cash-availability checks and borrow/repay are not modelled.
+   Nothing is supplied, redeemed or queried on chain. */
+const COMPOUND_EXP_SCALE = 10n ** 18n;
+function compoundCToken(mode, cashStr, borrowsStr, reservesStr, supplyStr, initialRateStr, amountStr) {
+  const cash = v2ParseUint(cashStr);
+  const borrows = v2ParseUint(borrowsStr);
+  const reserves = v2ParseUint(reservesStr);
+  const supply = v2ParseUint(supplyStr);
+  const initial = v2ParseUint(initialRateStr);
+  const amount = v2ParseUint(amountStr);
+  if (cash === null || borrows === null || reserves === null ||
+      supply === null || initial === null || amount === null) return null;
+  if (reserves > cash + borrows) return null;
+  let exchangeRate;
+  if (supply === 0n) {
+    if (initial === 0n) return null; // initialize() requires a positive initial rate
+    exchangeRate = initial;
+  } else {
+    exchangeRate = ((cash + borrows - reserves) * COMPOUND_EXP_SCALE) / supply;
+  }
+  if (exchangeRate > ERC4626_MAX_UINT256) return null;
+  let result, inputUnit, outputUnit, fn;
+  if (mode === "rate") {
+    result = exchangeRate; inputUnit = "market totals"; outputUnit = "exchange rate mantissa"; fn = "exchangeRateStored";
+  } else if (mode === "mint") {
+    if (exchangeRate === 0n) return null;
+    result = (amount * COMPOUND_EXP_SCALE) / exchangeRate;
+    inputUnit = "underlying"; outputUnit = "cTokens"; fn = "mint";
+  } else if (mode === "redeemTokens") {
+    result = (amount * exchangeRate) / COMPOUND_EXP_SCALE;
+    inputUnit = "cTokens"; outputUnit = "underlying"; fn = "redeem";
+  } else if (mode === "redeemAmount") {
+    if (exchangeRate === 0n) return null;
+    result = (amount * COMPOUND_EXP_SCALE) / exchangeRate;
+    inputUnit = "underlying"; outputUnit = "cTokens burned"; fn = "redeemUnderlying";
+  } else return null;
+  if (result > ERC4626_MAX_UINT256) return null;
+  return {
+    result: result.toString(), exchangeRate: exchangeRate.toString(), fn,
+    inputUnit, outputUnit
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -2958,6 +3021,27 @@ if (typeof document !== "undefined") {
       el.textContent = `${r.fn}: ${document.getElementById("vault-amount").value.trim()} ${r.inputUnit} → ${r.result} ${r.outputUnit} (rounded ${r.rounding}, in the vault's favour; virtual shares ${r.virtualShares}, virtual assets 1). Computed locally with the ERC-4626 conversion math on the totals you gave — a real vault's totals are chain state this page does not read, and its deposit/withdrawal limits are not modelled. Not financial advice.`;
     });
 
+    /* Compound cToken exchange rate & mint/redeem */
+    const compBtn = document.getElementById("comp-btn");
+    if (compBtn) compBtn.addEventListener("click", () => {
+      const mode = document.getElementById("comp-mode").value;
+      const r = compoundCToken(mode,
+        document.getElementById("comp-cash").value,
+        document.getElementById("comp-borrows").value,
+        document.getElementById("comp-reserves").value,
+        document.getElementById("comp-supply").value,
+        document.getElementById("comp-initial").value,
+        document.getElementById("comp-amount").value);
+      const el = document.getElementById("comp-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: cash, borrows, reserves, supply, initial rate and amount are whole numbers in base units (up to 78 digits), reserves do not exceed cash + borrows, the initial exchange rate is positive, and no rate or result exceeds the uint256 maximum.";
+        return;
+      }
+      el.textContent = mode === "rate"
+        ? `exchangeRateStored: ${r.result} (the exchange rate mantissa, scaled by 1e18). Computed locally with CToken's stored-rate formula on the totals you gave — a real market's totals are chain state this page does not read, and interest accrual to the current block is not performed. Not financial advice.`
+        : `${r.fn}: ${document.getElementById("comp-amount").value.trim()} ${r.inputUnit} → ${r.result} ${r.outputUnit} (exchange rate mantissa ${r.exchangeRate}, truncated exactly as CToken truncates). Computed locally on the totals you gave — a real market's totals are chain state this page does not read, and Comptroller checks are not modelled. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -2971,5 +3055,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

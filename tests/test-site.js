@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=32"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=33"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1410,6 +1410,46 @@ check("compound accrual refuses a rate above the contract maximum, a reserve fac
   app.compoundAccrue("5000000000000", (2n ** 200n).toString(), "100", "0", "0", "1000000000000000000") === null &&
   (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundAccrue("400000000000", "10000", M, "0", "0", "1000000000000000000") === null; })());
 check("compound accrual tool section present in index.html", html.includes("cacc-btn") && html.includes("Compound interest accrual calculator"));
+
+/* Compound account snapshot — expected values produced by an independent
+   pure-Python transcription of CToken.getAccountSnapshot /
+   borrowBalanceStoredInternal plus ExponentialNoError's
+   mul_ScalarTruncate (hidden_files/oracle-compound-snapshot.py):
+   borrow = 0 if principal is 0, else principal x marketIndex //
+   snapshotIndex; underlying = tokens x rate // 1e18.
+   Vectors are [principal, snapshotIndex, marketIndex, tokens, rate]
+   -> [borrow, underlying, tokens]. */
+check("compound snapshot controls labelled in index.html",
+  ["csnap-principal", "csnap-snap-index", "csnap-market-index", "csnap-tokens", "csnap-rate"]
+    .every(id => html.includes(`for="${id}"`)));
+check("compound snapshot matches the Python oracle (prefill chain, short-circuit, identity, truncation, index-below-snapshot, 2^150 scale)",
+  (() => { const V = [
+    [["1000000", "1000000000000000000", "1004000000000000000", "45871559", "21800000000000000"], ["1004000", "999999", "45871559"]],
+    [["0", "0", "1000000000000000000", "0", "0"], ["0", "0", "0"]],
+    [["0", "0", "1000000000000000000", "12345", "200000000000000000000000000"], ["0", "2469000000000", "12345"]],
+    [["777777", "1234567890123456789", "1234567890123456789", "0", "1000000000000000000"], ["777777", "0", "0"]],
+    [["1000000", "3000000000000000000", "1000000000000000001", "3", "333333333333333333"], ["333333", "0", "3"]],
+    [["1000000", "2000000000000000000", "1000000000000000000", "1000000", "1000000000000000000"], ["500000", "1000000", "1000000"]],
+    [["1427247692705959881058285969449495136382746624", "1180591620717411303424", "1208925819614629174706176", "1427247692705959881058285969449495136382746624", "1099511627776"], ["1461501637330902918203684832716283019655932542976", "1569275433846670190958947355801916604025", "1427247692705959881058285969449495136382746624"]],
+    [["3000000", "1000000000000000000", "2051200000000000000", "500000000", "21800000000000000"], ["6153600", "10900000", "500000000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundSnapshot(...inp);
+    return r !== null && r.borrow === exp[0] && r.underlying === exp[1] && r.tokens === exp[2]; }); })());
+check("compound snapshot: zero principal short-circuits even with a zero snapshot index",
+  (() => { const r = app.compoundSnapshot("0", "0", "1004000000000000000", "100", "21800000000000000");
+    return r !== null && r.borrow === "0" && r.underlying === "2"; })());
+check("compound snapshot: prefilled page values chain the accrual and exchange-rate tools (owes 1004000, holds 999999)",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.compoundSnapshot(g("csnap-principal"), g("csnap-snap-index"), g("csnap-market-index"), g("csnap-tokens"), g("csnap-rate"));
+    return r !== null && r.borrow === "1004000" && r.underlying === "999999" && r.tokens === "45871559"; })());
+check("compound snapshot refuses a zero snapshot index with a borrow, malformed and overflowing inputs",
+  app.compoundSnapshot("100", "0", "1000000000000000000", "0", "1000000000000000000") === null &&
+  app.compoundSnapshot("100", "1000000000000000000", "1.5", "0", "1000000000000000000") === null &&
+  app.compoundSnapshot("100", "1000000000000000000", "1000000000000000000", "-3", "1000000000000000000") === null &&
+  app.compoundSnapshot("100", "1000000000000000000", "1000000000000000000", "", "1000000000000000000") === null &&
+  app.compoundSnapshot(null, "1000000000000000000", "1000000000000000000", "0", "1000000000000000000") === null &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundSnapshot(M, "1000000000000000000", "2", "0", "0") === null; })() &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundSnapshot("0", "0", "1000000000000000000", M, "2") === null; })());
+check("compound snapshot tool section present in index.html", html.includes("csnap-btn") && html.includes("Compound account snapshot calculator"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

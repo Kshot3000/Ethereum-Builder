@@ -2521,6 +2521,52 @@ function compoundAccrue(rateStr, deltaStr, borrowsStr, reservesStr, reserveFacto
   };
 }
 
+/* Compound account snapshot — CToken.getAccountSnapshot's own math
+   (compound-protocol, BSD-3-Clause; formulas paraphrased, not copied):
+   the snapshot an account has in one market, from STORED values:
+     borrowBalance = 0                                  if principal is 0
+                   = principal × marketIndex ÷ snapshotIndex   otherwise
+     underlying    = cTokenBalance × exchangeRate ÷ 1e18, truncated
+   The borrow formula is plain uint arithmetic in the current source —
+   NOT an ExponentialNoError Exp helper — so it truncates once, at the
+   division. The zero-principal case short-circuits before the snapshot
+   index is ever read, so a zero snapshot index is refused only when a
+   borrow exists (the contract would divide by it and revert); both
+   products are refused above the uint256 maximum (checked arithmetic
+   and ExponentialNoError's scaled multiplication revert there). The
+   underlying side is mul_ScalarTruncate over the STORED exchange rate
+   (the rate the exchange-rate tool above computes) — the contract's
+   balanceOfUnderlying accrues interest first and uses the fresh rate;
+   this tool does not accrue, so supply the stored rate, or the rate
+   after an accrual step, yourself. Snapshot, indexes, balances and
+   rate are values the user supplies — a real account's are chain
+   state this page does not read. Nothing is queried on chain. */
+function compoundSnapshot(principalStr, snapshotIndexStr, marketIndexStr, tokensStr, rateStr) {
+  const principal = v2ParseUint(principalStr);
+  const snapshotIndex = v2ParseUint(snapshotIndexStr);
+  const marketIndex = v2ParseUint(marketIndexStr);
+  const tokens = v2ParseUint(tokensStr);
+  const rate = v2ParseUint(rateStr);
+  if (principal === null || snapshotIndex === null || marketIndex === null ||
+      tokens === null || rate === null) return null;
+  let borrow;
+  if (principal === 0n) {
+    borrow = 0n; // short-circuit: the snapshot index is never read
+  } else {
+    if (snapshotIndex === 0n) return null; // the contract divides by it
+    const borrowProduct = principal * marketIndex;
+    if (borrowProduct > ERC4626_MAX_UINT256) return null;
+    borrow = borrowProduct / snapshotIndex;
+  }
+  const underlyingProduct = tokens * rate;
+  if (underlyingProduct > ERC4626_MAX_UINT256) return null;
+  const underlying = underlyingProduct / COMPOUND_EXP_SCALE;
+  return {
+    borrow: borrow.toString(), underlying: underlying.toString(),
+    tokens: tokens.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3118,6 +3164,23 @@ if (typeof document !== "undefined") {
       el.textContent = `accrueInterest over ${document.getElementById("cacc-blocks").value.trim()} blocks: simple interest factor ${r.factor} (mantissa), interest accumulated ${r.interest} underlying, new total borrows ${r.borrows}, new total reserves ${r.reserves}, new borrow index ${r.index}. Computed locally with CToken's accrual formula at the rate you gave held constant over the gap — a real market's totals, index and rate are chain state this page does not read. Not financial advice.`;
     });
 
+    /* Compound account snapshot */
+    const csnapBtn = document.getElementById("csnap-btn");
+    if (csnapBtn) csnapBtn.addEventListener("click", () => {
+      const r = compoundSnapshot(
+        document.getElementById("csnap-principal").value,
+        document.getElementById("csnap-snap-index").value,
+        document.getElementById("csnap-market-index").value,
+        document.getElementById("csnap-tokens").value,
+        document.getElementById("csnap-rate").value);
+      const el = document.getElementById("csnap-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: principal, both borrow indexes, cToken balance and exchange rate are whole numbers (up to 78 digits), the snapshot borrow index is positive whenever a borrow principal exists, and no product exceeds the uint256 maximum.";
+        return;
+      }
+      el.textContent = `getAccountSnapshot: borrow balance ${r.borrow} underlying, cToken balance ${r.tokens}, underlying balance ${r.underlying} (at the stored exchange rate you gave). Computed locally with CToken's stored-snapshot formulas on the values you gave — a real account's snapshot, indexes and rate are chain state this page does not read, and no interest accrual is performed. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3131,5 +3194,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

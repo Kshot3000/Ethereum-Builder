@@ -262,6 +262,23 @@
     </div>
 
     <div class="tool">
+      <h3>Compound account snapshot calculator (getAccountSnapshot)</h3>
+      <p>The two Compound tools above work at market level; this one reads a single account the way <a href="https://github.com/compound-finance/compound-protocol/blob/master/contracts/CToken.sol">CToken</a>'s <code>getAccountSnapshot</code> does — the stored snapshot the Comptroller itself uses for liquidity checks. An account's borrow is not stored as a live balance: the market stores the <em>principal</em> it borrowed and the borrow index at that moment (its snapshot index), and the current debt is <code>principal × market borrow index ÷ snapshot index</code>, truncated — plain integer arithmetic in the current source, not one of <a href="https://github.com/compound-finance/compound-protocol/blob/master/contracts/ExponentialNoError.sol">ExponentialNoError</a>'s Exp helpers. A principal of zero short-circuits to a zero balance before the snapshot index is ever read, so a zero snapshot index is refused only when a borrow exists (the contract would divide by it). The supply side converts the account's cToken balance through the stored exchange rate — <code>cTokens × rate ÷ 10<sup>18</sup></code>, truncated — the stored-rate version of <code>balanceOfUnderlying</code>. The prefilled account chains the two tools above: it borrowed 1,000,000 when the index was 10<sup>18</sup>, the accrual step moved the market index to 1004000000000000000, so it owes exactly 1,004,000; and the 45,871,559 cTokens the exchange-rate tool mints are worth 999,999 underlying at that tool's stored rate of 21800000000000000. Any product above the uint256 maximum is refused, as the contract reverts there. Honest scope: principal, indexes, balance and rate are values <em>you</em> supply — a real account's are chain state, which this page does not read — and no interest accrual is performed, so the market index and rate you give are the stored ones (or the ones after an accrual step you ran above). This is CToken's formula applied to supplied values, not live market data and not financial advice. Computed locally; nothing is borrowed or supplied and no chain is queried.</p>
+      <label for="csnap-principal">Borrow principal (stored — the amount the account borrowed, in base units of underlying)</label>
+      <input id="csnap-principal" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="csnap-snap-index">Snapshot borrow index (the market's borrow index when the borrow was last updated, mantissa scaled by 1e18)</label>
+      <input id="csnap-snap-index" type="text" inputmode="numeric" spellcheck="false" value="1000000000000000000">
+      <label for="csnap-market-index">Market borrow index now (stored, mantissa scaled by 1e18)</label>
+      <input id="csnap-market-index" type="text" inputmode="numeric" spellcheck="false" value="1004000000000000000">
+      <label for="csnap-tokens">cToken balance (the account's cTokens, in base units)</label>
+      <input id="csnap-tokens" type="text" inputmode="numeric" spellcheck="false" value="45871559">
+      <label for="csnap-rate">Stored exchange rate mantissa (scaled by 1e18 — from the exchange-rate tool above)</label>
+      <input id="csnap-rate" type="text" inputmode="numeric" spellcheck="false" value="21800000000000000">
+      <button id="csnap-btn" type="button">Calculate snapshot</button>
+      <p id="csnap-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -595,6 +612,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=32"></script>
+<script src="app.js?v=33"></script>
 </body>
 </html>

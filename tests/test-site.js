@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=47"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=48"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2407,6 +2407,47 @@ check("log refuses malformed topic, size and memory inputs and a non-zero region
   app.logGasCalc("0", "0", "0", "137438953441") === null &&
   app.logGasCalc("0", null, "0", "0") === null);
 check("log tool section present in index.html", html.includes("log-btn") && html.includes("LOG gas calculator"));
+
+/* SHA3 (KECCAK256) gas — expected values produced by an independent
+   pure-Python transcription of the Yellow Paper's hash-cost terms
+   (hidden_files/oracle-sha3-gas.py): 30 flat, 6 per 32-byte word
+   rounded up, plus memory expansion over the hashed region end
+   with zero-size regions touching nothing. The oracle is anchored
+   in-script on hand values (the prefilled 64-byte hash at 48, an
+   empty hash at 30, 1 and 32 bytes at 39, 33 bytes at 48).
+   Vectors are [dataOff, dataSize, curMem] -> the full result. */
+check("sha3 controls labelled in index.html",
+  ["sha3-off", "sha3-size", "sha3-mem"].every(id => html.includes(`for="${id}"`)));
+check("SHA3 gas matches the Python oracle (prefill 64-byte mapping-style hash, empty hash, 1 and 32 and 33 bytes, zero-size region inert at a large offset, region already held, partial growth, 100,000-byte payload, region ending exactly at the client's bound, region inside large memory, and a 1 MB payload)",
+  (() => { const V = [
+    [["0", "64", "0"], ["30", "2", "12", "6", "48", "64"]],
+    [["0", "0", "0"], ["30", "0", "0", "0", "30", "0"]],
+    [["0", "32", "0"], ["30", "1", "6", "3", "39", "32"]],
+    [["0", "1", "0"], ["30", "1", "6", "3", "39", "1"]],
+    [["0", "33", "0"], ["30", "2", "12", "6", "48", "33"]],
+    [["999999", "0", "0"], ["30", "0", "0", "0", "30", "0"]],
+    [["0", "32", "1024"], ["30", "1", "6", "0", "36", "32"]],
+    [["32", "992", "32"], ["30", "31", "186", "95", "311", "1024"]],
+    [["0", "100000", "0"], ["30", "3125", "18750", "28448", "47228", "100000"]],
+    [["137438953408", "32", "0"], ["30", "1", "6", "36028809887088637", "36028809887088673", "137438953440"]],
+    [["64", "128", "4096"], ["30", "4", "24", "0", "54", "192"]],
+    [["0", "1000000", "0"], ["30", "31250", "187500", "2001098", "2188628", "1000000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.sha3GasCalc(...inp);
+    return r !== null && [r.baseGas, r.words, r.wordGas, r.memoryGas, r.totalGas, r.newMemBytes].join(",") === exp.join(","); }); })());
+check("sha3: prefilled page values (64 bytes in fresh memory) cost exactly 48, and 42 once held",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.sha3GasCalc(g("sha3-off"), g("sha3-size"), g("sha3-mem"));
+    const held = app.sha3GasCalc("0", "64", "64");
+    return r !== null && r.baseGas === "30" && r.words === "2" && r.wordGas === "12" && r.memoryGas === "6" && r.totalGas === "48" &&
+      held !== null && held.memoryGas === "0" && held.totalGas === "42"; })());
+check("sha3 refuses malformed size and memory inputs and a non-zero region ending past the client's bound",
+  app.sha3GasCalc("0", "1.5", "0") === null &&
+  app.sha3GasCalc("-1", "0", "0") === null &&
+  app.sha3GasCalc("0", null, "0") === null &&
+  app.sha3GasCalc(null, "0", "0") === null &&
+  app.sha3GasCalc("137438953440", "32", "0") === null &&
+  app.sha3GasCalc("0", "0", "137438953441") === null);
+check("sha3 tool section present in index.html", html.includes("sha3-btn") && html.includes("SHA3 (KECCAK256) gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

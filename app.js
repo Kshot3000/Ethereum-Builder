@@ -3463,6 +3463,42 @@ function logGasCalc(topicsStr, dataOffStr, dataSizeStr, curMemStr) {
   };
 }
 
+/* SHA3 (KECCAK256) gas — what hashing a region of memory with
+   the SHA3 opcode costs, under the Yellow Paper's hash-cost
+   terms as go-ethereum's gasSha3 and its Sha3Gas / Sha3WordGas
+   parameters implement them (formulas paraphrased): a flat 30
+   for the operation itself, 6 per 32-byte word of the hashed
+   region (the size rounds up to whole words — 1 byte pays for
+   a word, as does 32), and memory expansion for the region of
+   the frame's memory the data is read from — the frame must
+   reach the region end, and a zero-size region touches nothing
+   whatever its offset. The data's contents move no term; only
+   its size and position are priced. This prices the gas only —
+   the hash itself is computed by the hub's Keccak tools, not
+   here. Gas amounts follow the memory function's bound: a
+   region end above 0x1FFFFFFFE0 bytes is refused, as the
+   client's gas calculation overflows there. */
+function sha3GasCalc(dataOffStr, dataSizeStr, curMemStr) {
+  const dataOff = memParseBytes(dataOffStr);
+  const dataSize = memParseBytes(dataSizeStr);
+  const curMem = memParseBytes(curMemStr);
+  if (dataOff === null || dataSize === null || curMem === null) return null;
+  const regionEnd = dataSize === 0n ? 0n : dataOff + dataSize;
+  if (regionEnd > MEM_MAX_BYTES) return null;
+  const curWords = (curMem + 31n) / 32n;
+  const newWords = (regionEnd + 31n) / 32n;
+  const memoryGas = newWords > curWords ? memTotalCost(newWords) - memTotalCost(curWords) : 0n;
+  const words = (dataSize + 31n) / 32n;
+  const baseGas = 30n;
+  const wordGas = 6n * words;
+  return {
+    baseGas: baseGas.toString(), words: words.toString(),
+    wordGas: wordGas.toString(), memoryGas: memoryGas.toString(),
+    totalGas: (baseGas + wordGas + memoryGas).toString(),
+    newMemBytes: regionEnd.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4389,6 +4425,21 @@ if (typeof document !== "undefined") {
       el.textContent = `LOG${r.topics} gas: ${r.totalGas} — 375 for the operation + ${r.topicGas} for its ${r.topics} topic(s) + ${r.dataGas} for the data bytes + ${r.memoryGas} of memory expansion. Computed locally from the values you gave — the topic values and data contents are not read and move no term; no log is emitted and no chain is queried.`;
     });
 
+    /* SHA3 gas */
+    const sha3Btn = document.getElementById("sha3-btn");
+    if (sha3Btn) sha3Btn.addEventListener("click", () => {
+      const r = sha3GasCalc(
+        document.getElementById("sha3-off").value,
+        document.getElementById("sha3-size").value,
+        document.getElementById("sha3-mem").value);
+      const el = document.getElementById("sha3-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the data offset, data size and current memory size are whole numbers of bytes at most 137,438,953,440 with the hashed region not reaching past that bound.";
+        return;
+      }
+      el.textContent = `SHA3 gas: ${r.totalGas} — 30 for the operation + ${r.wordGas} for its ${r.words} word(s) + ${r.memoryGas} of memory expansion. Computed locally from the values you gave — the data contents are not read and move no term; no hash is computed here and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4402,5 +4453,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

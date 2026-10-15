@@ -543,6 +543,19 @@
     </div>
 
     <div class="tool">
+      <h3>SHA3 (KECCAK256) gas calculator</h3>
+      <p>Every mapping lookup, storage-slot derivation and signature hash in a contract runs the <code>SHA3</code> opcode (Solidity's <code>keccak256</code>), and its price is two flat terms plus the memory expansion the calculators above isolate. The terms, from the Yellow Paper's hash-cost rules as go-ethereum's <code>gasSha3</code> implements them: 30 for the operation itself, and 6 per 32-byte <em>word</em> of the hashed region — the size rounds up to whole words, so hashing 1 byte pays for a word just as hashing 32 does. On top of that, memory expansion for the region of the frame's memory the data is read from: the frame must reach the region end, and a region of size 0 touches nothing whatever its offset. Only the size and position are priced — the data's contents move no term. The prefilled hash — 64 bytes at offset 0 in fresh memory, the two words (a key and a slot) a mapping access hashes — costs exactly 48: 30 + 12 of word charges + 6 of memory expansion for the two words; run the same hash once that memory is already held and it costs 42, the expansion already paid. Honest scope: this prices the one opcode's gas only — the hash itself is computed by the hub's Keccak tools, not here — and the sizes and memory state are values <em>you</em> supply, not execution state this page reads. Computed locally; nothing is hashed here and no chain is queried.</p>
+      <label for="sha3-off">Data offset (bytes — where the hashed data starts in the frame's memory; a size of 0 touches nothing)</label>
+      <input id="sha3-off" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="sha3-size">Data size (bytes — the region read from memory and hashed)</label>
+      <input id="sha3-size" type="text" inputmode="numeric" spellcheck="false" value="64">
+      <label for="sha3-mem">Current memory size (bytes — what the frame has already allocated)</label>
+      <input id="sha3-mem" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <button id="sha3-btn" type="button">Calculate SHA3 gas</button>
+      <p id="sha3-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -876,6 +889,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=47"></script>
+<script src="app.js?v=48"></script>
 </body>
 </html>

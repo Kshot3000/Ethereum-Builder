@@ -854,6 +854,112 @@ function uniswapV3Liquidity(mode, lowerStr, upperStr, currentStr, liquidityStr, 
   };
 }
 
+/* ---------- Uniswap V3 swap step calculator (SwapMath) ----------
+   One pool swap is a loop of single steps inside one tick range, and this
+   is exactly one step: SwapMath.computeSwapStep (v3-core) over the core
+   library SqrtPriceMath, transcribed to BigInt. The target tick gives the
+   price the step may not exceed; the direction is inferred from it (target
+   below the current price swaps token0 for token1, target above swaps
+   token1 for token0). Exact-input mode spends the specified amount (plus
+   the fee it implies), exact-output mode seeks the specified amount. All
+   divisions follow the library: amount deltas round UP on the input side
+   (the pool never moves the price past what it takes in) and DOWN on the
+   output side (it never pays out more than it owes), with the input-side
+   precomputation to the target rounding up and the output-side one
+   rounding down, exactly as computeSwapStep passes true/false. The fee is
+   taken from the input in hundredths of a bip; when the step stops before
+   the target in exact-input mode, the whole leftover input is the fee
+   (the library's remainder rule), otherwise the fee is the rounded-up
+   amountIn × feePips / (1e6 − feePips). BigInt has no EVM overflow, so the
+   primary (non-fallback) branches of SqrtPriceMath always apply here;
+   the library's require conditions (positive denominator, sqrt above the
+   quotient) are enforced as refusals. A real swap crosses initialized
+   ticks — this step stops at the target tick's price and reports the
+   remainder the next step would continue with. User-supplied values only:
+   a real pool's price, liquidity and fee tier are its slot0/position
+   chain state, which this page does not read. */
+function v3CeilDiv(a, b) { return (a + b - 1n) / b; }
+function v3MulDivUp(a, b, d) { return v3CeilDiv(a * b, d); }
+function v3Amount0DeltaR(a, b, liq, up) {
+  if (a > b) { const t = a; a = b; b = t; }
+  const n1 = liq << 96n, n2 = b - a;
+  return up ? v3CeilDiv(v3MulDivUp(n1, n2, b), a) : (n1 * n2 / b) / a;
+}
+function v3Amount1DeltaR(a, b, liq, up) {
+  if (a > b) { const t = a; a = b; b = t; }
+  return up ? v3MulDivUp(liq, b - a, V3_Q96) : liq * (b - a) / V3_Q96;
+}
+function v3NextFromAmount0Up(sqrt, liq, amount, add) {
+  if (amount === 0n) return sqrt;
+  const n1 = liq << 96n, product = amount * sqrt;
+  if (add) return v3MulDivUp(n1, sqrt, n1 + product);
+  if (n1 <= product) return null;
+  return v3MulDivUp(n1, sqrt, n1 - product);
+}
+function v3NextFromAmount1Down(sqrt, liq, amount, add) {
+  if (add) return sqrt + (amount * V3_Q96) / liq;
+  const q = v3CeilDiv(amount * V3_Q96, liq);
+  if (sqrt <= q) return null;
+  return sqrt - q;
+}
+function v3NextFromInput(sqrt, liq, amt, zeroForOne) {
+  return zeroForOne ? v3NextFromAmount0Up(sqrt, liq, amt, true) : v3NextFromAmount1Down(sqrt, liq, amt, true);
+}
+function v3NextFromOutput(sqrt, liq, amt, zeroForOne) {
+  return zeroForOne ? v3NextFromAmount1Down(sqrt, liq, amt, false) : v3NextFromAmount0Up(sqrt, liq, amt, false);
+}
+const V3_FEE_DENOMINATOR = 1000000n;
+function uniswapV3SwapStep(mode, currentStr, targetStr, liquidityStr, amountStr, feeStr) {
+  if (mode !== "in" && mode !== "out") return null;
+  const tickCurrent = v3ParseTick(currentStr);
+  const tickTarget = v3ParseTick(targetStr);
+  if (tickCurrent === null || tickTarget === null || tickCurrent === tickTarget) return null;
+  const liq = v3ParseUint(liquidityStr, 39);
+  if (liq === null || liq === 0n || liq >= (1n << 128n)) return null;
+  const amount = v3ParseUint(amountStr, 78);
+  if (amount === null || amount === 0n || amount >= (1n << 256n)) return null;
+  const fee = v3ParseUint(feeStr, 7);
+  if (fee === null || fee >= V3_FEE_DENOMINATOR) return null;
+  const cur = v3SqrtRatioAtTick(tickCurrent);
+  const tgt = v3SqrtRatioAtTick(tickTarget);
+  const zeroForOne = cur >= tgt;
+  const exactIn = mode === "in";
+  let amountIn, amountOut, next;
+  if (exactIn) {
+    const lessFee = amount * (V3_FEE_DENOMINATOR - fee) / V3_FEE_DENOMINATOR;
+    amountIn = zeroForOne ? v3Amount0DeltaR(tgt, cur, liq, true) : v3Amount1DeltaR(cur, tgt, liq, true);
+    next = lessFee >= amountIn ? tgt : v3NextFromInput(cur, liq, lessFee, zeroForOne);
+  } else {
+    amountOut = zeroForOne ? v3Amount1DeltaR(tgt, cur, liq, false) : v3Amount0DeltaR(cur, tgt, liq, false);
+    next = amount >= amountOut ? tgt : v3NextFromOutput(cur, liq, amount, zeroForOne);
+  }
+  if (next === null) return null;
+  const reached = next === tgt;
+  if (zeroForOne) {
+    amountIn = (reached && exactIn) ? amountIn : v3Amount0DeltaR(next, cur, liq, true);
+    amountOut = (reached && !exactIn) ? amountOut : v3Amount1DeltaR(next, cur, liq, false);
+  } else {
+    amountIn = (reached && exactIn) ? amountIn : v3Amount1DeltaR(cur, next, liq, true);
+    amountOut = (reached && !exactIn) ? amountOut : v3Amount0DeltaR(cur, next, liq, false);
+  }
+  if (!exactIn && amountOut > amount) amountOut = amount;
+  const feeAmount = (exactIn && !reached)
+    ? amount - amountIn
+    : v3MulDivUp(amountIn, fee, V3_FEE_DENOMINATOR - fee);
+  const remaining = exactIn ? amount - (amountIn + feeAmount) : amount - amountOut;
+  const tickNext = next === tgt ? tickTarget : next === cur ? tickCurrent : v3TickAtSqrtRatio(next);
+  return {
+    mode, zeroForOne,
+    tickCurrent: String(tickCurrent), tickTarget: String(tickTarget), tickNext: String(tickNext),
+    sqrtCurrent: cur.toString(), sqrtTarget: tgt.toString(), sqrtNext: next.toString(),
+    liquidity: liq.toString(), feePips: fee.toString(),
+    amountSpecified: amount.toString(), amountIn: amountIn.toString(),
+    amountOut: amountOut.toString(), feeAmount: feeAmount.toString(),
+    totalInput: (amountIn + feeAmount).toString(), remaining: remaining.toString(),
+    reachedTarget: reached
+  };
+}
+
 /* ---------- CREATE address calculator ----------
    The original deployment opcode derives the contract address from the
    creator alone: address = last 20 bytes of keccak256(rlp([sender,
@@ -2294,6 +2400,28 @@ if (typeof document !== "undefined") {
         : `Liquidity: depositing at most ${r.desiredAmount0} base units of token0 and ${r.desiredAmount1} base units of token1 between ticks ${r.tickLower} and ${r.tickUpper} at current tick ${r.tickCurrent} mints liquidity ${r.liquidity}, which actually uses ${r.amount0} base units of token0 and ${r.amount1} base units of token1 — the desired amount on the non-limiting side is only partly used, and even the limiting side can leave a few base units of rounding dust. Computed locally with LiquidityAmounts / SqrtPriceMath from the values you gave — not live pool data and not financial advice.`;
     });
 
+    /* Uniswap V3 swap step calculator */
+    const v3sBtn = document.getElementById("v3s-btn");
+    if (v3sBtn) v3sBtn.addEventListener("click", () => {
+      const mode = document.getElementById("v3s-mode").value;
+      const r = uniswapV3SwapStep(
+        mode,
+        document.getElementById("v3s-current").value,
+        document.getElementById("v3s-target").value,
+        document.getElementById("v3s-liquidity").value,
+        document.getElementById("v3s-amount").value,
+        document.getElementById("v3s-fee").value
+      );
+      const el = document.getElementById("v3s-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the current and target ticks must be different whole numbers from −887272 to 887272; the liquidity must be a whole number from 1 to below 2^128; the specified amount must be a whole number of at least 1 base unit and below 2^256; the fee must be a whole number from 0 to 999999 hundredths of a bip.";
+        return;
+      }
+      const inToken = r.zeroForOne ? "token0" : "token1";
+      const outToken = r.zeroForOne ? "token1" : "token0";
+      el.textContent = `Swap step ${inToken} → ${outToken}: at liquidity ${r.liquidity} the price moves from tick ${r.tickCurrent} (sqrtPriceX96 ${r.sqrtCurrent}) to tick ${r.tickNext} (sqrtPriceX96 ${r.sqrtNext}) — ${r.reachedTarget ? `it reaches the target tick ${r.tickTarget}` : `it stops before the target tick ${r.tickTarget}`}. You send ${r.amountIn} base units of ${inToken} plus a fee of ${r.feeAmount} (total input ${r.totalInput}) and receive ${r.amountOut} base units of ${outToken}; ${r.remaining} base units of the specified amount ${r.mode === "in" ? "remain unspent" : "remain unfilled"} — in a real pool the swap loop would continue into the next tick range with them, while here the step simply stops at the target. Computed locally with SwapMath / SqrtPriceMath from the values you gave — not live pool data: a real pool's price, liquidity and fee tier are chain state, a full swap crosses initialized ticks and later steps see changed liquidity, and none of that is modelled here. Not financial advice.`;
+    });
+
     /* CREATE calculator */
     const createBtn = document.getElementById("create-btn");
     if (createBtn) createBtn.addEventListener("click", () => {
@@ -2626,5 +2754,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV3Tick, uniswapV3Liquidity, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

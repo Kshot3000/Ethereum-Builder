@@ -210,6 +210,25 @@
     </div>
 
     <div class="tool">
+      <h3>Uniswap V3 swap step calculator</h3>
+      <p>Priced the position above — this prices <em>one step</em> of a swap against liquidity like it, with the exact integer math of <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/SwapMath.sol">SwapMath</a>'s <code>computeSwapStep</code> over <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/SqrtPriceMath.sol">SqrtPriceMath</a>, both in v3-core. A pool swap is a loop of these steps within one tick range: you give the current tick, the target tick (the next initialized tick, or a price limit — its price is the step's boundary, and it sets the direction: a target below the current price swaps token0 for token1, a target above swaps token1 for token0), the in-range liquidity, the fee tier in hundredths of a bip (100 = 0.01%, 500 = 0.05%, 3000 = 0.3%, 10000 = 1%), and the specified amount in the input token's base units (exact-input mode) or the output token's (exact-output mode). The step moves the price toward the target until the amount is used up or the boundary is reached; the amount that would continue into the next range is reported as the remainder. Input-side amounts round up and output-side amounts round down, exactly as the library passes its rounding flags, and when an exact-input step stops short of the target, the whole leftover input is the fee — the library's remainder rule. The prefilled step (tick 0 toward −1000, liquidity 1000000000, 10000 in at 0.3%) sends 9970 plus a fee of 30 and receives 9969. Honest scope: the values are ones <em>you</em> supply — a real pool's price, liquidity and fee tier are chain state, which this page does not read, and a full swap crosses initialized ticks with changing liquidity, which a single step does not model — so this is the libraries' formula applied to supplied values, not a live quote and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
+      <label for="v3s-mode">Mode</label>
+      <select id="v3s-mode"><option value="in" selected>Exact input — I specify the amount sent</option><option value="out">Exact output — I specify the amount received</option></select>
+      <label for="v3s-current">Current tick</label>
+      <input id="v3s-current" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="v3s-target">Target tick (below current = token0 → token1; above = token1 → token0)</label>
+      <input id="v3s-target" type="text" inputmode="numeric" spellcheck="false" value="-1000">
+      <label for="v3s-liquidity">In-range liquidity L</label>
+      <input id="v3s-liquidity" type="text" inputmode="numeric" spellcheck="false" value="1000000000">
+      <label for="v3s-amount">Specified amount, base units (sent in exact-input mode, received in exact-output mode)</label>
+      <input id="v3s-amount" type="text" inputmode="numeric" spellcheck="false" value="10000">
+      <label for="v3s-fee">Fee tier (hundredths of a bip — 3000 = 0.3%)</label>
+      <input id="v3s-fee" type="text" inputmode="numeric" spellcheck="false" value="3000">
+      <button id="v3s-btn" type="button">Calculate swap step</button>
+      <p id="v3s-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>CREATE address calculator</h3>
       <p>The classic deployment opcode derives a contract's address from the creator alone: the last 20 bytes of Keccak-256 of the RLP encoding of <code>[sender, nonce]</code>. Know an account's nonce and you know the address its next deployment lands at — the same on Ethereum, Base, Unichain and Robinhood Chain. (CREATE2 above is the salt-based alternative.) Defaults below are the long-published worked example for this formula, so you can reproduce its known nonce-0 address. This only computes the address locally; nothing is deployed.</p>
       <label for="create-sender">Sender / deployer address (20 bytes)</label>
@@ -492,6 +511,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=27"></script>
+<script src="app.js?v=28"></script>
 </body>
 </html>

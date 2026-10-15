@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=27"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=28"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1307,6 +1307,82 @@ check("v3l calculator refuses invalid ranges, bounds and malformed inputs",
 check("v3l tool section present in index.html", html.includes("v3l-btn") && html.includes("Uniswap V3 liquidity amounts"));
 check("LiquidityAmounts linked from index.html", html.includes("https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/LiquidityAmounts.sol"));
 check("SqrtPriceMath linked from index.html", html.includes("https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/SqrtPriceMath.sol"));
+
+/* Uniswap V3 swap step — vectors from an independent pure-Python
+   transcription of SwapMath.computeSwapStep over SqrtPriceMath
+   (hidden_files/oracle-v3swap.py), covering exact-in/out in both
+   directions, steps that reach the target and steps that stop short,
+   the capped-output branch, the exact-in fee-remainder rule, a zero
+   fee tier, a 1-unit input taken entirely as fee, the minimum tick as
+   target, and 2^100 liquidity. */
+check("v3s controls labelled in index.html",
+  ["v3s-mode", "v3s-current", "v3s-target", "v3s-liquidity", "v3s-amount", "v3s-fee"]
+    .every(id => html.includes(`for="${id}"`) && html.includes(`id="${id}"`)));
+const V3S_VECTORS = [
+  // mode, curTick, tgtTick, liquidity, amount, feePips, sqrtNext, amountIn, amountOut, feeAmount, reached
+  ["in", 0, -1000, "1000000000", "10000", 3000, "79227372617359342520899016973", "9970", "9969", "30", false],
+  ["in", 0, -1000, "1000000000", "1000000000000", 3000, "75364347830767020784054125655", "51268469", "48768197", "154269", true],
+  ["in", 0, 1000, "1000000000", "10000", 3000, "79228952419044604808989757969", "9970", "9969", "30", false],
+  ["in", 0, 1000, "1000000000", "1000000000000", 500, "83290069058676223003182343270", "51268469", "48768197", "25648", true],
+  ["out", 0, -1000, "1000000000", "5000", 3000, "79227766373451766271855982616", "5001", "5000", "16", false],
+  ["out", 0, -1000, "1000000000", "1000000000000", 3000, "75364347830767020784054125655", "51268469", "48768197", "154269", true],
+  ["out", 0, 1000, "1000000000", "5000", 10000, "79228558657057622881658358628", "5001", "5000", "51", false],
+  ["out", 0, 1000, "1000000000", "1000000000000", 10000, "83290069058676223003182343270", "51268469", "48768197", "517864", true],
+  ["in", 100000, 90000, "1000000000000000", "123456789", 500, "11755347599327602481328037511066", "123395060", "2716548783091", "61729", false],
+  ["out", -50000, -40000, "1000000000000", "987654321", 100, "6504783957206221884726103341", "6656967", "987654321", "666", false],
+  ["in", 0, -100, "1000000", "1", 3000, "79228162514264337593543950336", "0", "0", "1", false],
+  ["in", 0, 100, "1000000000000000000", "1000000000000000", 0, "79307390676778601931137494286", "1000000000000000", "999000999000999", "0", false],
+  ["in", 0, -887272, "1000", "1000000", 3000, "79386936387038414422388728", "997000", "998", "3000", false],
+  ["in", 200000, 190000, "1267650600228229401496703205376", "100000000000000000000", 3000, "1744241109481416104375801925340153", "99700000000000000000", "48322542740432167850852442960", "300000000000000000", false],
+  ["in", -40000, -50000, "1000000000000", "555555555", 100, "10722631838229971806050207512", "555499999", "10175607", "55556", false],
+  ["out", 90000, 100000, "1000000000000000", "424242424242", 500, "7413332213026423895921960239844", "3572526290134867", "424242424242", "1787156723430", false]
+];
+check("v3s: swap steps match the Python oracle (sqrtNext, amountIn, amountOut, fee, reached)",
+  V3S_VECTORS.every(([mode, cur, tgt, liq, amt, fee, sqrtNext, ain, aout, feeAmt, reached]) => {
+    const r = app.uniswapV3SwapStep(mode, String(cur), String(tgt), liq, amt, String(fee));
+    return r !== null && r.sqrtNext === sqrtNext && r.amountIn === ain && r.amountOut === aout &&
+      r.feeAmount === feeAmt && r.reachedTarget === reached && r.zeroForOne === (tgt < cur);
+  }));
+check("v3s: accounting identities — exact-in total input never exceeds the specified amount, exact-out output never exceeds it",
+  V3S_VECTORS.every(([mode, cur, tgt, liq, amt, fee]) => {
+    const r = app.uniswapV3SwapStep(mode, String(cur), String(tgt), liq, amt, String(fee));
+    if (r === null) return false;
+    const spec = BigInt(amt);
+    return mode === "in"
+      ? BigInt(r.totalInput) + BigInt(r.remaining) === spec
+      : BigInt(r.amountOut) + BigInt(r.remaining) === spec;
+  }));
+check("v3s: sqrtNext stays between the current and target prices, and tickNext agrees with it",
+  V3S_VECTORS.every(([mode, cur, tgt, liq, amt, fee]) => {
+    const r = app.uniswapV3SwapStep(mode, String(cur), String(tgt), liq, amt, String(fee));
+    if (r === null) return false;
+    const c = BigInt(r.sqrtCurrent), t = BigInt(r.sqrtTarget), n = BigInt(r.sqrtNext);
+    const between = c <= t ? (c <= n && n <= t) : (t <= n && n <= c);
+    const tickOk = r.reachedTarget ? r.tickNext === String(tgt)
+      : app.uniswapV3Tick("sqrt", r.sqrtNext).tick === r.tickNext;
+    return between && tickOk;
+  }));
+check("v3s: prefilled page values reproduce the oracle step (9970 in, 30 fee, 9969 out, tick −1)",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const r = g("v3s-current") !== null && app.uniswapV3SwapStep("in", g("v3s-current"), g("v3s-target"), g("v3s-liquidity"), g("v3s-amount"), g("v3s-fee"));
+    return r && r.amountIn === "9970" && r.feeAmount === "30" && r.totalInput === "10000" &&
+      r.amountOut === "9969" && r.tickNext === "-1" && r.remaining === "0" && r.reachedTarget === false; })());
+check("v3s calculator refuses equal/out-of-range ticks, bad bounds and malformed inputs",
+  app.uniswapV3SwapStep("in", "0", "0", "1000", "100", "3000") === null &&
+  app.uniswapV3SwapStep("in", "0", "-887273", "1000", "100", "3000") === null &&
+  app.uniswapV3SwapStep("in", "887273", "0", "1000", "100", "3000") === null &&
+  app.uniswapV3SwapStep("in", "0", "-1000", "0", "100", "3000") === null &&
+  app.uniswapV3SwapStep("in", "0", "-1000", "340282366920938463463374607431768211456", "100", "3000") === null &&
+  app.uniswapV3SwapStep("in", "0", "-1000", "1000", "0", "3000") === null &&
+  app.uniswapV3SwapStep("in", "0", "-1000", "1000", "-5", "3000") === null &&
+  app.uniswapV3SwapStep("in", "0", "-1000", "1000", "1.5", "3000") === null &&
+  app.uniswapV3SwapStep("in", "0", "-1000", "1000", "100", "1000000") === null &&
+  app.uniswapV3SwapStep("in", "0", "-1000", "1000", "100", "-1") === null &&
+  app.uniswapV3SwapStep("in", "0", "-1000", "1000", "100", "0.3") === null &&
+  app.uniswapV3SwapStep("swap", "0", "-1000", "1000", "100", "3000") === null &&
+  app.uniswapV3SwapStep("in", "0", "-1000", "1000", null, "3000") === null);
+check("v3s tool section present in index.html", html.includes("v3s-btn") && html.includes("Uniswap V3 swap step"));
+check("SwapMath linked from index.html", html.includes("https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/SwapMath.sol"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

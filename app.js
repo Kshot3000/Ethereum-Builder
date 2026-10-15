@@ -2944,6 +2944,64 @@ function compoundRedeemAllowed(balanceStr, borrowBalanceStr, factorStr, rateStr,
     : { allowed: true, verdict: "allowed", liquidity: liq.liquidity, shortfall: liq.shortfall };
 }
 
+/* Compound transfer allowed check — Comptroller's transferAllowed
+   (compound-protocol, BSD-3-Clause; formulas paraphrased, not
+   copied). Apart from the transfer pause guardian — a boolean on
+   chain state that reverts when set, out of scope here — the
+   gate's only numeric consideration is whether the SOURCE account
+   could redeem the same number of cTokens: it runs the internal
+   redeem check of the tool above on the source with
+   transferTokens as the redeem amount and returns its verdict
+   unchanged, in that check's branch order:
+     1. membership of the SOURCE: if the source has not entered
+        the market, the internal check returns no error at once —
+        the liquidity check is never run, so a zero oracle price
+        or an overflowing liquidity product is not a refusal on
+        that path, and the transfer amount is never weighed at
+        all by this gate;
+     2. member source: the hypothetical liquidity check of the
+        liquidity tool (one market, redeem = transferTokens,
+        borrow 0): a shortfall above 0 is insufficient liquidity;
+        a shortfall of exactly 0 — the transfer exhausting the
+        source's liquidity exactly — is allowed. A zero oracle
+        price and any product or sum above the uint256 maximum
+        inside that check are refused, as the contract errors or
+        reverts there, but only when the check is actually
+        reached.
+   The DESTINATION account is never read by the gate — it
+   appears only in the COMP reward updates afterwards — and
+   there is no self-transfer shortcut: source == destination
+   runs the same check, which is why this tool takes no
+   destination input at all. The market-listing check precedes
+   the membership step inside the internal check, on chain
+   state, not a number, so the verdicts here are for a listed
+   market and listing is out of scope, as are the COMP reward
+   updates and the cToken-side steps (a transfer above the
+   source's cToken balance fails there, not in this gate, which
+   is why the bypass path never weighs the amount). Balances,
+   factor, rate, price and the source's membership are values
+   the user supplies — a real account's are chain state this
+   page does not read. Nothing is queried on chain. */
+function compoundTransferAllowed(balanceStr, borrowBalanceStr, factorStr, rateStr, priceStr, transferStr, srcIsMember) {
+  const balance = v2ParseUint(balanceStr);
+  const borrowBalance = v2ParseUint(borrowBalanceStr);
+  const factor = v2ParseUint(factorStr);
+  const rate = v2ParseUint(rateStr);
+  const price = v2ParseUint(priceStr);
+  const transfer = v2ParseUint(transferStr);
+  if (balance === null || borrowBalance === null || factor === null ||
+      rate === null || price === null || transfer === null) return null;
+  if (typeof srcIsMember !== "boolean") return null;
+  if (!srcIsMember) {
+    return { allowed: true, verdict: "not-in-market-bypass", liquidity: null, shortfall: null };
+  }
+  const liq = compoundLiquidity(balanceStr, borrowBalanceStr, factorStr, rateStr, priceStr, transferStr, "0");
+  if (liq === null) return null;
+  return BigInt(liq.shortfall) > 0n
+    ? { allowed: false, verdict: "insufficient-liquidity", liquidity: liq.liquidity, shortfall: liq.shortfall }
+    : { allowed: true, verdict: "allowed", liquidity: liq.liquidity, shortfall: liq.shortfall };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3693,6 +3751,30 @@ if (typeof document !== "undefined") {
       el.textContent = `redeemAllowed: ${r.allowed ? "ALLOWED" : "NOT ALLOWED"} — ${detail}. Computed locally with the Comptroller's check on the values you gave — a real account's balances, factor, rate, price and membership are chain state this page does not read, and the market-listing check and the cToken-side steps are separate. Not financial advice.`;
     });
 
+    /* Compound transfer allowed */
+    const ctqaBtn = document.getElementById("ctqa-btn");
+    if (ctqaBtn) ctqaBtn.addEventListener("click", () => {
+      const r = compoundTransferAllowed(
+        document.getElementById("ctqa-balance").value,
+        document.getElementById("ctqa-borrow-balance").value,
+        document.getElementById("ctqa-factor").value,
+        document.getElementById("ctqa-rate").value,
+        document.getElementById("ctqa-price").value,
+        document.getElementById("ctqa-transfer").value,
+        document.getElementById("ctqa-member").value === "yes");
+      const el = document.getElementById("ctqa-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: source cToken balance, borrow balance, collateral factor, exchange rate, oracle price and transfer amount are whole numbers (up to 78 digits), and — on the member path that reaches it — the oracle price is non-zero and no product or sum exceeds the uint256 maximum.";
+        return;
+      }
+      const detail = r.verdict === "not-in-market-bypass"
+        ? "the source account has not entered this market, so the Comptroller bypasses the liquidity check entirely — no liquidity is computed and the transfer amount is not weighed by this gate"
+        : r.verdict === "allowed"
+          ? `after the transfer the source account holds liquidity ${r.liquidity} with no shortfall`
+          : `after the transfer the source account would hold a shortfall of ${r.shortfall} (the liquidity calculator's hypothetical check with this transfer applied as a redeem)`;
+      el.textContent = `transferAllowed: ${r.allowed ? "ALLOWED" : "NOT ALLOWED"} — ${detail}. The destination account is never read by this gate. Computed locally with the Comptroller's check on the values you gave — a real account's balances, factor, rate, price and membership are chain state this page does not read, and the market-listing check, the transfer pause guardian and the cToken-side steps are separate. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3706,5 +3788,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

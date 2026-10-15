@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=49"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=50"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2492,6 +2492,54 @@ check("copy refuses malformed opcode, size and memory inputs and a non-zero dest
   app.copyGasCalc("CALLDATACOPY", "137438953440", "32", "0") === null &&
   app.copyGasCalc("CALLDATACOPY", "0", "0", "137438953441") === null);
 check("copy tool section present in index.html", html.includes("copy-btn") && html.includes("COPY gas calculator"));
+
+/* EXTCODECOPY gas — expected values produced by an independent
+   pure-Python transcription of EIP-2929 access pricing combined
+   with the Yellow Paper's copy-cost group
+   (hidden_files/oracle-extcodecopy-gas.py): NO flat base --
+   access 2,600 cold / 100 warm, 3 per 32-byte word rounded up,
+   plus memory expansion over the DESTINATION region end with
+   zero-size copies touching no memory but still paying access.
+   The oracle is anchored in-script on hand values (prefilled
+   cold 2,624 / warm 124, empty copy at access alone, cold-warm
+   difference exactly 2,500). Vectors are
+   [isCold, destOff, size, curMem] -> the full result. */
+check("extcodecopy controls labelled in index.html",
+  ["ext-copy-access", "ext-copy-dest", "ext-copy-size", "ext-copy-mem"].every(id => html.includes(`for="${id}"`)));
+check("EXTCODECOPY gas matches the Python oracle (prefill cold and warm, empty copy cold and warm, 32 bytes cold, 1 byte warm, 33 bytes cold, zero-size copy inert in memory at a large offset, destination already held warm, partial growth cold, 100,000-byte payload cold, destination ending exactly at the client's bound, destination inside large memory warm, and a 1 MB payload warm)",
+  (() => { const V = [
+    [[true, "0", "128", "0"], ["2600", "4", "12", "12", "2624", "128"]],
+    [[false, "0", "128", "0"], ["100", "4", "12", "12", "124", "128"]],
+    [[true, "0", "0", "0"], ["2600", "0", "0", "0", "2600", "0"]],
+    [[false, "0", "0", "0"], ["100", "0", "0", "0", "100", "0"]],
+    [[true, "0", "32", "0"], ["2600", "1", "3", "3", "2606", "32"]],
+    [[false, "0", "1", "0"], ["100", "1", "3", "3", "106", "1"]],
+    [[true, "0", "33", "0"], ["2600", "2", "6", "6", "2612", "33"]],
+    [[true, "999999", "0", "0"], ["2600", "0", "0", "0", "2600", "0"]],
+    [[false, "0", "32", "1024"], ["100", "1", "3", "0", "103", "32"]],
+    [[true, "32", "992", "32"], ["2600", "31", "93", "95", "2788", "1024"]],
+    [[true, "0", "100000", "0"], ["2600", "3125", "9375", "28448", "40423", "100000"]],
+    [[true, "137438953408", "32", "0"], ["2600", "1", "3", "36028809887088637", "36028809887091240", "137438953440"]],
+    [[false, "64", "128", "4096"], ["100", "4", "12", "0", "112", "192"]],
+    [[false, "0", "1000000", "0"], ["100", "31250", "93750", "2001098", "2094948", "1000000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.extCodeCopyGasCalc(...inp);
+    return r !== null && [r.accessGas, r.words, r.wordGas, r.memoryGas, r.totalGas, r.newMemBytes].join(",") === exp.join(","); }); })());
+check("extcodecopy: prefilled page values (128 bytes in fresh memory, cold) cost exactly 2,624, warm 124, differing by exactly 2,500",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const cold = app.extCodeCopyGasCalc(true, g("ext-copy-dest"), g("ext-copy-size"), g("ext-copy-mem"));
+    const warm = app.extCodeCopyGasCalc(false, g("ext-copy-dest"), g("ext-copy-size"), g("ext-copy-mem"));
+    return cold !== null && warm !== null && html.includes('id="ext-copy-access"') && html.includes('<option value="cold" selected>') &&
+      cold.accessGas === "2600" && cold.words === "4" && cold.wordGas === "12" && cold.memoryGas === "12" && cold.totalGas === "2624" &&
+      warm.totalGas === "124" && (BigInt(cold.totalGas) - BigInt(warm.totalGas)).toString() === "2500"; })());
+check("extcodecopy refuses a non-boolean warmth flag, malformed size and memory inputs, and a non-zero destination ending past the client's bound",
+  app.extCodeCopyGasCalc("cold", "0", "0", "0") === null &&
+  app.extCodeCopyGasCalc(null, "0", "0", "0") === null &&
+  app.extCodeCopyGasCalc(true, "0", "1.5", "0") === null &&
+  app.extCodeCopyGasCalc(true, "-1", "0", "0") === null &&
+  app.extCodeCopyGasCalc(true, "0", null, "0") === null &&
+  app.extCodeCopyGasCalc(true, "137438953440", "32", "0") === null &&
+  app.extCodeCopyGasCalc(false, "0", "0", "137438953441") === null);
+check("extcodecopy tool section present in index.html", html.includes("ext-copy-btn") && html.includes("EXTCODECOPY gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

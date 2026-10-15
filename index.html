@@ -571,6 +571,21 @@
     </div>
 
     <div class="tool">
+      <h3>EXTCODECOPY gas calculator</h3>
+      <p>The copy the calculator above deliberately left out: <code>EXTCODECOPY</code> copies <em>another</em> account's code into memory, and touching that account is priced under <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a>. Its cost, as go-ethereum's EXTCODECOPY gas function implements it and the evm.codes opcode page publishes it, has <em>no</em> flat base — instead it is the target account's access cost (2,600 if the address is cold, the first time this transaction touches it; 100 if it is already warm), plus the same copy terms as the plain copies: 3 per 32-byte <em>word</em> copied (the size rounds up to whole words), plus memory expansion for the region of the frame's memory the code is written <em>to</em> — the frame must reach the destination end, and a copy of size 0 touches no memory whatever its destination offset, though the access cost is still charged, because the account is touched even when nothing is copied. Only the target's warmth, the destination, the size and the frame's current memory are priced — the source offset inside the target's code moves no term, the code's contents move no term, and copying past the end of the target's code zero-pads and prices by the size requested, not the code's length. The prefilled copy — 128 bytes of a cold target's code at destination offset 0 in fresh memory — costs exactly 2,624: 2,600 of access + 12 of word charges + 12 of memory expansion; run the same copy against a warm target and it costs 124. Honest scope: this prices the one opcode only, and the target's warmth, the sizes and the memory state are values <em>you</em> supply, not execution state this page reads. Computed locally; nothing is copied and no chain is queried.</p>
+      <label for="ext-copy-access">Target account access (EIP-2929 — whether this transaction has already touched the target address)</label>
+      <select id="ext-copy-access"><option value="cold" selected>Cold — first access of this address in the transaction (2,600)</option><option value="warm">Warm — address already accessed in this transaction (100)</option></select>
+      <label for="ext-copy-dest">Destination offset (bytes — where the copied code starts in the frame's memory; a size of 0 touches nothing)</label>
+      <input id="ext-copy-dest" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="ext-copy-size">Copy size (bytes — the region written to memory)</label>
+      <input id="ext-copy-size" type="text" inputmode="numeric" spellcheck="false" value="128">
+      <label for="ext-copy-mem">Current memory size (bytes — what the frame has already allocated)</label>
+      <input id="ext-copy-mem" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <button id="ext-copy-btn" type="button">Calculate EXTCODECOPY gas</button>
+      <p id="ext-copy-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -904,6 +919,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=49"></script>
+<script src="app.js?v=50"></script>
 </body>
 </html>

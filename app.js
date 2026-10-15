@@ -2463,6 +2463,64 @@ function compoundCToken(mode, cashStr, borrowsStr, reservesStr, supplyStr, initi
   };
 }
 
+/* Compound interest accrual — CToken.accrueInterest's own math
+   (compound-protocol, BSD-3-Clause; formulas paraphrased, not copied):
+   over a gap of blockDelta blocks at a per-block borrow rate mantissa
+   (scaled by 1e18, as the market's interest rate model returns it),
+     simpleInterestFactor = borrowRate × blockDelta   (an Exp mantissa)
+     interestAccumulated  = factor × totalBorrows ÷ 1e18, truncated
+     totalBorrowsNew      = interestAccumulated + totalBorrows
+     totalReservesNew     = reserveFactor × interestAccumulated ÷ 1e18
+                            + totalReserves, truncated before the add
+     borrowIndexNew       = factor × borrowIndex ÷ 1e18 + borrowIndex
+   Every product and step truncates through ExponentialNoError's
+   mul_ScalarTruncate helpers. Note what the formula does with zero
+   borrows: no interest accrues, but the borrow index still grows by
+   the full factor. Refused, as the contract reverts or can never
+   store the value: a borrow rate above borrowRateMaxMantissa
+   (0.0005e16 = 5000000000000, "borrow rate is absurdly high"), a
+   reserve factor above 1e18 (reserveFactorMaxMantissa), and any
+   intermediate product or final sum above the uint256 maximum.
+   This is ONE accrual step at the supplied rate held constant over
+   the whole gap, exactly as a single accrueInterest() call computes
+   it — a real market's rate is whatever its interest rate model
+   returns at the accrual block (it moves with utilization between
+   accruals), and its totals and borrow index are chain state this
+   page does not read. Nothing is accrued or queried on chain. */
+const COMPOUND_BORROW_RATE_MAX = 5000000000000n; // 0.0005e16
+function compoundAccrue(rateStr, deltaStr, borrowsStr, reservesStr, reserveFactorStr, indexStr) {
+  const rate = v2ParseUint(rateStr);
+  const delta = v2ParseUint(deltaStr);
+  const borrows = v2ParseUint(borrowsStr);
+  const reserves = v2ParseUint(reservesStr);
+  const reserveFactor = v2ParseUint(reserveFactorStr);
+  const index = v2ParseUint(indexStr);
+  if (rate === null || delta === null || borrows === null ||
+      reserves === null || reserveFactor === null || index === null) return null;
+  if (rate > COMPOUND_BORROW_RATE_MAX) return null;
+  if (reserveFactor > COMPOUND_EXP_SCALE) return null;
+  const factor = rate * delta;
+  if (factor > ERC4626_MAX_UINT256) return null;
+  const interestProduct = factor * borrows;
+  if (interestProduct > ERC4626_MAX_UINT256) return null;
+  const interest = interestProduct / COMPOUND_EXP_SCALE;
+  const borrowsNew = interest + borrows;
+  if (borrowsNew > ERC4626_MAX_UINT256) return null;
+  const reserveProduct = reserveFactor * interest;
+  if (reserveProduct > ERC4626_MAX_UINT256) return null;
+  const reservesNew = (reserveProduct / COMPOUND_EXP_SCALE) + reserves;
+  if (reservesNew > ERC4626_MAX_UINT256) return null;
+  const indexProduct = factor * index;
+  if (indexProduct > ERC4626_MAX_UINT256) return null;
+  const indexNew = (indexProduct / COMPOUND_EXP_SCALE) + index;
+  if (indexNew > ERC4626_MAX_UINT256) return null;
+  return {
+    factor: factor.toString(), interest: interest.toString(),
+    borrows: borrowsNew.toString(), reserves: reservesNew.toString(),
+    index: indexNew.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3042,6 +3100,24 @@ if (typeof document !== "undefined") {
         : `${r.fn}: ${document.getElementById("comp-amount").value.trim()} ${r.inputUnit} → ${r.result} ${r.outputUnit} (exchange rate mantissa ${r.exchangeRate}, truncated exactly as CToken truncates). Computed locally on the totals you gave — a real market's totals are chain state this page does not read, and Comptroller checks are not modelled. Not financial advice.`;
     });
 
+    /* Compound interest accrual */
+    const caccBtn = document.getElementById("cacc-btn");
+    if (caccBtn) caccBtn.addEventListener("click", () => {
+      const r = compoundAccrue(
+        document.getElementById("cacc-rate").value,
+        document.getElementById("cacc-blocks").value,
+        document.getElementById("cacc-borrows").value,
+        document.getElementById("cacc-reserves").value,
+        document.getElementById("cacc-factor").value,
+        document.getElementById("cacc-index").value);
+      const el = document.getElementById("cacc-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: rate, blocks, borrows, reserves, reserve factor and borrow index are whole numbers (up to 78 digits), the borrow rate per block does not exceed the contract's maximum mantissa of 5000000000000, the reserve factor does not exceed 1e18, and no product or total exceeds the uint256 maximum.";
+        return;
+      }
+      el.textContent = `accrueInterest over ${document.getElementById("cacc-blocks").value.trim()} blocks: simple interest factor ${r.factor} (mantissa), interest accumulated ${r.interest} underlying, new total borrows ${r.borrows}, new total reserves ${r.reserves}, new borrow index ${r.index}. Computed locally with CToken's accrual formula at the rate you gave held constant over the gap — a real market's totals, index and rate are chain state this page does not read. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3055,5 +3131,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

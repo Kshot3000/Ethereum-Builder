@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=31"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=32"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1366,6 +1366,50 @@ check("compound tool section present in index.html", html.includes("comp-btn") &
 check("CToken and ExponentialNoError linked from index.html",
   html.includes("https://github.com/compound-finance/compound-protocol/blob/master/contracts/CToken.sol") &&
   html.includes("https://github.com/compound-finance/compound-protocol/blob/master/contracts/ExponentialNoError.sol"));
+
+/* Compound interest accrual — expected values produced by an independent
+   pure-Python transcription of CToken.accrueInterest and
+   ExponentialNoError's truncating helpers
+   (hidden_files/oracle-compound-accrue.py): factor = rate x blocks,
+   interest = factor x borrows // 1e18, reserves grow by
+   reserveFactor x interest // 1e18, the index by factor x index // 1e18.
+   Vectors are [rate, blocks, borrows, reserves, reserveFactor, index]
+   -> [factor, interest, borrowsNew, reservesNew, indexNew]. */
+check("compound accrual controls labelled in index.html",
+  ["cacc-rate", "cacc-blocks", "cacc-borrows", "cacc-reserves", "cacc-factor", "cacc-index"]
+    .every(id => html.includes(`for="${id}"`)));
+check("compound accrual matches the Python oracle (prefill, truncation, reserve-factor extremes, 2^200 scale, year-long gap)",
+  (() => { const V = [
+    [["400000000000", "10000", "3000000", "100000", "100000000000000000", "1000000000000000000"], ["4000000000000000", "12000", "3012000", "101200", "1004000000000000000"]],
+    [["400000000000", "0", "3000000", "100000", "100000000000000000", "1000000000000000000"], ["0", "0", "3000000", "100000", "1000000000000000000"]],
+    [["123456789", "7", "98765432109876543210", "12345", "333333333333333333", "1020000000000000000"], ["864197523", "85352841787", "98765432195229384997", "28450959607", "1020000000881481473"]],
+    [["5000000000000", "1", "1000000000000000000", "0", "100000000000000000", "1000000000000000000"], ["5000000000000", "5000000000000", "1000005000000000000", "500000000000", "1000005000000000000"]],
+    [["400000000000", "10000", "3000000", "100000", "1000000000000000000", "1000000000000000000"], ["4000000000000000", "12000", "3012000", "112000", "1004000000000000000"]],
+    [["400000000000", "10000", "3000000", "100000", "0", "1000000000000000000"], ["4000000000000000", "12000", "3012000", "100000", "1004000000000000000"]],
+    [["999999999999", "12345", "1606938044258990275541962092341162602522202993782792835313721", "1427247692705959881058285969449495136382746624", "250000000000000000", "1267650600228229401496703205376"], ["12344999999987655", "19837650156357397301409144795000086806106644305920440955989", "1626775694415347672843371237136162689328309638088713276269710", "4959412539090776573044992158631079987496110571616492985621", "1283299746888031244311520188954"]],
+    [["400000000000", "2628000", "3000000", "100000", "100000000000000000", "1000000000000000000"], ["1051200000000000000", "3153600", "6153600", "415360", "2051200000000000000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundAccrue(...inp);
+    return r !== null && r.factor === exp[0] && r.interest === exp[1] && r.borrows === exp[2] && r.reserves === exp[3] && r.index === exp[4]; }); })());
+check("compound accrual: zero borrows accrues no interest but the borrow index still grows by the full factor",
+  (() => { const r = app.compoundAccrue("400000000000", "10000", "0", "100000", "100000000000000000", "1000000000000000000");
+    return r !== null && r.interest === "0" && r.borrows === "0" && r.index === "1004000000000000000"; })());
+check("compound accrual: sub-unit interest truncates to zero while the index still grows by 1",
+  (() => { const r = app.compoundAccrue("1", "1", "999999", "5", "100000000000000000", "1000000000000000000");
+    return r !== null && r.interest === "0" && r.borrows === "999999" && r.reserves === "5" && r.index === "1000000000000000001"; })());
+check("compound accrual: prefilled page values reproduce the oracle's 12000-interest accrual",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.compoundAccrue(g("cacc-rate"), g("cacc-blocks"), g("cacc-borrows"), g("cacc-reserves"), g("cacc-factor"), g("cacc-index"));
+    return r !== null && r.interest === "12000" && r.borrows === "3012000" && r.reserves === "101200" && r.index === "1004000000000000000"; })());
+check("compound accrual refuses a rate above the contract maximum, a reserve factor above 1e18, malformed and overflowing inputs",
+  app.compoundAccrue("5000000000001", "1", "100", "0", "0", "1000000000000000000") === null &&
+  app.compoundAccrue("400000000000", "10000", "3000000", "100000", "1000000000000000001", "1000000000000000000") === null &&
+  app.compoundAccrue("400000000000", "1.5", "3000000", "100000", "100000000000000000", "1000000000000000000") === null &&
+  app.compoundAccrue("400000000000", "-3", "3000000", "100000", "100000000000000000", "1000000000000000000") === null &&
+  app.compoundAccrue("400000000000", "", "3000000", "100000", "100000000000000000", "1000000000000000000") === null &&
+  app.compoundAccrue(null, "10000", "3000000", "100000", "100000000000000000", "1000000000000000000") === null &&
+  app.compoundAccrue("5000000000000", (2n ** 200n).toString(), "100", "0", "0", "1000000000000000000") === null &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundAccrue("400000000000", "10000", M, "0", "0", "1000000000000000000") === null; })());
+check("compound accrual tool section present in index.html", html.includes("cacc-btn") && html.includes("Compound interest accrual calculator"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

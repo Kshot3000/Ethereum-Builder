@@ -2567,6 +2567,83 @@ function compoundSnapshot(principalStr, snapshotIndexStr, marketIndexStr, tokens
   };
 }
 
+/* Compound interest rate model — JumpRateModelV2's own math
+   (compound-protocol, BSD-3-Clause; formulas paraphrased, not copied),
+   over the model's STORED per-block parameters (the constructor turns
+   governance's per-year values into these by dividing by blocksPerYear;
+   that setup step is not this math):
+     utilization = 0                                   if borrows is 0
+                 = borrows × 1e18 ÷ (cash + borrows − reserves)  otherwise
+     borrowRate  = util × multiplierPerBlock ÷ 1e18 + baseRatePerBlock
+                                                           if util ≤ kink
+                 = (kink × multiplierPerBlock ÷ 1e18 + baseRatePerBlock)
+                   + (util − kink) × jumpMultiplierPerBlock ÷ 1e18
+                                                           if util > kink
+     supplyRate  = util × (borrowRate × (1e18 − reserveFactor) ÷ 1e18)
+                   ÷ 1e18
+   Every division truncates, exactly as the contracts truncate. The
+   zero-borrows case short-circuits before the denominator is ever
+   read, so a market with cash equal to reserves still has utilization
+   0; with borrows present, reserves above cash + borrows or a zero
+   denominator revert in the contract and are refused here, as is a
+   reserve factor above 1e18 (the supply-rate subtraction underflows)
+   and any product or sum above the uint256 maximum (checked
+   arithmetic). Utilization can exceed 1e18 when reserves exceed cash.
+   The two borrow branches agree exactly at util = kink. Totals and
+   parameters are values the user supplies — a real market's are chain
+   state this page does not read. Nothing is queried on chain. */
+function compoundRateModel(cashStr, borrowsStr, reservesStr, baseStr, multStr, jumpStr, kinkStr, reserveFactorStr) {
+  const cash = v2ParseUint(cashStr);
+  const borrows = v2ParseUint(borrowsStr);
+  const reserves = v2ParseUint(reservesStr);
+  const base = v2ParseUint(baseStr);
+  const mult = v2ParseUint(multStr);
+  const jump = v2ParseUint(jumpStr);
+  const kink = v2ParseUint(kinkStr);
+  const reserveFactor = v2ParseUint(reserveFactorStr);
+  if (cash === null || borrows === null || reserves === null || base === null ||
+      mult === null || jump === null || kink === null || reserveFactor === null) return null;
+  if (reserveFactor > COMPOUND_EXP_SCALE) return null; // 1e18 − reserveFactor underflows
+  let util;
+  if (borrows === 0n) {
+    util = 0n; // short-circuit: the denominator is never read
+  } else {
+    const total = cash + borrows;
+    if (total > ERC4626_MAX_UINT256 || reserves > total) return null;
+    const denom = total - reserves;
+    if (denom === 0n) return null; // the contract divides by it
+    const utilProduct = borrows * COMPOUND_EXP_SCALE;
+    if (utilProduct > ERC4626_MAX_UINT256) return null;
+    util = utilProduct / denom;
+  }
+  let borrowRate;
+  if (util <= kink) {
+    const prod = util * mult;
+    if (prod > ERC4626_MAX_UINT256) return null;
+    borrowRate = prod / COMPOUND_EXP_SCALE + base;
+  } else {
+    const prodK = kink * mult;
+    if (prodK > ERC4626_MAX_UINT256) return null;
+    const normal = prodK / COMPOUND_EXP_SCALE + base;
+    if (normal > ERC4626_MAX_UINT256) return null;
+    const prodJ = (util - kink) * jump;
+    if (prodJ > ERC4626_MAX_UINT256) return null;
+    borrowRate = prodJ / COMPOUND_EXP_SCALE + normal;
+  }
+  if (borrowRate > ERC4626_MAX_UINT256) return null;
+  const poolProduct = borrowRate * (COMPOUND_EXP_SCALE - reserveFactor);
+  if (poolProduct > ERC4626_MAX_UINT256) return null;
+  const rateToPool = poolProduct / COMPOUND_EXP_SCALE;
+  const supplyProduct = util * rateToPool;
+  if (supplyProduct > ERC4626_MAX_UINT256) return null;
+  const supplyRate = supplyProduct / COMPOUND_EXP_SCALE;
+  return {
+    utilization: util.toString(), borrowRate: borrowRate.toString(),
+    supplyRate: supplyRate.toString(),
+    regime: util <= kink ? "at or below the kink" : "above the kink"
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3181,6 +3258,26 @@ if (typeof document !== "undefined") {
       el.textContent = `getAccountSnapshot: borrow balance ${r.borrow} underlying, cToken balance ${r.tokens}, underlying balance ${r.underlying} (at the stored exchange rate you gave). Computed locally with CToken's stored-snapshot formulas on the values you gave — a real account's snapshot, indexes and rate are chain state this page does not read, and no interest accrual is performed. Not financial advice.`;
     });
 
+    /* Compound interest rate model */
+    const cirmBtn = document.getElementById("cirm-btn");
+    if (cirmBtn) cirmBtn.addEventListener("click", () => {
+      const r = compoundRateModel(
+        document.getElementById("cirm-cash").value,
+        document.getElementById("cirm-borrows").value,
+        document.getElementById("cirm-reserves").value,
+        document.getElementById("cirm-base").value,
+        document.getElementById("cirm-mult").value,
+        document.getElementById("cirm-jump").value,
+        document.getElementById("cirm-kink").value,
+        document.getElementById("cirm-factor").value);
+      const el = document.getElementById("cirm-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: cash, borrows, reserves, the three per-block rate parameters, the kink and the reserve factor are whole numbers (up to 78 digits), reserves do not exceed cash + borrows while borrows are non-zero, the reserve factor does not exceed 1e18, and no product exceeds the uint256 maximum.";
+        return;
+      }
+      el.textContent = `JumpRateModelV2: utilization ${r.utilization} (mantissa, ${r.regime}), borrow rate per block ${r.borrowRate} (mantissa), supply rate per block ${r.supplyRate} (mantissa, after the reserve factor). Computed locally with the rate model's formulas on the totals and parameters you gave — a real market's totals and model parameters are chain state this page does not read. Not financial advice.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3194,5 +3291,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

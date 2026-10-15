@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=33"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=34"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1450,6 +1450,53 @@ check("compound snapshot refuses a zero snapshot index with a borrow, malformed 
   (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundSnapshot(M, "1000000000000000000", "2", "0", "0") === null; })() &&
   (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundSnapshot("0", "0", "1000000000000000000", M, "2") === null; })());
 check("compound snapshot tool section present in index.html", html.includes("csnap-btn") && html.includes("Compound account snapshot calculator"));
+
+/* Compound interest rate model — expected values produced by an
+   independent pure-Python transcription of BaseJumpRateModelV2's
+   utilizationRate and JumpRateModelV2's getBorrowRate / getSupplyRate
+   over the model's stored per-block parameters
+   (hidden_files/oracle-compound-rate-model.py): utilization is 0 if
+   borrows is 0, else borrows x 1e18 // (cash + borrows - reserves);
+   the borrow rate is the two-slope kink curve, truncating at each
+   division; the supply rate is utilization x (borrowRate x
+   (1e18 - reserveFactor) // 1e18) // 1e18.
+   Vectors are [cash, borrows, reserves, base, mult, jump, kink,
+   reserveFactor] -> [utilization, borrowRate, supplyRate]. */
+check("compound rate model controls labelled in index.html",
+  ["cirm-cash", "cirm-borrows", "cirm-reserves", "cirm-base", "cirm-mult", "cirm-jump", "cirm-kink", "cirm-factor"]
+    .every(id => html.includes(`for="${id}"`)));
+check("compound rate model matches the Python oracle (prefill, zero borrows, kink boundary, above kink, truncation, util above 1e18, reserve-factor extremes, 2^150 scale)",
+  (() => { const V = [
+    [["9100000", "3000000", "100000", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000"], ["250000000000000000", "400000000000", "90000000000"]],
+    [["0", "0", "0", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000"], ["0", "100000000000", "0"]],
+    [["500", "0", "500", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000"], ["0", "100000000000", "0"]],
+    [["1000000", "4000000", "0", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000"], ["800000000000000000", "1060000000000", "763200000000"]],
+    [["1000000", "9000000", "0", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000"], ["900000000000000000", "1460000000000", "1182600000000"]],
+    [["7", "5", "3", "7", "11", "13", "400000000000000000", "3"], ["555555555555555555", "13", "6"]],
+    [["100", "1000", "500", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000"], ["1666666666666666666", "4526666666666", "6789999999998"]],
+    [["9100000", "3000000", "100000", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "1000000000000000000"], ["250000000000000000", "400000000000", "0"]],
+    [["9100000", "3000000", "100000", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "0"], ["250000000000000000", "400000000000", "100000000000"]],
+    [["1427247692705959881058285969449495136382746624", "1427247692705959881058285969449495136382746624", "0", "0", "1152921504606846976", "4611686018427387904", "800000000000000000", "100000000000000000"], ["500000000000000000", "576460752303423488", "259407338536540569"]]
+  ]; return V.every(([inp, exp]) => { const r = app.compoundRateModel(...inp);
+    return r !== null && r.utilization === exp[0] && r.borrowRate === exp[1] && r.supplyRate === exp[2]; }); })());
+check("compound rate model: zero borrows short-circuits even when cash equals reserves",
+  (() => { const r = app.compoundRateModel("500", "0", "500", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000");
+    return r !== null && r.utilization === "0" && r.borrowRate === "100000000000" && r.supplyRate === "0"; })());
+check("compound rate model: prefilled page values produce exactly the accrual tool's prefilled per-block rate (400000000000)",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.compoundRateModel(g("cirm-cash"), g("cirm-borrows"), g("cirm-reserves"), g("cirm-base"), g("cirm-mult"), g("cirm-jump"), g("cirm-kink"), g("cirm-factor"));
+    return r !== null && r.utilization === "250000000000000000" && r.borrowRate === "400000000000" && r.supplyRate === "90000000000" && r.regime === "at or below the kink"; })());
+check("compound rate model refuses reserves above cash + borrows, a zero denominator, a reserve factor above 1e18, malformed and overflowing inputs",
+  app.compoundRateModel("100", "200", "301", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000") === null &&
+  app.compoundRateModel("0", "5", "5", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000") === null &&
+  app.compoundRateModel("9100000", "3000000", "100000", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "1000000000000000001") === null &&
+  app.compoundRateModel("9100000", "3000000", "100000", "100000000000", "1.5", "4000000000000", "800000000000000000", "100000000000000000") === null &&
+  app.compoundRateModel("9100000", "3000000", "100000", "100000000000", "1200000000000", "-3", "800000000000000000", "100000000000000000") === null &&
+  app.compoundRateModel("9100000", "3000000", "100000", "", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000") === null &&
+  app.compoundRateModel(null, "3000000", "100000", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000") === null &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundRateModel("0", M, "0", "100000000000", "1200000000000", "4000000000000", "800000000000000000", "100000000000000000") === null; })() &&
+  (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundRateModel("1000000", "9000000", "0", "0", M, "4000000000000", "800000000000000000", "100000000000000000") === null; })());
+check("compound rate model tool section present in index.html", html.includes("cirm-btn") && html.includes("Compound interest rate model calculator"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

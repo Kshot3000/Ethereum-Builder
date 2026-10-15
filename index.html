@@ -279,6 +279,29 @@
     </div>
 
     <div class="tool">
+      <h3>Compound interest rate model calculator (JumpRateModelV2)</h3>
+      <p>The accrual calculator above takes a per-block borrow rate as an input; this one computes that rate the way a Compound market's interest rate model does. <a href="https://github.com/compound-finance/compound-protocol/blob/master/contracts/JumpRateModelV2.sol">JumpRateModelV2</a> starts from utilization — <code>borrows × 10<sup>18</sup> ÷ (cash + borrows − reserves)</code>, with a market that has no borrows short-circuiting to 0 before the denominator is ever read — and prices borrowing on a two-slope curve through a <em>kink</em>: at or below the kink the per-block borrow rate is <code>utilization × multiplierPerBlock ÷ 10<sup>18</sup> + baseRatePerBlock</code>, and above it the rate first reaches that same line at the kink, then climbs at the steeper jump multiplier on the excess utilization — the two branches agree exactly at the kink, so the curve bends but never jumps. The supply rate is what remains for suppliers after the reserve factor's skim: <code>utilization × (borrowRate × (1 − reserveFactor) ÷ 10<sup>18</sup>) ÷ 10<sup>18</sup></code>. Every division truncates, exactly as the contracts truncate, and utilization can exceed 10<sup>18</sup> when reserves exceed cash. The inputs are the model's <em>stored per-block</em> parameters (its constructor divides governance's per-year values by blocks per year — that setup step is not this math). The prefilled market (9,100,000 cash, 3,000,000 borrows, 100,000 reserves) sits at exactly 25% utilization, below its 80% kink, and its borrow rate comes out at exactly 400000000000 per block — the rate the accrual calculator above is prefilled with — with a supply rate of 90000000000 at the accrual tool's 10% reserve factor. Reserves above cash + borrows, a zero denominator while borrows exist, a reserve factor above 10<sup>18</sup>, and any product above the uint256 maximum are refused, as the contracts revert there. Honest scope: totals and parameters are values <em>you</em> supply — a real market's are chain state, which this page does not read, and which model a market uses (and its parameters) is a governance choice this page does not look up. This is the model's formula applied to supplied values, not live market data and not financial advice. Computed locally; nothing is borrowed or supplied and no chain is queried.</p>
+      <label for="cirm-cash">Market cash — underlying held by the market (base units)</label>
+      <input id="cirm-cash" type="text" inputmode="numeric" spellcheck="false" value="9100000">
+      <label for="cirm-borrows">Market total borrows (base units of underlying)</label>
+      <input id="cirm-borrows" type="text" inputmode="numeric" spellcheck="false" value="3000000">
+      <label for="cirm-reserves">Market total reserves (base units of underlying)</label>
+      <input id="cirm-reserves" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <label for="cirm-base">Base rate per block (mantissa, scaled by 1e18 — the model's stored baseRatePerBlock)</label>
+      <input id="cirm-base" type="text" inputmode="numeric" spellcheck="false" value="100000000000">
+      <label for="cirm-mult">Multiplier per block (mantissa, scaled by 1e18 — the model's stored multiplierPerBlock)</label>
+      <input id="cirm-mult" type="text" inputmode="numeric" spellcheck="false" value="1200000000000">
+      <label for="cirm-jump">Jump multiplier per block (mantissa, scaled by 1e18 — the model's stored jumpMultiplierPerBlock, applied above the kink)</label>
+      <input id="cirm-jump" type="text" inputmode="numeric" spellcheck="false" value="4000000000000">
+      <label for="cirm-kink">Kink (utilization mantissa, scaled by 1e18 — 800000000000000000 is 80%)</label>
+      <input id="cirm-kink" type="text" inputmode="numeric" spellcheck="false" value="800000000000000000">
+      <label for="cirm-factor">Reserve factor mantissa (scaled by 1e18 — 100000000000000000 is 10%, as in the accrual tool above)</label>
+      <input id="cirm-factor" type="text" inputmode="numeric" spellcheck="false" value="100000000000000000">
+      <button id="cirm-btn" type="button">Calculate rates</button>
+      <p id="cirm-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -612,6 +635,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=33"></script>
+<script src="app.js?v=34"></script>
 </body>
 </html>

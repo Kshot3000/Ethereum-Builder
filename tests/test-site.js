@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=41"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=42"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1847,6 +1847,59 @@ check("compound exit-market refuses malformed inputs, a non-boolean membership f
   app.compoundExitMarket("50000000", "0", "750000000000000000", "20000000000000000", "0", true) === null &&
   (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundExitMarket("1", "0", M, "2000000000000000000", "1000000000000000000", true) === null; })());
 check("compound exit-market tool section present in index.html", html.includes("cxqa-btn") && html.includes("Compound exit market calculator"));
+
+/* ModExp precompile gas — expected values produced by an
+   independent pure-Python transcription of the pricing
+   pseudocode published in EIP-2565 and EIP-7883
+   (hidden_files/oracle-modexp.py), itself anchored in-script
+   on the two EIPs' own test tables: a 64-byte base and modulus
+   with exponent 0x10001 reproduces the nagydani_1_pow0x10001
+   row under both schedules (341 / 2,048) and a 1,024-byte pair
+   the nagydani_5 row (87,381 / 524,288). Vectors are
+   [baseLength, exponentLength, modulusLength, exponentHeadHex]
+   -> [complexity2565, iteration2565, gas2565, complexity7883,
+   iteration7883, gas7883], the head being the exponent's first
+   min(exponentLength, 32) bytes. */
+check("modexp controls labelled in index.html",
+  ["mxg-base-len", "mxg-exp-len", "mxg-mod-len", "mxg-exp-head"]
+    .every(id => html.includes(`for="${id}"`)));
+check("modexp gas matches the Python oracle under both schedules (prefill and large nagydani anchors, square minimums, zero exponent and exponent 1 floored to iteration 1, empty call, the 32/33-byte complexity boundary, a full 32-byte head at iteration 255, a 33-byte exponent under both per-byte rates, a zero head contributing -1, a 64-byte exponent, odd asymmetric lengths, tiny operands with a maximal head, and 100,000-byte lengths)",
+  (() => { const V = [
+    [["64", "3", "64", "0x010001"], ["64", "16", "341", "128", "16", "2048"]],
+    [["64", "1", "64", "0x02"], ["64", "1", "200", "128", "1", "500"]],
+    [["32", "32", "32", "0x" + "00".repeat(32)], ["16", "1", "200", "16", "1", "500"]],
+    [["32", "1", "32", "0x01"], ["16", "1", "200", "16", "1", "500"]],
+    [["0", "0", "0", "0x"], ["0", "1", "200", "16", "1", "500"]],
+    [["32", "1", "32", "0x02"], ["16", "1", "200", "16", "1", "500"]],
+    [["33", "1", "33", "0x02"], ["25", "1", "200", "50", "1", "500"]],
+    [["32", "32", "32", "0x80" + "00".repeat(31)], ["16", "255", "1360", "16", "255", "4080"]],
+    [["64", "33", "64", "0x80" + "00".repeat(31)], ["64", "263", "5610", "128", "271", "34688"]],
+    [["64", "33", "64", "0x" + "00".repeat(32)], ["64", "7", "200", "128", "15", "1920"]],
+    [["128", "64", "128", "0x" + "ff".repeat(32)], ["256", "511", "43605", "512", "767", "392704"]],
+    [["1024", "3", "1024", "0x010001"], ["16384", "16", "87381", "32768", "16", "524288"]],
+    [["100", "7", "55", "0xabcdef01234567"], ["169", "55", "3098", "338", "55", "18590"]],
+    [["8", "32", "8", "0x" + "ff".repeat(32)], ["1", "255", "200", "16", "255", "4080"]],
+    [["100000", "40", "99999", "0x" + "ab".repeat(32)], ["156250000", "319", "16614583333", "312500000", "383", "119687500000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.modexpGas(...inp);
+    return r !== null && r.complexity2565 === exp[0] && r.iteration2565 === exp[1] && r.gas2565 === exp[2] &&
+      r.complexity7883 === exp[3] && r.iteration7883 === exp[4] && r.gas7883 === exp[5]; }); })());
+check("modexp: prefilled page values reproduce the nagydani_1_pow0x10001 row of the EIPs' test tables (341 under EIP-2565, 2,048 under EIP-7883)",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.modexpGas(g("mxg-base-len"), g("mxg-exp-len"), g("mxg-mod-len"), g("mxg-exp-head"));
+    return r !== null && r.gas2565 === "341" && r.gas7883 === "2048" && r.iteration2565 === "16" && r.iteration7883 === "16"; })());
+check("modexp refuses malformed lengths and a head whose byte count is not exactly min(exponent length, 32)",
+  app.modexpGas("-1", "3", "64", "0x010001") === null &&
+  app.modexpGas("64", "3.5", "64", "0x010001") === null &&
+  app.modexpGas("", "3", "64", "0x010001") === null &&
+  app.modexpGas("64", "3", "64", "0x0100") === null &&
+  app.modexpGas("64", "3", "64", "0x01000100") === null &&
+  app.modexpGas("64", "33", "64", "0x010001") === null &&
+  app.modexpGas("64", "33", "64", "0x" + "00".repeat(33)) === null &&
+  app.modexpGas("64", "0", "64", "0x00") === null &&
+  app.modexpGas("64", "3", "64", "0xZZZZZZ") === null &&
+  app.modexpGas("64", "3", "64", null) === null &&
+  app.modexpGas("64", null, "64", "0x010001") === null);
+check("modexp tool section present in index.html", html.includes("mxg-btn") && html.includes("ModExp precompile gas calculator"));
 
 /* Uniswap V3 tick ⇄ sqrtPriceX96 — expected values produced by an
    independent pure-Python transcription of TickMath (the Q128.128

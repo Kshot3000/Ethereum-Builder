@@ -3066,6 +3066,77 @@ function compoundExitMarket(balanceStr, owedStr, factorStr, rateStr, priceStr, i
     : { allowed: true, verdict: "allowed", liquidity: liq.liquidity, shortfall: liq.shortfall };
 }
 
+/* ModExp precompile gas — the pricing of the EVM's modular
+   exponentiation precompile at address 0x05, under both
+   schedules that have priced it (EIP-2565, in force from
+   Berlin, and EIP-7883, the Fusaka repricing; both EIPs are
+   CC0, formulas transcribed from their published pseudocode).
+   The precompile's input names three lengths — base, exponent
+   and modulus, in bytes — and the gas depends only on those
+   lengths and on the exponent's head, its first
+   min(exponentLength, 32) bytes read as an integer, which is
+   how the EIPs' iteration function receives it and how clients
+   read it:
+     multiplication complexity: words = ceil(max(baseLength,
+       modulusLength) / 8); EIP-2565 charges words^2, while
+       EIP-7883 charges a flat 16 while the maximum is at most
+       32 bytes and 2 * words^2 above that;
+     iteration count: a zero exponent of at most 32 bytes gives
+       0; a short exponent gives its bit length minus 1; a
+       longer exponent gives perByte * (exponentLength - 32)
+       plus the head's bit length minus 1 (perByte is 8 under
+       EIP-2565 and 16 under EIP-7883 — with a non-zero head
+       the sum is exactly the exponent's own bit length minus
+       1; a zero head contributes -1 there, as the pseudocode's
+       arithmetic gives it); either way the count is floored
+       at 1;
+     gas: EIP-2565 charges max(200, floor(complexity *
+       iteration / 3)); EIP-7883 charges max(500, complexity *
+       iteration) — the divisor is gone and the minimum rises.
+   Lengths are decimal byte counts and the head is hex of
+   exactly min(exponentLength, 32) bytes (the whole exponent
+   when it is short, empty when its length is 0); anything
+   else is refused. This prices a call under each schedule's
+   formula — which schedule a given chain applies is that
+   chain's fork state (Ethereum mainnet applies EIP-7883
+   since Fusaka), the EIP-7823 input-length caps that
+   accompany the Fusaka schedule are a validity rule, not part
+   of the pricing, and are not modelled, and no chain is
+   queried. */
+function modexpGas(baseLenStr, expLenStr, modLenStr, expHeadHex) {
+  const baseLen = v2ParseUint(baseLenStr);
+  const expLen = v2ParseUint(expLenStr);
+  const modLen = v2ParseUint(modLenStr);
+  if (baseLen === null || expLen === null || modLen === null) return null;
+  const headLen = expLen < 32n ? Number(expLen) : 32;
+  const headBytes = parseHexBytes(expHeadHex, headLen);
+  if (headBytes === null) return null;
+  let head = 0n;
+  for (const b of headBytes) head = (head << 8n) | BigInt(b);
+  const headBits = head === 0n ? 0n : BigInt(head.toString(2).length);
+  const iter = (perByte) => {
+    let it;
+    if (expLen <= 32n && head === 0n) it = 0n;
+    else if (expLen <= 32n) it = headBits - 1n;
+    else it = perByte * (expLen - 32n) + (headBits - 1n);
+    return it < 1n ? 1n : it;
+  };
+  const maxLen = baseLen > modLen ? baseLen : modLen;
+  const words = (maxLen + 7n) / 8n;
+  const complexity2565 = words * words;
+  const iteration2565 = iter(8n);
+  const raw2565 = complexity2565 * iteration2565 / 3n;
+  const gas2565 = raw2565 < 200n ? 200n : raw2565;
+  const complexity7883 = maxLen <= 32n ? 16n : 2n * words * words;
+  const iteration7883 = iter(16n);
+  const raw7883 = complexity7883 * iteration7883;
+  const gas7883 = raw7883 < 500n ? 500n : raw7883;
+  return {
+    complexity2565: complexity2565.toString(), iteration2565: iteration2565.toString(), gas2565: gas2565.toString(),
+    complexity7883: complexity7883.toString(), iteration7883: iteration7883.toString(), gas7883: gas7883.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -3862,6 +3933,22 @@ if (typeof document !== "undefined") {
       el.textContent = `exitMarket: ${r.allowed ? "ALLOWED" : "NOT ALLOWED"} — ${detail}. Computed locally with the Comptroller's check on the values you gave — a real account's balances, factor, rate, price and membership are chain state this page does not read, and the market-listing check and the snapshot read are separate. Not financial advice.`;
     });
 
+    /* ModExp precompile gas */
+    const mxgBtn = document.getElementById("mxg-btn");
+    if (mxgBtn) mxgBtn.addEventListener("click", () => {
+      const r = modexpGas(
+        document.getElementById("mxg-base-len").value,
+        document.getElementById("mxg-exp-len").value,
+        document.getElementById("mxg-mod-len").value,
+        document.getElementById("mxg-exp-head").value);
+      const el = document.getElementById("mxg-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the three lengths are whole numbers of bytes, and the exponent head is hex of exactly the first min(exponent length, 32) bytes of the exponent — the whole exponent when it is at most 32 bytes, and 0x alone when its length is 0.";
+        return;
+      }
+      el.textContent = `ModExp gas — under EIP-2565 (Berlin–Pectra): ${r.gas2565} gas (multiplication complexity ${r.complexity2565}, iteration count ${r.iteration2565}). Under EIP-7883 (Fusaka, the current mainnet schedule): ${r.gas7883} gas (complexity ${r.complexity7883}, iteration count ${r.iteration7883}). Computed locally from the lengths and exponent head you gave — which schedule applies is the chain's fork state, and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -3875,5 +3962,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

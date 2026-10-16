@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=57"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=58"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2858,6 +2858,49 @@ check("bn128 refuses an unknown or non-string precompile and a malformed, negati
   app.bn128GasCalc("pairing", "715827883") === null &&
   app.bn128GasCalc("pairing", "715827882") !== null);
 check("bn128 tool section present in index.html", html.includes("bn-btn") && html.includes("alt_bn128 precompile gas calculator"));
+
+/* BLAKE2f precompile gas — expected values produced by an
+   independent pure-Python transcription of the pricing
+   (hidden_files/oracle-blake2f-gas.py): BLAKE2f (0x09) charges
+   the rounds value itself, 1 gas per round with no other term,
+   over a fixed 213-byte input whose first 4 bytes are the
+   big-endian uint32 rounds count, at the EIP-152 price current
+   mainnet applies. The oracle is anchored in-script on hand
+   values (the prefilled 12 rounds at 12, 0 rounds at 0, 1 round
+   at 1, each extra round adding exactly 1, and the uint32
+   maximum at 4,294,967,295). Vectors are [rounds] -> fields. */
+check("blake2f controls labelled in index.html",
+  ["b2-rounds"].every(id => html.includes(`for="${id}"`)));
+check("blake2f gas matches the Python oracle",
+  (() => { const V = [
+    [["12"], ["blake2f", "0x0000000000000000000000000000000000000009", "12", "1", "213", "12"]],
+    [["0"], ["blake2f", "0x0000000000000000000000000000000000000009", "0", "1", "213", "0"]],
+    [["1"], ["blake2f", "0x0000000000000000000000000000000000000009", "1", "1", "213", "1"]],
+    [["2"], ["blake2f", "0x0000000000000000000000000000000000000009", "2", "1", "213", "2"]],
+    [["10"], ["blake2f", "0x0000000000000000000000000000000000000009", "10", "1", "213", "10"]],
+    [["100"], ["blake2f", "0x0000000000000000000000000000000000000009", "100", "1", "213", "100"]],
+    [["1000000"], ["blake2f", "0x0000000000000000000000000000000000000009", "1000000", "1", "213", "1000000"]],
+    [["4294967295"], ["blake2f", "0x0000000000000000000000000000000000000009", "4294967295", "1", "213", "4294967295"]]
+  ]; return V.every(([inp, exp]) => { const r = app.blake2fGasCalc(...inp);
+    return r !== null && [r.precompile, r.address, r.rounds, r.perRoundGas, r.inputBytes, r.totalGas].join(",") === exp.join(","); }); })());
+check("blake2f: each extra round adds exactly 1 and the total equals the rounds count",
+  (() => { const r12 = app.blake2fGasCalc("12");
+    const r13 = app.blake2fGasCalc("13");
+    return r12 !== null && r13 !== null &&
+      html.includes('id="b2-rounds"') && html.includes('value="12"') &&
+      (BigInt(r13.totalGas) - BigInt(r12.totalGas)).toString() === "1" &&
+      r12.totalGas === r12.rounds && r13.totalGas === r13.rounds; })());
+check("blake2f refuses a malformed, negative, hex, non-string or over-uint32 rounds count",
+  app.blake2fGasCalc("abc") === null &&
+  app.blake2fGasCalc("-1") === null &&
+  app.blake2fGasCalc("0x12") === null &&
+  app.blake2fGasCalc("1.5") === null &&
+  app.blake2fGasCalc("") === null &&
+  app.blake2fGasCalc(null) === null &&
+  app.blake2fGasCalc(12) === null &&
+  app.blake2fGasCalc("4294967296") === null &&
+  app.blake2fGasCalc("4294967295") !== null);
+check("blake2f tool section present in index.html", html.includes("b2-btn") && html.includes("BLAKE2f precompile gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

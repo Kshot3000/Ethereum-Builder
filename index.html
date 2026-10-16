@@ -677,6 +677,15 @@
     </div>
 
     <div class="tool">
+      <h3>BLAKE2f precompile gas calculator (EIP-152)</h3>
+      <p>The last of the pre-Istanbul-era precompiled contracts the hub had not priced sits at address 0x09: the compression function F of the BLAKE2b hash, added by <a href="https://eips.ethereum.org/EIPS/eip-152">EIP-152</a> at Istanbul so contracts can run one BLAKE2b compression natively (the building block Zcash interoperability work needed). Its input is fixed-width — exactly 213 bytes: a 4-byte big-endian rounds count, the 64-byte state, the 128-byte message block, the 16-byte offset counters, and a 1-byte final-block flag. Its price is unlike every other precompile on this page: there is no base and no per-word or per-pair term — the charge is the rounds value itself, 1 gas per round, so the total is simply the number in the input's first four bytes. Zero rounds charges zero for the precompile's own cost, and 12 rounds — the round count BLAKE2b itself performs for one compression — charges exactly 12. Because those four bytes are a uint32, the count runs from 0 to 4,294,967,295 and nothing wider can occur in a real input. As with the precompiles above, there is no <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> access term: the precompiles start warm. The prefilled compression — 12 rounds — costs exactly 12. Honest scope: this prices the precompile's own charge only — the <code>CALL</code> or <code>STATICCALL</code> that invokes it charges its own terms separately (see the CALL calculator); an input that is not exactly 213 bytes, or whose final flag is not 0 or 1, fails for a non-gas reason that is not modelled, and the rounds count is a value <em>you</em> supply, not execution state this page reads. Computed locally; nothing is called and no chain is queried.</p>
+      <label for="b2-rounds">Rounds (the uint32 in the input's first 4 bytes — the gas is this count, at 1 per round)</label>
+      <input id="b2-rounds" type="text" inputmode="numeric" spellcheck="false" value="12">
+      <button id="b2-btn" type="button">Calculate BLAKE2f gas</button>
+      <p id="b2-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1010,6 +1019,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=57"></script>
+<script src="app.js?v=58"></script>
 </body>
 </html>

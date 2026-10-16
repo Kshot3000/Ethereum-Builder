@@ -3985,6 +3985,53 @@ function bn128GasCalc(nameStr, pairsStr) {
   };
 }
 
+/* BLAKE2f precompile gas — the BLAKE2b compression function F
+   at address 0x09, added by EIP-152 at Istanbul (the EIP is
+   CC0; the schedule is restated here in my own words, and the
+   pricing was cross-verified across two independent sources
+   this run: EIP-152's own gas formula and independent tables
+   listing BLAKE2F at 1 gas per round, GFROUND x rounds):
+     - the input is fixed-width, exactly 213 bytes: a 4-byte
+       big-endian uint32 rounds count, then the 64-byte state
+       h, the 128-byte message block m, the 16-byte offset
+       counters t, and a 1-byte final-block flag f;
+     - the charge is the rounds value itself — 1 gas per
+       round, with no base, no per-word term and no other term:
+       total = rounds. So 0 rounds charges 0 for the
+       precompile's own cost (a caller would never forward 0
+       rounds for real work, but the pricing is exact), and
+       12 rounds — the round count BLAKE2b itself performs
+       for one compression — charges exactly 12;
+     - rounds is a uint32 read from those 4 bytes, so its
+       range is 0 to 4,294,967,295; anything wider cannot
+       occur in a real input and is refused here.
+   There is no EIP-2929 access term: like the other
+   precompiles, this one starts warm. This prices the
+   precompile's OWN charge only: the CALL or STATICCALL that
+   invokes it charges its own terms separately (the CALL
+   calculator above). Deliberate contrasts: unlike the
+   original four (base + per-word) and the pairing check
+   (base + per-pair), this price reads a field INSIDE the
+   input, not its length, and the state, message, counters
+   and flag move no term. An input that is not exactly
+   213 bytes, or whose final flag is not 0 or 1, fails for
+   a non-gas reason and is not modelled — the calculator
+   takes the rounds count directly, as the other precompile
+   tools take their priced quantity. */
+const BLAKE2F_MAX_ROUNDS = 4294967295n; /* 2^32 - 1 */
+function blake2fGasCalc(roundsStr) {
+  if (typeof roundsStr !== "string") return null;
+  const s = roundsStr.trim();
+  if (!/^\d+$/.test(s)) return null;
+  const rounds = BigInt(s);
+  if (rounds > BLAKE2F_MAX_ROUNDS) return null;
+  return {
+    precompile: "blake2f", address: "0x0000000000000000000000000000000000000009",
+    rounds: rounds.toString(), perRoundGas: "1", inputBytes: "213",
+    totalGas: rounds.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -5069,6 +5116,19 @@ if (typeof document !== "undefined") {
         : `${r.precompile} precompile (${r.address}) gas: ${r.totalGas} total — a flat charge at any input: the defined input is ${r.inputBytes} bytes, read as zero-padded if short, and the pair count is never read. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* BLAKE2f precompile gas */
+    const b2Btn = document.getElementById("b2-btn");
+    if (b2Btn) b2Btn.addEventListener("click", () => {
+      const r = blake2fGasCalc(
+        document.getElementById("b2-rounds").value);
+      const el = document.getElementById("b2-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the rounds count is a decimal count from 0 to 4294967295 (the uint32 in the input's first 4 bytes).";
+        return;
+      }
+      el.textContent = `BLAKE2f precompile (${r.address}) gas: ${r.totalGas} total — ${r.rounds} round(s) at ${r.perRoundGas} gas per round, over its fixed ${r.inputBytes}-byte input. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -5082,5 +5142,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

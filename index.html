@@ -774,6 +774,21 @@
     </div>
 
     <div class="tool">
+      <h3>Modular arithmetic opcode calculator — ADDMOD / MULMOD</h3>
+      <p>Two Frontier opcodes that do modular arithmetic the way cryptography needs it: <code>ADDMOD</code> (<code>0x08</code>) pops a, b and a modulus N and pushes <code>(a + b) mod N</code>, and <code>MULMOD</code> (<code>0x09</code>) pushes <code>(a × b) mod N</code> — each at a flat 8 gas, the Mid tier. The defining property is precision: the intermediate sum or product is computed at <em>full precision</em> and is <strong>not</strong> reduced mod 2<sup>256</sup> before the modulus is taken — an ADDMOD sum can reach 2<sup>257</sup> − 2 and a MULMOD product 2<sup>512</sup> − 2<sup>257</sup> + 1, widths no stack word could hold. That is the whole point of the pair, and the trap for reimplementations: a calculator that wraps the product to a word first turns the prefilled call below into 2<sup>256</sup> mod 2<sup>256</sup> = 0, where the opcode's true answer is 38 (because 2<sup>255</sup> ≡ 19 mod (2<sup>255</sup> − 19), so 2<sup>256</sup> ≡ 38). A modulus of 0 pushes 0 whatever a and b are — the raw opcode's rule, matching <code>MOD</code> and <code>DIV</code> by zero; note that Solidity's <code>addmod</code> / <code>mulmod</code> built-in functions, which compile to exactly these opcodes, check for a zero modulus first and revert with Panic(0x12) instead — that check is the language's, not the opcode's. The operands are read unsigned (there is no signed variant; <code>SMOD</code> is a separate opcode), a and b are interchangeable, and N is the third, deepest of the three popped words. These are the standard way to do arithmetic over a large prime field — curve math, RSA-style exponentiation support — without a wide intermediate overflowing. The prefilled call is the precision case: MULMOD of 2<sup>255</sup> and 2 modulo 2<sup>255</sup> − 19 (the Curve25519 field prime) pushes exactly 38. Honest scope: a, b and N are values <em>you</em> supply, in decimal or 0x hex, not execution state this page reads; anything wider than a 256-bit word is refused rather than wrapped, because the stack words the opcodes consume cannot hold it (the intermediate, by contrast, is never wrapped — that asymmetry is the feature). Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="mod-op">Opcode (each pops a, then b, then the modulus N)</label>
+      <select id="mod-op"><option value="addmod">ADDMOD (0x08) — (a + b) mod N</option><option value="mulmod" selected>MULMOD (0x09) — (a × b) mod N</option></select>
+      <label for="mod-a">a (one 256-bit value, decimal or 0x hex)</label>
+      <input id="mod-a" type="text" inputmode="numeric" spellcheck="false" value="57896044618658097711785492504343953926634992332820282019728792003956564819968">
+      <label for="mod-b">b (one 256-bit value, decimal or 0x hex)</label>
+      <input id="mod-b" type="text" inputmode="numeric" spellcheck="false" value="2">
+      <label for="mod-n">Modulus N (one 256-bit value, decimal or 0x hex — 0 pushes 0)</label>
+      <input id="mod-n" type="text" inputmode="numeric" spellcheck="false" value="57896044618658097711785492504343953926634992332820282019728792003956564819949">
+      <button id="mod-btn" type="button">Calculate modular result &amp; gas</button>
+      <p id="mod-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1107,6 +1122,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=67"></script>
+<script src="app.js?v=68"></script>
 </body>
 </html>

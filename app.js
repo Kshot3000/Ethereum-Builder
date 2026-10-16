@@ -4582,6 +4582,70 @@ function shiftCalc(opStr, shiftStr, valueStr) {
   };
 }
 
+/* Modular arithmetic opcodes — ADDMOD (0x08) and
+   MULMOD (0x09), Frontier opcodes, restated in my own
+   words and cross-checked this run against several
+   independent opcode references (bytes 0x08/0x09, flat
+   8 gas each):
+     - each pops three words — a, b and the modulus N —
+       and pushes (a + b) mod N (ADDMOD) or (a x b) mod N
+       (MULMOD); a and b are interchangeable, N is the
+       third (deepest) of the three;
+     - the intermediate is computed at FULL precision:
+       the sum or product is NOT reduced mod 2^256
+       before the modulus is taken, so an ADDMOD sum can
+       reach 2^257 - 2 and a MULMOD product 2^512 - 2^257
+       + 1 — this is the entire point of the pair, and
+       the trap: (2^255 x 2) mod (2^255 - 19) is 38 at
+       full precision, but a calculator that wraps the
+       product to a word first gets 2^256 mod 2^256 = 0
+       and answers 0. BigInt arithmetic is exact at any
+       width, so the direct formula below IS the full-
+       precision computation;
+     - a modulus of 0 pushes 0, whatever a and b are —
+       the raw opcode's rule, matching MOD/DIV by zero.
+       (Solidity's addmod / mulmod built-in functions
+       check for a zero modulus first and revert with
+       Panic(0x12); that check is the language's, not
+       the opcode's, and this calculator prices and
+       computes the opcode.)
+     - the charge is a flat 8 — the Mid tier — with no
+       other term: the inputs are stack words, nothing
+       touches memory, an account or storage.
+   These are what Solidity's addmod(a, b, N) / mulmod(a,
+   b, N) built-ins compile to, and the standard way to do
+   modular arithmetic over a large prime (curve fields,
+   RSA-style math) without a 512-bit intermediate
+   overflowing. The operands are read unsigned — there
+   is no signed variant; SMOD is a different opcode.
+   All three inputs are single 256-bit words YOU supply,
+   in decimal or 0x hex; anything malformed, negative,
+   fractional, or wider than 2^256 - 1 is refused rather
+   than wrapped, as is an opcode name other than
+   addmod / mulmod. */
+const MODMATH_GAS = 8n;
+const MODMATH_OPCODE_BYTES = { addmod: "0x08", mulmod: "0x09" };
+function modMathCalc(opStr, aStr, bStr, nStr) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(MODMATH_OPCODE_BYTES, op)) return null;
+  const a = parseWord256(aStr);
+  const b = parseWord256(bStr);
+  const n = parseWord256(nStr);
+  if (a === null || b === null || n === null) return null;
+  const result = n === 0n ? 0n : (op === "addmod" ? (a + b) % n : (a * b) % n);
+  return {
+    opcode: op, opcodeByte: MODMATH_OPCODE_BYTES[op],
+    a: a.toString(),
+    b: b.toString(),
+    modulus: n.toString(),
+    zeroModulus: n === 0n ? "true" : "false",
+    result: result.toString(),
+    resultHex: "0x" + result.toString(16).padStart(64, "0"),
+    totalGas: MODMATH_GAS.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -5818,6 +5882,27 @@ if (typeof document !== "undefined") {
       el.textContent = `${name} (${r.opcodeByte}): ${r.value} (${r.valueHex}) ${how} by ${r.shift} bit(s) pushes ${r.result} (${r.resultHex}) — read as a signed 256-bit integer, ${r.signedResult}.${sat} Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
     });
 
+    /* Modular arithmetic opcodes ADDMOD / MULMOD */
+    const modBtn = document.getElementById("mod-btn");
+    if (modBtn) modBtn.addEventListener("click", () => {
+      const r = modMathCalc(
+        document.getElementById("mod-op").value,
+        document.getElementById("mod-a").value,
+        document.getElementById("mod-b").value,
+        document.getElementById("mod-n").value);
+      const el = document.getElementById("mod-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter a, b and the modulus N each as one 256-bit word, decimal or 0x hex (0 up to 2^256 − 1).";
+        return;
+      }
+      const name = r.opcode.toUpperCase();
+      const expr = r.opcode === "addmod" ? `(${r.a} + ${r.b}) mod ${r.modulus}` : `(${r.a} × ${r.b}) mod ${r.modulus}`;
+      const zero = r.zeroModulus === "true"
+        ? " The modulus is 0, so the opcode pushes 0 whatever a and b are (Solidity's built-in functions check first and revert instead — that check is the language's, not the opcode's)."
+        : " The intermediate sum or product is computed at full precision — it is not reduced mod 2^256 before the modulus is taken.";
+      el.textContent = `${name} (${r.opcodeByte}): ${expr} pushes ${r.result} (${r.resultHex}).${zero} Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -5831,5 +5916,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

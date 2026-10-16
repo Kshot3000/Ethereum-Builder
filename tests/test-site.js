@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=61"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=62"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -1863,7 +1863,7 @@ check("compound exit-market tool section present in index.html", html.includes("
 check("modexp controls labelled in index.html",
   ["mxg-base-len", "mxg-exp-len", "mxg-mod-len", "mxg-exp-head"]
     .every(id => html.includes(`for="${id}"`)));
-check("modexp gas matches the Python oracle under both schedules (prefill and large nagydani anchors, square minimums, zero exponent and exponent 1 floored to iteration 1, empty call, the 32/33-byte complexity boundary, a full 32-byte head at iteration 255, a 33-byte exponent under both per-byte rates, a zero head contributing -1, a 64-byte exponent, odd asymmetric lengths, tiny operands with a maximal head, and 100,000-byte lengths)",
+check("modexp gas matches the Python oracle under both schedules (prefill and large nagydani anchors, square minimums, zero exponent and exponent 1 floored to iteration 1, empty call, the 32/33-byte complexity boundary, a full 32-byte head at iteration 255, a 33-byte exponent under both per-byte rates, a zero head contributing -1, a 64-byte exponent, odd asymmetric lengths, tiny operands with a maximal head, and 100,000-byte lengths — whose EIP-7883 price is null under the EIP-7823 cap below)",
   (() => { const V = [
     [["64", "3", "64", "0x010001"], ["64", "16", "341", "128", "16", "2048"]],
     [["64", "1", "64", "0x02"], ["64", "1", "200", "128", "1", "500"]],
@@ -1879,14 +1879,48 @@ check("modexp gas matches the Python oracle under both schedules (prefill and la
     [["1024", "3", "1024", "0x010001"], ["16384", "16", "87381", "32768", "16", "524288"]],
     [["100", "7", "55", "0xabcdef01234567"], ["169", "55", "3098", "338", "55", "18590"]],
     [["8", "32", "8", "0x" + "ff".repeat(32)], ["1", "255", "200", "16", "255", "4080"]],
-    [["100000", "40", "99999", "0x" + "ab".repeat(32)], ["156250000", "319", "16614583333", "312500000", "383", "119687500000"]]
+    [["100000", "40", "99999", "0x" + "ab".repeat(32)], ["156250000", "319", "16614583333", "312500000", "383", null]]
   ]; return V.every(([inp, exp]) => { const r = app.modexpGas(...inp);
     return r !== null && r.complexity2565 === exp[0] && r.iteration2565 === exp[1] && r.gas2565 === exp[2] &&
-      r.complexity7883 === exp[3] && r.iteration7883 === exp[4] && r.gas7883 === exp[5]; }); })());
+      r.complexity7883 === exp[3] && r.iteration7883 === exp[4] && r.gas7883 === exp[5] &&
+      r.capped7823 === (exp[5] === null); }); })());
 check("modexp: prefilled page values reproduce the nagydani_1_pow0x10001 row of the EIPs' test tables (341 under EIP-2565, 2,048 under EIP-7883)",
   (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
     const r = app.modexpGas(g("mxg-base-len"), g("mxg-exp-len"), g("mxg-mod-len"), g("mxg-exp-head"));
     return r !== null && r.gas2565 === "341" && r.gas7883 === "2048" && r.iteration2565 === "16" && r.iteration7883 === "16"; })());
+/* EIP-7823 cap — expected values produced by an independent
+   pure-Python transcription of the cap layered on the pricing
+   (hidden_files/oracle-modexp-7823.py), itself anchored
+   in-script on hand values before any vector was generated:
+   exactly 1,024 in every field is NOT capped (the nagydani_5
+   prices 87,381 / 524,288), 1,025 in the base or modulus alone
+   is capped with an EIP-2565 price of 88,752 (words 129,
+   complexity 16,641, iteration 16), and 1,025 in the exponent
+   alone is capped at 174,912 (complexity 64, iteration 8,199).
+   A capped call has gas7883 null — the precompile stops,
+   returns an error and consumes all gas forwarded to it — and
+   capped7823 true, while its EIP-2565 price is still quoted. */
+check("modexp EIP-7823 cap matches the Python oracle (prefill and the empty call uncapped, exactly 1,024 in one or all fields uncapped, 1,025 in each field alone capped, all three over capped, and the 100,000-byte lengths capped with the old schedule's price intact)",
+  (() => { const V = [
+    [["64", "3", "64", "0x010001"], ["341", "2048", false]],
+    [["1024", "3", "1024", "0x010001"], ["87381", "524288", false]],
+    [["1024", "1024", "1024", "0x" + "ff".repeat(32)], ["44733781", "528449536", false]],
+    [["1025", "3", "64", "0x010001"], ["88752", null, true]],
+    [["64", "1025", "64", "0x80" + "00".repeat(31)], ["174912", null, true]],
+    [["64", "3", "1025", "0x010001"], ["88752", null, true]],
+    [["1025", "1025", "1025", "0x" + "00".repeat(32)], ["44059821", null, true]],
+    [["100000", "40", "99999", "0x" + "ab".repeat(32)], ["16614583333", null, true]],
+    [["0", "0", "0", "0x"], ["200", "500", false]]
+  ]; return V.every(([inp, exp]) => { const r = app.modexpGas(...inp);
+    return r !== null && r.gas2565 === exp[0] && r.gas7883 === exp[1] && r.capped7823 === exp[2]; }); })());
+check("modexp: the EIP-7823 boundary is per length at exactly 1,024 bytes — 1,024 allowed in any single field, 1,025 refused a Fusaka price in any single field",
+  (() => { const H3 = "0x010001", H32 = "0x" + "ff".repeat(32);
+    return app.modexpGas("1024", "3", "64", H3).capped7823 === false &&
+      app.modexpGas("64", "1024", "64", H32).capped7823 === false &&
+      app.modexpGas("64", "3", "1024", H3).capped7823 === false &&
+      app.modexpGas("1025", "3", "64", H3).gas7883 === null &&
+      app.modexpGas("64", "1025", "64", H32).gas7883 === null &&
+      app.modexpGas("64", "3", "1025", H3).gas7883 === null; })());
 check("modexp refuses malformed lengths and a head whose byte count is not exactly min(exponent length, 32)",
   app.modexpGas("-1", "3", "64", "0x010001") === null &&
   app.modexpGas("64", "3.5", "64", "0x010001") === null &&

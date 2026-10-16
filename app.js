@@ -3099,10 +3099,20 @@ function compoundExitMarket(balanceStr, owedStr, factorStr, rateStr, priceStr, i
    else is refused. This prices a call under each schedule's
    formula — which schedule a given chain applies is that
    chain's fork state (Ethereum mainnet applies EIP-7883
-   since Fusaka), the EIP-7823 input-length caps that
-   accompany the Fusaka schedule are a validity rule, not part
-   of the pricing, and are not modelled, and no chain is
-   queried. */
+   since Fusaka), and no chain is queried.
+   The Fusaka schedule also carries a validity cap the old
+   schedule never had (EIP-7823, Final, a core EIP of the
+   Fusaka fork): each of the three lengths must be at most
+   1,024 bytes (8,192 bits), and if any one exceeds that the
+   precompile stops, returns an error and consumes all gas
+   forwarded to it — so under Fusaka there is no finite
+   EIP-7883 price for such a call, and this function reports
+   it instead: capped7823 is true and gas7883 is null (the
+   EIP-7883 complexity and iteration values are still the
+   formula's, for a call that cannot run). The cap is per
+   length, not on the total input, and exactly 1,024 is
+   allowed. The EIP-2565 schedule had no cap, so its price
+   is still quoted at any length. */
 function modexpGas(baseLenStr, expLenStr, modLenStr, expHeadHex) {
   const baseLen = v2ParseUint(baseLenStr);
   const expLen = v2ParseUint(expLenStr);
@@ -3131,9 +3141,11 @@ function modexpGas(baseLenStr, expLenStr, modLenStr, expHeadHex) {
   const iteration7883 = iter(16n);
   const raw7883 = complexity7883 * iteration7883;
   const gas7883 = raw7883 < 500n ? 500n : raw7883;
+  const capped7823 = baseLen > 1024n || expLen > 1024n || modLen > 1024n;
   return {
     complexity2565: complexity2565.toString(), iteration2565: iteration2565.toString(), gas2565: gas2565.toString(),
-    complexity7883: complexity7883.toString(), iteration7883: iteration7883.toString(), gas7883: gas7883.toString()
+    complexity7883: complexity7883.toString(), iteration7883: iteration7883.toString(),
+    gas7883: capped7823 ? null : gas7883.toString(), capped7823
   };
 }
 
@@ -5069,7 +5081,9 @@ if (typeof document !== "undefined") {
         el.textContent = "Check the inputs: the three lengths are whole numbers of bytes, and the exponent head is hex of exactly the first min(exponent length, 32) bytes of the exponent — the whole exponent when it is at most 32 bytes, and 0x alone when its length is 0.";
         return;
       }
-      el.textContent = `ModExp gas — under EIP-2565 (Berlin–Pectra): ${r.gas2565} gas (multiplication complexity ${r.complexity2565}, iteration count ${r.iteration2565}). Under EIP-7883 (Fusaka, the current mainnet schedule): ${r.gas7883} gas (complexity ${r.complexity7883}, iteration count ${r.iteration7883}). Computed locally from the lengths and exponent head you gave — which schedule applies is the chain's fork state, and no chain is queried.`;
+      el.textContent = r.capped7823
+        ? `ModExp gas — under EIP-2565 (Berlin–Pectra): ${r.gas2565} gas (multiplication complexity ${r.complexity2565}, iteration count ${r.iteration2565}). Under the Fusaka schedule (EIP-7883 with EIP-7823, the current mainnet schedule): no gas price — at least one of the three lengths exceeds EIP-7823's cap of 1,024 bytes per length, so the precompile stops, returns an error and consumes all gas forwarded to it. The old schedule had no such cap, which is why its price is still shown. Computed locally from the lengths and exponent head you gave — which schedule applies is the chain's fork state, and no chain is queried.`
+        : `ModExp gas — under EIP-2565 (Berlin–Pectra): ${r.gas2565} gas (multiplication complexity ${r.complexity2565}, iteration count ${r.iteration2565}). Under EIP-7883 (Fusaka, the current mainnet schedule): ${r.gas7883} gas (complexity ${r.complexity7883}, iteration count ${r.iteration7883}). Every length is within EIP-7823's Fusaka cap of 1,024 bytes per length. Computed locally from the lengths and exponent head you gave — which schedule applies is the chain's fork state, and no chain is queried.`;
     });
 
     /* SSTORE gas */

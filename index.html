@@ -739,6 +739,17 @@
     </div>
 
     <div class="tool">
+      <h3>EXP opcode calculator — exponentiation (EIP-160)</h3>
+      <p>The arithmetic opcode the calculators above cannot price with a flat tier: <code>EXP</code> (<code>0x0a</code>) pops a base and an exponent and pushes <code>base ^ exponent mod 2<sup>256</sup></code> — the stack word wraps, so 2<sup>256</sup> itself pushes 0, and 0<sup>0</sup> pushes 1, as an empty product does. Its charge is the EVM's classic dynamic price: 10 flat, plus a per-byte term on the <em>exponent's byte length</em> — the number of bytes the exponent's value needs, so an exponent of 0 needs none and costs the flat 10 alone, and every 256-fold growth of the exponent adds one byte. <a href="https://eips.ethereum.org/EIPS/eip-160">EIP-160</a> (Spurious Dragon, block 2,675,000) raised that term from 10 to 50 per byte after benchmarking showed the opcode underpriced several-fold; both prices are shown. The <em>base</em> moves no term at all — a 32-byte base costs exactly what a 1-byte base costs at the same exponent — and neither operand is written to memory, so no expansion, access or refund term exists. Like the CLZ calculator above, the result is the point, so this computes both the wrapped power (by square-and-multiply, reducing mod 2<sup>256</sup> at every step) and the charge. The prefilled pair — base 3, exponent 1,000 — pushes 93187681627927880847546880678405676082649356936463392727377489677428983356193 and costs exactly 110: the exponent needs 2 bytes, at 50 each, plus the flat 10 (before EIP-160 it cost 30). Honest scope: the base and exponent are values <em>you</em> supply, in decimal or 0x hex, not execution state this page reads; anything wider than a 256-bit word is refused rather than wrapped on input, because the stack words the opcode consumes cannot hold it (the <em>result</em> still wraps, as the opcode's does). Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="exp-base">Base (one 256-bit value, decimal or 0x hex — the base moves no gas term)</label>
+      <input id="exp-base" type="text" inputmode="numeric" spellcheck="false" value="3">
+      <label for="exp-exponent">Exponent (one 256-bit value, decimal or 0x hex — its byte length sets the per-byte term)</label>
+      <input id="exp-exponent" type="text" inputmode="numeric" spellcheck="false" value="1000">
+      <button id="exp-btn" type="button">Calculate EXP result &amp; gas</button>
+      <p id="exp-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1072,6 +1083,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=64"></script>
+<script src="app.js?v=65"></script>
 </body>
 </html>

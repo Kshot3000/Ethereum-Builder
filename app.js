@@ -4384,6 +4384,71 @@ function clzCalc(valueStr) {
   };
 }
 
+/* EXP (0x0a) — exponentiation, the EVM's one dynamic-priced
+   arithmetic opcode, priced by the EXPONENT's byte length:
+     - EXP pops a base and an exponent and pushes
+       base^exponent mod 2^256 — the stack word wraps, so
+       2^256 itself pushes 0; 0^0 pushes 1, as an empty
+       product does;
+     - the result is computed here by square-and-multiply,
+       reducing mod 2^256 at every step — at most 256
+       squarings for any 256-bit exponent, so no input can
+       make the loop long;
+     - the charge is 10 plus a per-byte term on the
+       exponent's byte length — the number of bytes its
+       value needs, ceil(bit length / 8), and 0 bytes for
+       an exponent of 0, which therefore costs the flat 10;
+     - the per-byte term is 50 since EIP-160 (Spurious
+       Dragon, block 2,675,000) raised it from 10, after
+       benchmarks showed EXP underpriced by about 4–8x —
+       the legacy 10-per-byte price is returned alongside
+       as legacyGas for the contrast. The BASE moves no
+       term: a 32-byte base costs exactly what a 1-byte
+       base costs at the same exponent.
+   Both inputs are single 256-bit words YOU supply, in
+   decimal or 0x hex; anything malformed, negative,
+   fractional, or wider than 2^256 - 1 is refused rather
+   than wrapped, because the stack words cannot hold it. */
+function parseWord256(str) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  let v;
+  if (/^0[xX]/.test(s)) {
+    const h = s.slice(2);
+    if (!/^[0-9a-fA-F]+$/.test(h) || h.length > 128) return null;
+    v = BigInt("0x" + h);
+  } else {
+    if (!/^\d+$/.test(s) || s.length > 128) return null;
+    v = BigInt(s);
+  }
+  return v > UINT256_MAX ? null : v;
+}
+function expCalc(baseStr, exponentStr) {
+  const base = parseWord256(baseStr);
+  const exponent = parseWord256(exponentStr);
+  if (base === null || exponent === null) return null;
+  const modulus = 1n << 256n;
+  let result = 1n, b = base % modulus, e = exponent;
+  while (e > 0n) {
+    if (e & 1n) result = (result * b) % modulus;
+    b = (b * b) % modulus;
+    e >>= 1n;
+  }
+  const exponentBytes = exponent === 0n ? 0n : BigInt((exponent.toString(2).length + 7) >> 3);
+  return {
+    opcode: "exp", opcodeByte: "0x0a",
+    base: base.toString(),
+    baseHex: "0x" + base.toString(16).padStart(64, "0"),
+    exponent: exponent.toString(),
+    exponentHex: "0x" + exponent.toString(16).padStart(64, "0"),
+    exponentBytes: exponentBytes.toString(),
+    result: result.toString(),
+    resultHex: "0x" + result.toString(16).padStart(64, "0"),
+    totalGas: (10n + 50n * exponentBytes).toString(),
+    legacyGas: (10n + 10n * exponentBytes).toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -5564,6 +5629,20 @@ if (typeof document !== "undefined") {
         : `CLZ (${r.opcodeByte}) of ${r.value} (${r.valueHex}): ${r.leadingZeros} leading zero bits — the word's bit length is ${r.bitLength} and its highest set bit is bit ${r.highestSetBit}, so the count is also 255 − floor(log2(value)). Gas: ${r.totalGas} — a flat charge, the MUL tier, with no other term. Computed locally from the value you gave — no chain is queried.`;
     });
 
+    /* EXP opcode (exponentiation, EIP-160 pricing) */
+    const expBtn = document.getElementById("exp-btn");
+    if (expBtn) expBtn.addEventListener("click", () => {
+      const r = expCalc(
+        document.getElementById("exp-base").value,
+        document.getElementById("exp-exponent").value);
+      const el = document.getElementById("exp-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter the base and the exponent each as one 256-bit word, decimal or 0x hex (0 up to 2^256 − 1).";
+        return;
+      }
+      el.textContent = `EXP (${r.opcodeByte}): ${r.base} ^ ${r.exponent} mod 2^256 = ${r.result} (${r.resultHex}) — the stack word wraps, as the EVM's does. Gas: ${r.totalGas} — 10 flat + 50 per byte of the exponent, and the exponent ${r.exponent} needs ${r.exponentBytes} byte(s) (before EIP-160 raised the per-byte term from 10, this cost ${r.legacyGas}). The base moves no term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -5577,5 +5656,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

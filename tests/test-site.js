@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=64"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=65"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -3199,6 +3199,69 @@ check("clz refuses a malformed, negative, fractional, empty, non-string or over-
   app.clzCalc("0x10000000000000000000000000000000000000000000000000000000000000000") === null &&
   app.clzCalc("115792089237316195423570985008687907853269984665640564039457584007913129639935") !== null);
 check("clz tool section present in index.html", html.includes("clz-btn") && html.includes("CLZ opcode calculator"));
+
+/* EXP opcode — expected values produced by an independent
+   pure-Python transcription (hidden_files/oracle-exp.py):
+   EXP at 0x0a pushes base^exponent mod 2^256 (0^0 = 1) and
+   costs 10 + 50 per byte of the exponent since EIP-160
+   (Spurious Dragon) raised the per-byte term from 10; the
+   exponent's byte length is ceil(bit length / 8), 0 bytes
+   for an exponent of 0. The oracle is anchored in-script
+   on hand values (exponent 0 at 10 with result 1 even for
+   base 0, 2^255 exact, 2^256 wrapping to 0, a 32-byte
+   exponent at 1610 / 330 legacy). Vectors are
+   [base, exponent] -> result fields. */
+check("exp controls labelled in index.html",
+  ["exp-base", "exp-exponent"].every(id => html.includes(`for="${id}"`)));
+check("exp matches the Python oracle",
+  (() => { const V = [
+    [["0", "0"], ["exp", "0x0a", "0", "0", "0", "1", "0x0000000000000000000000000000000000000000000000000000000000000001", "10", "10"]],
+    [["0", "5"], ["exp", "0x0a", "0", "5", "1", "0", "0x0000000000000000000000000000000000000000000000000000000000000000", "60", "20"]],
+    [["1", "115792089237316195423570985008687907853269984665640564039457584007913129639935"], ["exp", "0x0a", "1", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "32", "1", "0x0000000000000000000000000000000000000000000000000000000000000001", "1610", "330"]],
+    [["5", "0"], ["exp", "0x0a", "5", "0", "0", "1", "0x0000000000000000000000000000000000000000000000000000000000000001", "10", "10"]],
+    [["7", "1"], ["exp", "0x0a", "7", "1", "1", "7", "0x0000000000000000000000000000000000000000000000000000000000000007", "60", "20"]],
+    [["2", "8"], ["exp", "0x0a", "2", "8", "1", "256", "0x0000000000000000000000000000000000000000000000000000000000000100", "60", "20"]],
+    [["2", "255"], ["exp", "0x0a", "2", "255", "1", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0x8000000000000000000000000000000000000000000000000000000000000000", "60", "20"]],
+    [["2", "256"], ["exp", "0x0a", "2", "256", "2", "0", "0x0000000000000000000000000000000000000000000000000000000000000000", "110", "30"]],
+    [["3", "10"], ["exp", "0x0a", "3", "10", "1", "59049", "0x000000000000000000000000000000000000000000000000000000000000e6a9", "60", "20"]],
+    [["3", "1000"], ["exp", "0x0a", "3", "1000", "2", "93187681627927880847546880678405676082649356936463392727377489677428983356193", "0xce065bd2a048f32939dc42ec08348318c4940c56f7867dbe5616937bd3b85b21", "110", "30"]],
+    [["10", "18"], ["exp", "0x0a", "10", "18", "1", "1000000000000000000", "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000", "60", "20"]],
+    [["65537", "3"], ["exp", "0x0a", "65537", "3", "1", "281487861809153", "0x0000000000000000000000000000000000000000000000000001000300030001", "60", "20"]],
+    [["255", "255"], ["exp", "0x0a", "255", "255", "1", "64946385749017250832482072853933863069726291388589506484671647877697625915135", "0x8f965a06da0ac41dcb3a34f1d8ab7d8fee620a94faa42c395997756b007ffeff", "60", "20"]],
+    [["256", "256"], ["exp", "0x0a", "256", "256", "2", "0", "0x0000000000000000000000000000000000000000000000000000000000000000", "110", "30"]],
+    [["123456789", "987654321"], ["exp", "0x0a", "123456789", "987654321", "4", "108193848091576442434083826085831592274176510102200999833973355556785479198293", "0xef338c441402352203a3c9fdab43a429961877f2904f5bce2591a6d5dcaba655", "210", "50"]],
+    [["115792089237316195423570985008687907853269984665640564039457584007913129639935", "2"], ["exp", "0x0a", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "2", "1", "1", "0x0000000000000000000000000000000000000000000000000000000000000001", "60", "20"]],
+    [["115792089237316195423570985008687907853269984665640564039457584007913129639935", "3"], ["exp", "0x0a", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "3", "1", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "60", "20"]],
+    [["2", "115792089237316195423570985008687907853269984665640564039457584007913129639935"], ["exp", "0x0a", "2", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "32", "0", "0x0000000000000000000000000000000000000000000000000000000000000000", "1610", "330"]],
+    [["1000000000000000000", "65537"], ["exp", "0x0a", "1000000000000000000", "65537", "3", "0", "0x0000000000000000000000000000000000000000000000000000000000000000", "160", "40"]],
+    [["3735928559", "51966"], ["exp", "0x0a", "3735928559", "51966", "2", "112673141469545933293452402945649320508469021849853425784706512762873689395425", "0xf91abcf58fa6b37409cef68caaf1f7706dd56bbbe334d1e1b63469fce90bd0e1", "110", "30"]],
+    [["7", "57896044618658097711785492504343953926634992332820282019728792003956564819968"], ["exp", "0x0a", "7", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "32", "1", "0x0000000000000000000000000000000000000000000000000000000000000001", "1610", "330"]],
+    [["9", "115792089237316195423570985008687907853269984665640564039457584007913129639934"], ["exp", "0x0a", "9", "115792089237316195423570985008687907853269984665640564039457584007913129639934", "32", "84342385987674759629514668092747982263492951793491275041086388351442896898225", "0xba781948b0fcd6e9e06522c3f35ba781948b0fcd6e9e06522c3f35ba781948b1", "1610", "330"]],
+  ]; return V.every(([inp, exp]) => { const r = app.expCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.base, r.exponent, r.exponentBytes, r.result, r.resultHex, r.totalGas, r.legacyGas].join(",") === exp.join(","); }); })());
+check("exp: prefilled page values (base 3, exponent 1000) push the oracle result at exactly 110, legacy 30",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const r = app.expCalc(g("exp-base"), g("exp-exponent"));
+    return r !== null && r.result === "93187681627927880847546880678405676082649356936463392727377489677428983356193" &&
+      r.exponentBytes === "2" && r.totalGas === "110" && r.legacyGas === "30"; })());
+check("exp: the base moves no gas term, the exponent byte boundary moves it by 50, and 0^0 is 1",
+  app.expCalc("2", "255").totalGas === app.expCalc("115792089237316195423570985008687907853269984665640564039457584007913129639935", "255").totalGas &&
+  app.expCalc("2", "255").totalGas === "60" && app.expCalc("2", "256").totalGas === "110" &&
+  app.expCalc("0", "0").result === "1" && app.expCalc("2", "256").result === "0");
+check("exp: decimal and hex forms agree, and surrounding spaces are trimmed",
+  app.expCalc("0x3", "0x3e8").result === app.expCalc("3", "1000").result &&
+  app.expCalc(" 3 ", " 1000 ").totalGas === "110");
+check("exp refuses a malformed, negative, fractional, empty, non-string or over-256-bit base or exponent",
+  app.expCalc("abc", "2") === null &&
+  app.expCalc("2", "-1") === null &&
+  app.expCalc("1.5", "2") === null &&
+  app.expCalc("", "2") === null &&
+  app.expCalc("2", "0x") === null &&
+  app.expCalc(null, "2") === null &&
+  app.expCalc("2", 1000) === null &&
+  app.expCalc("115792089237316195423570985008687907853269984665640564039457584007913129639936", "2") === null &&
+  app.expCalc("2", "0x10000000000000000000000000000000000000000000000000000000000000000") === null);
+check("exp tool section present in index.html", html.includes("exp-btn") && html.includes("EXP opcode calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

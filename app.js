@@ -4511,6 +4511,77 @@ function signExtendCalc(byteIndexStr, valueStr) {
   };
 }
 
+/* Shift opcodes (EIP-145) — SHL (0x1b), SHR (0x1c) and
+   SAR (0x1d), the native bitwise shifts Constantinople
+   added, restated in my own words from the EIP's
+   specification and cross-checked this run against two
+   independent opcode/gas tables (bytes 0x1b-0x1d, flat 3
+   gas each):
+     - each pops the shift FIRST and then the value (the
+       operand order is swapped against most arithmetic
+       opcodes, deliberately, to fit shifting a value
+       already on the stack);
+     - SHL pushes (value x 2^shift) mod 2^256 — the word
+       wraps, bits shifted past bit 255 are lost;
+     - SHR pushes floor(value / 2^shift) — a logical
+       shift, zero-filled from the top;
+     - SAR reads the value as a SIGNED two's-complement
+       integer and pushes floor(signed / 2^shift),
+       re-encoded as a word — an arithmetic shift,
+       sign-filled from the top. The floor matters: SAR
+       rounds toward minus infinity, so SAR(-255, 1)
+       pushes -128, where the truncating SDIV(-255, 2)
+       would give -127 — SAR is NOT PUSH 2, EXP, SDIV;
+     - a shift of 256 or more saturates: SHL and SHR
+       push 0 whatever the value, SAR pushes 0 when the
+       value is non-negative and all-ones (-1) when it
+       is negative;
+     - the charge is a flat 3 — the verylow tier, on par
+       with ADD — with no other term: both inputs are
+       stack words, nothing touches memory, an account
+       or storage. Before these opcodes existed the
+       arithmetic workarounds cost about 35 each.
+   Solidity's <<, >> on unsigned types and >> on signed
+   types compile to exactly these, so the result is the
+   utility: the calculator computes the pushed word and
+   its signed reading, for whichever of the three the
+   caller picks. Both inputs are single 256-bit words
+   YOU supply, in decimal or 0x hex; anything malformed,
+   negative, fractional, or wider than 2^256 - 1 is
+   refused rather than wrapped, as is an opcode name
+   other than shl / shr / sar. */
+const SHIFT_GAS = 3n;
+const SHIFT_OPCODE_BYTES = { shl: "0x1b", shr: "0x1c", sar: "0x1d" };
+function shiftCalc(opStr, shiftStr, valueStr) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(SHIFT_OPCODE_BYTES, op)) return null;
+  const s = parseWord256(shiftStr);
+  const x = parseWord256(valueStr);
+  if (s === null || x === null) return null;
+  const signedValue = x >= (1n << 255n) ? x - (1n << 256n) : x;
+  const saturated = s >= 256n;
+  let result;
+  if (op === "shl") result = saturated ? 0n : ((x << s) & UINT256_MAX);
+  else if (op === "shr") result = saturated ? 0n : (x >> s);
+  else result = saturated
+    ? (signedValue < 0n ? UINT256_MAX : 0n)
+    : ((signedValue >> s) & UINT256_MAX);
+  const signedResult = result >= (1n << 255n) ? result - (1n << 256n) : result;
+  return {
+    opcode: op, opcodeByte: SHIFT_OPCODE_BYTES[op],
+    shift: s.toString(),
+    value: x.toString(),
+    valueHex: "0x" + x.toString(16).padStart(64, "0"),
+    signedValue: signedValue.toString(),
+    saturated: saturated ? "true" : "false",
+    result: result.toString(),
+    resultHex: "0x" + result.toString(16).padStart(64, "0"),
+    signedResult: signedResult.toString(),
+    totalGas: SHIFT_GAS.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -5721,6 +5792,32 @@ if (typeof document !== "undefined") {
         : `SIGNEXTEND (${r.opcodeByte}) at byte index ${r.byteIndex}: byte ${r.byteIndex} of ${r.value} (${r.valueHex}) has sign bit ${r.signBit}, so the ${r.extendedBytes} byte(s) above it are replaced with ${r.signBit === "1" ? "0xFF" : "0x00"} bytes, pushing ${r.result} (${r.resultHex}) — read as a signed integer, ${r.signedResult}. Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
     });
 
+    /* Shift opcodes SHL / SHR / SAR (EIP-145) */
+    const shiftBtn = document.getElementById("shift-btn");
+    if (shiftBtn) shiftBtn.addEventListener("click", () => {
+      const r = shiftCalc(
+        document.getElementById("shift-op").value,
+        document.getElementById("shift-amount").value,
+        document.getElementById("shift-value").value);
+      const el = document.getElementById("shift-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter the shift and the value each as one 256-bit word, decimal or 0x hex (0 up to 2^256 − 1).";
+        return;
+      }
+      const name = r.opcode.toUpperCase();
+      const how = r.opcode === "shl"
+        ? "shifted left, the word wrapping mod 2^256"
+        : r.opcode === "shr"
+          ? "shifted right with zero fill (a logical shift)"
+          : `read as the signed value ${r.signedValue} and shifted right with sign fill (an arithmetic shift, rounding toward minus infinity)`;
+      const sat = r.saturated === "true"
+        ? (r.opcode === "sar"
+          ? " A shift of 256 or more saturates: SAR pushes 0 for a non-negative value and all-ones (−1) for a negative one."
+          : " A shift of 256 or more saturates: the opcode pushes 0 whatever the value.")
+        : "";
+      el.textContent = `${name} (${r.opcodeByte}): ${r.value} (${r.valueHex}) ${how} by ${r.shift} bit(s) pushes ${r.result} (${r.resultHex}) — read as a signed 256-bit integer, ${r.signedResult}.${sat} Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -5734,5 +5831,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

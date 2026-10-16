@@ -761,6 +761,19 @@
     </div>
 
     <div class="tool">
+      <h3>Shift opcode calculator — SHL / SHR / SAR (EIP-145)</h3>
+      <p>The native bitwise shifts Constantinople added, because the EVM originally had none and the arithmetic workarounds cost about 35 gas each: <code>SHL</code> (<code>0x1b</code>), <code>SHR</code> (<code>0x1c</code>) and <code>SAR</code> (<code>0x1d</code>) each pop a shift and a value — in that order, shift first, swapped against most arithmetic opcodes — and push the value shifted by that many bits, at a flat 3 gas each, the verylow tier. The three differ in what fills the vacated end and in how the value is read. <code>SHL</code> shifts left and wraps mod 2<sup>256</sup>, so bits pushed past bit 255 are simply lost. <code>SHR</code> is the logical right shift: the value is read unsigned and zeros fill from the top. <code>SAR</code> is the arithmetic right shift: the value is read as a signed two's-complement integer and its sign bit fills from the top, which makes it a division by a power of two that rounds toward minus infinity — <code>SAR</code> of −255 by 1 pushes −128, where the truncating <code>SDIV</code> would give −127, so SAR is not just an <code>EXP</code>/<code>SDIV</code> pair. A shift of 256 or more saturates instead of wrapping or erroring: <code>SHL</code> and <code>SHR</code> push 0 whatever the value, and <code>SAR</code> pushes 0 for a non-negative value and all-ones (−1) for a negative one. These are the opcodes Solidity's <code>&lt;&lt;</code> and <code>&gt;&gt;</code> compile to — <code>&gt;&gt;</code> on a signed type is SAR — so the calculator computes the pushed word and its signed reading, not just the charge. The prefilled call is the sign-fill case: SAR by 4 of <code>0xffff…ff00</code>, the word for −256, pushes <code>0xffff…fff0</code>, read as −16. Honest scope: the shift and value are values <em>you</em> supply, in decimal or 0x hex, not execution state this page reads; anything wider than a 256-bit word is refused rather than wrapped, because the stack words the opcodes consume cannot hold it. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="shift-op">Opcode (the three EIP-145 shifts — each pops the shift first, then the value)</label>
+      <select id="shift-op"><option value="shl">SHL (0x1b) — shift left, wrapping</option><option value="shr">SHR (0x1c) — logical shift right, zero fill</option><option value="sar" selected>SAR (0x1d) — arithmetic shift right, sign fill</option></select>
+      <label for="shift-amount">Shift (one 256-bit value, decimal or 0x hex — 256 or more saturates)</label>
+      <input id="shift-amount" type="text" inputmode="numeric" spellcheck="false" value="4">
+      <label for="shift-value">Value (one 256-bit value, decimal or 0x hex — SAR reads it as a signed integer)</label>
+      <input id="shift-value" type="text" inputmode="numeric" spellcheck="false" value="0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff00">
+      <button id="shift-btn" type="button">Calculate shift result &amp; gas</button>
+      <p id="shift-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1094,6 +1107,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=66"></script>
+<script src="app.js?v=67"></script>
 </body>
 </html>

@@ -3658,6 +3658,46 @@ function sloadGasCalc(isCold) {
   };
 }
 
+/* Transient storage gas -- TLOAD / TSTORE (EIP-1153).
+   Cancun's transient storage is a per-contract word store
+   that lives only for one transaction: TLOAD (0x5c) reads
+   one 32-byte word of the executing contract's own transient
+   storage and TSTORE (0x5d) writes one, with the same stack
+   arguments and addressing as SLOAD / SSTORE. Under EIP-1153
+   (Final, CC0; rules paraphrased, constants cross-verified
+   this run against independent gas-cost references listing
+   both opcodes at exactly 100) each costs a flat 100 --
+   TLOAD priced as a warm SLOAD, TSTORE as a warm SSTORE of
+   an already-changed slot -- with NO cold price at all:
+   transient storage never touches disk or EIP-2929's
+   accessed sets, so a slot's first touch in the transaction
+   costs the same 100 as every later touch, an EIP-2930
+   access list cannot pre-warm it, and no refund is ever
+   earned (the store is discarded at the transaction's end
+   anyway; a frame's revert does undo that frame's transient
+   writes, as with persistent storage). There is no other
+   term: the value moved is a single stack word, never
+   written to memory, so no memory expansion applies, and
+   the value stored or read moves no term (an untouched
+   transient slot reads as 0 at the same price). TSTORE is
+   also exempt from SSTORE's EIP-2200 stipend guard, and a
+   TSTORE inside a static call fails for a non-gas reason
+   not modelled here (TLOAD is allowed there). Deliberate
+   contrasts: a cold SLOAD costs 2,100 (exactly 2,000 more),
+   a warm SLOAD agrees at 100, and an SSTORE can cost up to
+   20,000 plus the 2,100 cold surcharge with refund-counter
+   adjustments -- none of which exists here. Caution applied
+   while verifying: stale pre-Final drafts priced these
+   opcodes at 8 under different opcode numbers; the Final
+   text governs. */
+function transientGasCalc(opcode) {
+  if (!["TLOAD", "TSTORE"].includes(opcode)) return null;
+  return {
+    opcode, gas: "100",
+    totalGas: "100"
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4658,6 +4698,19 @@ if (typeof document !== "undefined") {
       el.textContent = `SLOAD gas: ${r.totalGas} — the whole cost is the ${r.accessGas} slot-access charge; the value read is a stack word, so no memory expansion or other term applies. Computed locally from the warmth you gave — the slot's value is not read and moves no term; no chain is queried.`;
     });
 
+    /* TLOAD / TSTORE transient storage gas */
+    const transBtn = document.getElementById("trans-btn");
+    if (transBtn) transBtn.addEventListener("click", () => {
+      const r = transientGasCalc(
+        document.getElementById("trans-op").value);
+      const el = document.getElementById("trans-out");
+      if (r === null) {
+        el.textContent = "Check the input: choose TLOAD or TSTORE.";
+        return;
+      }
+      el.textContent = `${r.opcode} gas: ${r.totalGas} — a flat charge with no cold price and no other term; the value moved is a stack word, so no memory expansion applies, and no refund is ever earned. Computed locally — transient storage is not read or written and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4671,5 +4724,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

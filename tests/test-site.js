@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=52"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=53"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2611,6 +2611,40 @@ check("sload refuses a non-boolean warmth flag (string, null, number, undefined)
   app.sloadGasCalc(0) === null &&
   app.sloadGasCalc(undefined) === null);
 check("sload tool section present in index.html", html.includes("sload-btn") && html.includes("SLOAD gas calculator"));
+
+/* Transient storage gas (TLOAD / TSTORE) — expected values
+   produced by an independent pure-Python transcription of
+   EIP-1153's pricing (hidden_files/oracle-transient-gas.py):
+   a flat 100 for both opcodes, no cold price, no other term.
+   The oracle is anchored in-script on hand values (both
+   opcodes at exactly 100 and agreeing, the flat price
+   equalling a warm SLOAD exactly, exactly 2,000 below a cold
+   SLOAD and 2,500 below a cold account access). Vectors are
+   [opcode] -> result. */
+check("transient controls labelled in index.html",
+  ["trans-op"].every(id => html.includes(`for="${id}"`)));
+check("transient gas matches the Python oracle (TLOAD and TSTORE)",
+  (() => { const V = [
+    [["TLOAD"], ["TLOAD", "100", "100"]],
+    [["TSTORE"], ["TSTORE", "100", "100"]]
+  ]; return V.every(([inp, exp]) => { const r = app.transientGasCalc(...inp);
+    return r !== null && [r.opcode, r.gas, r.totalGas].join(",") === exp.join(","); }); })());
+check("transient: prefilled page values (TLOAD) cost exactly 100, TSTORE agrees, equalling a warm SLOAD and sitting exactly 2,000 below a cold SLOAD",
+  (() => { const load = app.transientGasCalc("TLOAD");
+    const store = app.transientGasCalc("TSTORE");
+    return load !== null && store !== null && html.includes('id="trans-op"') && html.includes('<option value="TLOAD" selected>') &&
+      load.gas === "100" && load.totalGas === "100" && store.totalGas === "100" &&
+      load.totalGas === app.sloadGasCalc(false).totalGas &&
+      (BigInt(app.sloadGasCalc(true).totalGas) - BigInt(load.totalGas)).toString() === "2000" &&
+      (BigInt(app.accountAccessGasCalc("BALANCE", true).totalGas) - BigInt(store.totalGas)).toString() === "2500"; })());
+check("transient refuses an unknown or malformed opcode (persistent-storage names, wrong case, null, number, undefined)",
+  app.transientGasCalc("SLOAD") === null &&
+  app.transientGasCalc("SSTORE") === null &&
+  app.transientGasCalc("tload") === null &&
+  app.transientGasCalc(null) === null &&
+  app.transientGasCalc(100) === null &&
+  app.transientGasCalc(undefined) === null);
+check("transient tool section present in index.html", html.includes("trans-btn") && html.includes("Transient storage gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

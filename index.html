@@ -750,6 +750,17 @@
     </div>
 
     <div class="tool">
+      <h3>SIGNEXTEND opcode calculator — sign extension</h3>
+      <p>The opcode Solidity emits whenever a narrow signed type is widened: <code>SIGNEXTEND</code> (<code>0x0b</code>) pops a byte index <code>b</code> and a value <code>x</code> and pushes <code>x</code> re-read as a signed integer of <code>b + 1</code> bytes, widened to the full word. The sign it extends is the top bit of byte <code>b</code>, counting byte 0 as the <em>least</em> significant byte — the opposite end from the <code>BYTE</code> opcode. Every byte above byte <code>b</code> is replaced, with <code>0xFF</code> bytes when the sign is 1 and <code>0x00</code> bytes when it is 0, so on a positive sign the upper bytes are <em>cleared</em>, not left as they were: extending <code>0x100</code> at index 0 pushes 0, because its byte 0 is <code>0x00</code>. At an index of 31 or more there is no byte above the sign byte inside the word, so the value is pushed unchanged. The charge is a flat 5 gas, the <code>MUL</code> tier, with no other term: both inputs are stack words and nothing touches memory, an account or storage. Like the CLZ and EXP calculators above, the result is the point, so this computes the extended word and its signed two's-complement reading as well as the charge. The prefilled pair — index 0, value 128 (<code>0x80</code>) — is the <code>int8</code> value −128 widened: it pushes <code>0xffff…ff80</code>, read as −128. Honest scope: the index and value are values <em>you</em> supply, in decimal or 0x hex, not execution state this page reads; anything wider than a 256-bit word is refused rather than wrapped, because the stack words the opcode consumes cannot hold it. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="sext-index">Byte index (one 256-bit value, decimal or 0x hex — byte 0 is the least significant byte; 31 or more leaves the value unchanged)</label>
+      <input id="sext-index" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="sext-value">Value (one 256-bit value, decimal or 0x hex — its byte at the index supplies the sign)</label>
+      <input id="sext-value" type="text" inputmode="numeric" spellcheck="false" value="128">
+      <button id="sext-btn" type="button">Calculate SIGNEXTEND result &amp; gas</button>
+      <p id="sext-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1083,6 +1094,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=65"></script>
+<script src="app.js?v=66"></script>
 </body>
 </html>

@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=65"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=66"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -3262,6 +3262,71 @@ check("exp refuses a malformed, negative, fractional, empty, non-string or over-
   app.expCalc("115792089237316195423570985008687907853269984665640564039457584007913129639936", "2") === null &&
   app.expCalc("2", "0x10000000000000000000000000000000000000000000000000000000000000000") === null);
 check("exp tool section present in index.html", html.includes("exp-btn") && html.includes("EXP opcode calculator"));
+
+/* SIGNEXTEND opcode — expected values produced by an independent
+   pure-Python transcription (hidden_files/oracle-signextend.py):
+   SIGNEXTEND at 0x0b reads the sign from the top bit of byte b of
+   the value (byte 0 = least significant), replaces every byte
+   above b with 0xFF (sign 1) or 0x00 (sign 0 — upper bytes are
+   cleared, not preserved), leaves the value unchanged at
+   b >= 31, and costs a flat 5. The oracle is anchored in-script
+   on hand values (0x80 at index 0 -> -128 widened, 0x100 at
+   index 0 -> 0, 0x8000 at index 1 -> -32768, index 31/32/1000
+   unchanged). Vectors are [byteIndex, value] -> result fields. */
+check("signextend controls labelled in index.html",
+  ["sext-index", "sext-value"].every(id => html.includes(`for="${id}"`)));
+check("signextend matches the Python oracle",
+  (() => { const V = [
+    [["0", "0"], ["signextend", "0x0b", "0", "0", "0", "31", "0", "0x0000000000000000000000000000000000000000000000000000000000000000", "0", "5"]],
+    [["0", "127"], ["signextend", "0x0b", "0", "127", "0", "31", "127", "0x000000000000000000000000000000000000000000000000000000000000007f", "127", "5"]],
+    [["0", "128"], ["signextend", "0x0b", "0", "128", "1", "31", "115792089237316195423570985008687907853269984665640564039457584007913129639808", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff80", "-128", "5"]],
+    [["0", "255"], ["signextend", "0x0b", "0", "255", "1", "31", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "-1", "5"]],
+    [["0", "256"], ["signextend", "0x0b", "0", "256", "0", "31", "0", "0x0000000000000000000000000000000000000000000000000000000000000000", "0", "5"]],
+    [["0", "115792089237316195423570985008687907853269984665640564039457584007913129639935"], ["signextend", "0x0b", "0", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "1", "31", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "-1", "5"]],
+    [["0", "57896044618658097711785492504343953926634992332820282019728792003956564819968"], ["signextend", "0x0b", "0", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "31", "0", "0x0000000000000000000000000000000000000000000000000000000000000000", "0", "5"]],
+    [["1", "32768"], ["signextend", "0x0b", "1", "32768", "1", "30", "115792089237316195423570985008687907853269984665640564039457584007913129607168", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff8000", "-32768", "5"]],
+    [["1", "32767"], ["signextend", "0x0b", "1", "32767", "0", "30", "32767", "0x0000000000000000000000000000000000000000000000000000000000007fff", "32767", "5"]],
+    [["1", "65408"], ["signextend", "0x0b", "1", "65408", "1", "30", "115792089237316195423570985008687907853269984665640564039457584007913129639808", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff80", "-128", "5"]],
+    [["2", "8388608"], ["signextend", "0x0b", "2", "8388608", "1", "29", "115792089237316195423570985008687907853269984665640564039457584007913121251328", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffff800000", "-8388608", "5"]],
+    [["2", "1193046"], ["signextend", "0x0b", "2", "1193046", "0", "29", "1193046", "0x0000000000000000000000000000000000000000000000000000000000123456", "1193046", "5"]],
+    [["3", "3735928559"], ["signextend", "0x0b", "3", "3735928559", "1", "28", "115792089237316195423570985008687907853269984665640564039457584007912570601199", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffdeadbeef", "-559038737", "5"]],
+    [["7", "9223372036854775808"], ["signextend", "0x0b", "7", "9223372036854775808", "1", "24", "115792089237316195423570985008687907853269984665640564039448360635876274864128", "0xffffffffffffffffffffffffffffffffffffffffffffffff8000000000000000", "-9223372036854775808", "5"]],
+    [["7", "9223372036854775807"], ["signextend", "0x0b", "7", "9223372036854775807", "0", "24", "9223372036854775807", "0x0000000000000000000000000000000000000000000000007fffffffffffffff", "9223372036854775807", "5"]],
+    [["15", "12345678901234567890"], ["signextend", "0x0b", "15", "12345678901234567890", "0", "16", "12345678901234567890", "0x000000000000000000000000000000000000000000000000ab54a98ceb1f0ad2", "12345678901234567890", "5"]],
+    [["30", "452312848583266388373324160190187140051835877600158453279131187530910662655"], ["signextend", "0x0b", "30", "452312848583266388373324160190187140051835877600158453279131187530910662655", "1", "1", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "-1", "5"]],
+    [["30", "226156424291633194186662080095093570025917938800079226639565593765455331327"], ["signextend", "0x0b", "30", "226156424291633194186662080095093570025917938800079226639565593765455331327", "0", "1", "226156424291633194186662080095093570025917938800079226639565593765455331327", "0x007fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "226156424291633194186662080095093570025917938800079226639565593765455331327", "5"]],
+    [["31", "3735928559"], ["signextend", "0x0b", "31", "3735928559", "none", "0", "3735928559", "0x00000000000000000000000000000000000000000000000000000000deadbeef", "3735928559", "5"]],
+    [["31", "115792089237316195423570985008687907853269984665640564039457584007913129639935"], ["signextend", "0x0b", "31", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "none", "0", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "-1", "5"]],
+    [["32", "128"], ["signextend", "0x0b", "32", "128", "none", "0", "128", "0x0000000000000000000000000000000000000000000000000000000000000080", "128", "5"]],
+    [["1000", "128"], ["signextend", "0x0b", "1000", "128", "none", "0", "128", "0x0000000000000000000000000000000000000000000000000000000000000080", "128", "5"]],
+    [["255", "115792089237316195423570985008687907853269984665640564039457584007913129639935"], ["signextend", "0x0b", "255", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "none", "0", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "-1", "5"]],
+  ]; return V.every(([inp, exp]) => { const r = app.signExtendCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.byteIndex, r.value, r.signBit, r.extendedBytes, r.result, r.resultHex, r.signedResult, r.totalGas].join(",") === exp.join(","); }); })());
+check("signextend: prefilled page values (index 0, value 128) push 0xffff...ff80, read as -128, at exactly 5",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const r = app.signExtendCalc(g("sext-index"), g("sext-value"));
+    return r !== null && r.resultHex === "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff80" &&
+      r.signedResult === "-128" && r.signBit === "1" && r.extendedBytes === "31" && r.totalGas === "5"; })());
+check("signextend: a positive sign clears (not preserves) upper bytes, and index 31 or more is the identity",
+  app.signExtendCalc("0", "256").result === "0" &&
+  app.signExtendCalc("0", "57896044618658097711785492504343953926634992332820282019728792003956564819968").result === "0" &&
+  app.signExtendCalc("31", "3735928559").result === "3735928559" &&
+  app.signExtendCalc("32", "128").result === "128" &&
+  app.signExtendCalc("1000", "128").signBit === "none");
+check("signextend: decimal and hex forms agree, and surrounding spaces are trimmed",
+  app.signExtendCalc("0x0", "0x80").result === app.signExtendCalc("0", "128").result &&
+  app.signExtendCalc(" 0 ", " 128 ").signedResult === "-128");
+check("signextend refuses a malformed, negative, fractional, empty, non-string or over-256-bit index or value",
+  app.signExtendCalc("abc", "128") === null &&
+  app.signExtendCalc("0", "-1") === null &&
+  app.signExtendCalc("1.5", "128") === null &&
+  app.signExtendCalc("", "128") === null &&
+  app.signExtendCalc("0", "0x") === null &&
+  app.signExtendCalc(null, "128") === null &&
+  app.signExtendCalc("0", 128) === null &&
+  app.signExtendCalc("115792089237316195423570985008687907853269984665640564039457584007913129639936", "128") === null &&
+  app.signExtendCalc("0", "0x10000000000000000000000000000000000000000000000000000000000000000") === null);
+check("signextend tool section present in index.html", html.includes("sext-btn") && html.includes("SIGNEXTEND opcode calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

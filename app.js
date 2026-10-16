@@ -4449,6 +4449,68 @@ function expCalc(baseStr, exponentStr) {
   };
 }
 
+/* SIGNEXTEND (0x0b) — sign extension of a two's-complement
+   integer, restated in my own words from the opcode's
+   definition and cross-checked this run against a zkEVM
+   opcode spec and two independent opcode tables (opcode
+   0x0b, flat 5 gas):
+     - SIGNEXTEND pops a byte index b and a value x and
+       pushes x re-interpreted as a signed integer of
+       b + 1 bytes, widened to the full 256-bit word;
+     - the sign is the most significant bit of byte b of
+       x, counting byte 0 as the LEAST significant byte
+       (the opposite end from the BYTE opcode);
+     - every byte above byte b is replaced: 0xFF bytes
+       when the sign is 1, 0x00 bytes when it is 0 — so
+       on a positive sign the upper bytes are CLEARED, not
+       preserved (SIGNEXTEND(0, 0x100) pushes 0, because
+       byte 0 of 0x100 is 0x00);
+     - when b >= 31 there is no byte above the sign byte
+       inside the word, so the result is x unchanged —
+       b = 31 reads bit 255 and larger b has no byte in
+       the word to read; both report signBit "none";
+     - the charge is a flat 5 — the MUL tier — with no
+       other term: both inputs are stack words, nothing
+       is written to memory and no account or storage is
+       touched.
+   This is the opcode Solidity emits when a narrower
+   signed type (int8, int16, ...) is widened, so its
+   result is the utility: the calculator computes the
+   extended word, its signed (two's-complement)
+   reading, and the flat charge. Both inputs are single
+   256-bit words YOU supply, in decimal or 0x hex;
+   anything malformed, negative, fractional, or wider
+   than 2^256 - 1 is refused rather than wrapped,
+   because the stack words cannot hold it. */
+const SIGNEXTEND_GAS = 5n;
+function signExtendCalc(byteIndexStr, valueStr) {
+  const b = parseWord256(byteIndexStr);
+  const x = parseWord256(valueStr);
+  if (b === null || x === null) return null;
+  let result, signBit, extendedBytes;
+  if (b >= 31n) {
+    result = x; signBit = "none"; extendedBytes = 0n;
+  } else {
+    const sign = (x >> (8n * b + 7n)) & 1n;
+    const keep = (1n << (8n * (b + 1n))) - 1n;
+    result = sign === 1n ? (x | (UINT256_MAX ^ keep)) : (x & keep);
+    signBit = sign.toString(); extendedBytes = 31n - b;
+  }
+  const signedResult = result >= (1n << 255n) ? result - (1n << 256n) : result;
+  return {
+    opcode: "signextend", opcodeByte: "0x0b",
+    byteIndex: b.toString(),
+    value: x.toString(),
+    valueHex: "0x" + x.toString(16).padStart(64, "0"),
+    signBit: signBit,
+    extendedBytes: extendedBytes.toString(),
+    result: result.toString(),
+    resultHex: "0x" + result.toString(16).padStart(64, "0"),
+    signedResult: signedResult.toString(),
+    totalGas: SIGNEXTEND_GAS.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -5643,6 +5705,22 @@ if (typeof document !== "undefined") {
       el.textContent = `EXP (${r.opcodeByte}): ${r.base} ^ ${r.exponent} mod 2^256 = ${r.result} (${r.resultHex}) — the stack word wraps, as the EVM's does. Gas: ${r.totalGas} — 10 flat + 50 per byte of the exponent, and the exponent ${r.exponent} needs ${r.exponentBytes} byte(s) (before EIP-160 raised the per-byte term from 10, this cost ${r.legacyGas}). The base moves no term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
     });
 
+    /* SIGNEXTEND opcode (sign extension) */
+    const sextBtn = document.getElementById("sext-btn");
+    if (sextBtn) sextBtn.addEventListener("click", () => {
+      const r = signExtendCalc(
+        document.getElementById("sext-index").value,
+        document.getElementById("sext-value").value);
+      const el = document.getElementById("sext-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter the byte index and the value each as one 256-bit word, decimal or 0x hex (0 up to 2^256 − 1).";
+        return;
+      }
+      el.textContent = r.signBit === "none"
+        ? `SIGNEXTEND (${r.opcodeByte}) at byte index ${r.byteIndex}: ${r.value} (${r.valueHex}) is pushed unchanged — at an index of 31 or more there is no byte above the sign byte inside the word to replace. Read as a signed 256-bit integer the result is ${r.signedResult}. Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`
+        : `SIGNEXTEND (${r.opcodeByte}) at byte index ${r.byteIndex}: byte ${r.byteIndex} of ${r.value} (${r.valueHex}) has sign bit ${r.signBit}, so the ${r.extendedBytes} byte(s) above it are replaced with ${r.signBit === "1" ? "0xFF" : "0x00"} bytes, pushing ${r.result} (${r.resultHex}) — read as a signed integer, ${r.signedResult}. Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -5656,5 +5734,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

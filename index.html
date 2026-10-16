@@ -825,6 +825,20 @@
       <p id="cmp-out" class="out" aria-live="polite"></p>
     </div>
 
+
+    <div class="tool">
+      <h3>Bitwise opcode calculator — AND / OR / XOR / NOT</h3>
+      <p>The EVM's bitwise opcodes, all Frontier, all a flat 3 gas (the verylow tier): <code>AND</code> (<code>0x16</code>), <code>OR</code> (<code>0x17</code>), <code>XOR</code> (<code>0x18</code>) and <code>NOT</code> (<code>0x19</code>). The three binary opcodes pop a first, then b, and push the bit-by-bit combination of the two words — a result bit is 1 exactly when both input bits are 1 (AND), when at least one is 1 (OR), or when exactly one is 1 (XOR). They work on the raw 256 bits, so unlike the comparison family above there is no signed pair and the words' signed or unsigned reading is irrelevant; and the three are commutative, so a and b are interchangeable, unlike SUB, DIV or LT. <code>NOT</code> is the family's unary member: it pops one word only and pushes that word with every one of its 256 bits flipped — NOT 0 pushes the all-ones word and NOT of the all-ones word pushes 0. The trap is that NOT is <em>not</em> negation. There is no NEG opcode: arithmetic negation is <code>0 − x</code> (a SUB), and the two's-complement identity is −x = NOT(x) + 1, so NOT 1 pushes <code>0xffff…fffe</code>, which reads as −2 signed, not the all-ones word that reads as −1 — an implementation that computes NOT as <code>0 − x</code>, or borrows a language whose <code>~</code> is infinite-precision (Python's <code>~0</code> is −1, not the all-ones word), is off by one on every input. Solidity's <code>~x</code> compiles to exactly this NOT, and its <code>-x</code> to the SUB-plus-one pattern, which is why the two differ there too. The prefilled call is NOT of 0, which pushes exactly the all-ones word, 2<sup>256</sup> − 1. Honest scope: a and b are values <em>you</em> supply, in decimal or 0x hex, not execution state this page reads; anything wider than a 256-bit word is refused rather than wrapped, because the stack words the opcodes consume cannot hold it. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="bit-op">Opcode</label>
+      <select id="bit-op"><option value="and">AND (0x16) — a AND b, bit by bit</option><option value="or">OR (0x17) — a OR b, bit by bit</option><option value="xor">XOR (0x18) — a XOR b, bit by bit</option><option value="not" selected>NOT (0x19) — every bit of a flipped, unary</option></select>
+      <label for="bit-a">Operand a (one 256-bit value, decimal or 0x hex — popped first; for NOT the only operand)</label>
+      <input id="bit-a" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="bit-b">Operand b (one 256-bit value, decimal or 0x hex — ignored for NOT, which pops one word only)</label>
+      <input id="bit-b" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <button id="bit-btn" type="button">Calculate bitwise result &amp; gas</button>
+      <p id="bit-out" class="out" aria-live="polite"></p>
+    </div>
+
     <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
@@ -1159,6 +1173,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=71"></script>
+<script src="app.js?v=72"></script>
 </body>
 </html>

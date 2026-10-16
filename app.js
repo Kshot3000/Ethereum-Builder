@@ -4813,6 +4813,73 @@ function cmpCalc(opStr, aStr, bStr) {
   };
 }
 
+/* Bitwise opcodes AND (0x16), OR (0x17), XOR (0x18),
+   NOT (0x19) -- Frontier opcodes, flat 3 gas each (the
+   verylow tier):
+     - AND / OR / XOR pop a first, then b, and push the
+       bit-by-bit combination of the two words: a bit of
+       the result is 1 exactly when both bits are 1 (AND),
+       when at least one is 1 (OR), or when exactly one
+       is 1 (XOR). The three are commutative -- a and b
+       are interchangeable, unlike SUB / DIV / LT -- and
+       they operate on the raw 256 bits, so the signed or
+       unsigned reading of the words is irrelevant: there
+       is no signed pair here, unlike the comparison
+       family above.
+     - NOT is unary: it pops one word only and pushes
+       that word with every one of its 256 bits flipped,
+       i.e. (2^256 - 1) XOR a, equivalently
+       (2^256 - 1) - a. NOT 0 pushes the all-ones word;
+       NOT of the all-ones word pushes 0.
+     - NOT is NOT negation. There is no NEG opcode:
+       arithmetic negation is 0 - x (a SUB), and the
+       two's-complement identity is -x = NOT(x) + 1, so
+       NOT 1 pushes 0xffff...fffe (which reads as -2
+       signed), not the all-ones word (which reads as
+       -1). An implementation that computes NOT as
+       0 - x, or in a language whose ~ is
+       infinite-precision (Python's ~0 is -1, not the
+       all-ones word), is off by one on every input.
+     - the charge is a flat 3 -- the Verylow tier -- with
+       no other term: the inputs are stack words, nothing
+       touches memory, an account or storage.
+   Both inputs are single 256-bit words YOU supply, in
+   decimal or 0x hex; anything malformed, negative,
+   fractional, or wider than 2^256 - 1 is refused rather
+   than wrapped, as is an opcode name other than
+   and / or / xor / not. For NOT, b is never read. */
+const BIT_GAS = 3n;
+const BIT_OPCODE_BYTES = { and: "0x16", or: "0x17", xor: "0x18", not: "0x19" };
+const UINT256_MAX_WORD = (1n << 256n) - 1n;
+function bitCalc(opStr, aStr, bStr) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(BIT_OPCODE_BYTES, op)) return null;
+  const a = parseWord256(aStr);
+  if (a === null) return null;
+  const unary = op === "not";
+  /* NOT pops one word only: b is never read, and is reported as a
+     itself (flagged unary) so the result fields stay uniform. */
+  const b = unary ? a : parseWord256(bStr);
+  if (b === null) return null;
+  let result;
+  if (op === "and") result = a & b;
+  else if (op === "or") result = a | b;
+  else if (op === "xor") result = a ^ b;
+  else result = UINT256_MAX_WORD ^ a;
+  return {
+    opcode: op, opcodeByte: BIT_OPCODE_BYTES[op],
+    a: a.toString(),
+    b: b.toString(),
+    aHex: "0x" + a.toString(16).padStart(64, "0"),
+    bHex: "0x" + b.toString(16).padStart(64, "0"),
+    unary: unary ? "true" : "false",
+    result: result.toString(),
+    resultHex: "0x" + result.toString(16).padStart(64, "0"),
+    totalGas: BIT_GAS.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -6142,6 +6209,28 @@ if (typeof document !== "undefined") {
       el.textContent = `${name} (${r.opcodeByte}): ${expr} is ${r.result === "1" ? "true" : "false"}, so the opcode pushes ${r.result} (${r.resultHex}) \u2014 a comparison pushes 1 or 0, never an operand.${note} Gas: ${r.totalGas} \u2014 a flat charge with no other term. Computed locally from the values you gave \u2014 nothing is executed and no chain is queried.`;
     });
 
+
+    /* Bitwise opcodes (AND / OR / XOR / NOT) */
+    const bitBtn = document.getElementById("bit-btn");
+    if (bitBtn) bitBtn.addEventListener("click", () => {
+      const r = bitCalc(
+        document.getElementById("bit-op").value,
+        document.getElementById("bit-a").value,
+        document.getElementById("bit-b").value);
+      const el = document.getElementById("bit-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter a and b each as one 256-bit word, decimal or 0x hex (0 up to 2^256 \u2212 1). For NOT only a is read.";
+        return;
+      }
+      const name = r.opcode.toUpperCase();
+      if (r.unary === "true") {
+        el.textContent = `NOT (${r.opcodeByte}): the word ${r.a} (${r.aHex}) with every bit flipped pushes ${r.result} (${r.resultHex}) \u2014 NOT pops one word only, flips all 256 bits, and is not negation: \u2212x = NOT(x) + 1, so NOT 1 reads as \u22122 signed, not \u22121. Gas: ${r.totalGas} \u2014 a flat charge with no other term. Computed locally from the value you gave \u2014 nothing is executed and no chain is queried.`;
+        return;
+      }
+      const sym = { and: "AND", or: "OR", xor: "XOR" }[r.opcode];
+      el.textContent = `${name} (${r.opcodeByte}): ${r.a} (${r.aHex}) ${sym} ${r.b} (${r.bHex}) pushes ${r.result} (${r.resultHex}) \u2014 the combination is bit by bit on the raw words, so the signed or unsigned reading does not matter, and a and b are interchangeable. Gas: ${r.totalGas} \u2014 a flat charge with no other term. Computed locally from the values you gave \u2014 nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -6155,5 +6244,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

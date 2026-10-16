@@ -3792,6 +3792,67 @@ function otherCallGasCalc(opcode, availableStr, requestedStr, valueStr, isCold,
     callerRetained: (remaining - forwardedGas).toString() };
 }
 
+/* SELFDESTRUCT gas (EIP-2929 / EIP-3529 / EIP-6780). The
+   one termination opcode, priced under the rules current
+   mainnet applies (formulas paraphrased; constants
+   cross-verified this run across two independent sources:
+   a gas reference's SELFDESTRUCT entry -- static 5,000,
+   +25,000 for a positive balance sent to an empty account,
+   +2,600 if the address is cold -- and an independent chain
+   specification stating a zero-balance SELFDESTRUCT creates
+   no account and incurs no account-creation charge while a
+   non-zero transfer to a non-existent target does).
+   - Base: 5,000 for the opcode itself.
+   - Access (EIP-2929): the beneficiary is an account access
+     like the account-access tool's, but here it is an
+     ADDITIONAL term on top of the 5,000, not the whole
+     cost: +2,600 if the beneficiary is cold (not yet
+     touched in this transaction), +0 if warm -- there is
+     no 100 warm price, because the 5,000 is not a warm
+     read cost. A cold access warms the beneficiary.
+   - New-account charge: +25,000 only when BOTH hold --
+     the beneficiary account is empty (balance 0, nonce 0,
+     no code, so it does not meaningfully exist) AND the
+     balance transferred is positive. SELFDESTRUCT sends
+     the contract's WHOLE balance, so that balance is the
+     amount; only its zero-vs-non-zero matters, never its
+     size. A zero balance creates no account and pays no
+     charge; an existing beneficiary never pays it.
+   - Refund: 0, always. The old 24,000 refund for
+     destroying a contract was removed by EIP-3529
+     (London); nothing here earns one.
+   There is no memory term: the beneficiary is a single
+   stack word, memory is never touched, and nothing is
+   forwarded (the opcode ends the frame). Deliberate
+   contrasts: destructing to the contract ITSELF is the
+   warm, existing case (5,000 -- its own address is the
+   frame's, already accessed, and it exists), and a CALL
+   carrying value to an empty target pays the same 25,000
+   but on top of a 9,000 transfer charge this opcode does
+   not have. EIP-6780 (Cancun) changed what the opcode
+   DOES -- code and storage are deleted only when the
+   contract was created in the same transaction, otherwise
+   only the balance moves (and a self-beneficiary burns it
+   when created in the same transaction, no-ops otherwise)
+   -- but it changed no gas term here. Honest scope: this
+   prices the one opcode only; warmth, emptiness and
+   balance are user-supplied values, not execution state
+   read here, and a SELFDESTRUCT inside a static call fails
+   for a non-gas reason not modelled. */
+function selfdestructGasCalc(isCold, beneficiaryEmpty, balanceStr) {
+  if (typeof isCold !== "boolean" || typeof beneficiaryEmpty !== "boolean") return null;
+  const balance = sstoreParseWord(balanceStr);
+  if (balance === null) return null;
+  const baseGas = 5000n;
+  const accessGas = isCold ? 2600n : 0n;
+  const newAccountGas = beneficiaryEmpty && balance > 0n ? 25000n : 0n;
+  return {
+    baseGas: baseGas.toString(), accessGas: accessGas.toString(),
+    newAccountGas: newAccountGas.toString(), refund: "0",
+    totalGas: (baseGas + accessGas + newAccountGas).toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4831,6 +4892,21 @@ if (typeof document !== "undefined") {
       el.textContent = `${r.opcode} gas: own cost ${r.baseGas} (access ${r.accessGas} + value transfer ${r.transferGas} + new account ${r.newAccountGas} + memory expansion ${r.memoryGas}); of the ${r.remaining} remaining, at most ${r.capGas} can be forwarded under the all-but-one-64th rule, so ${r.forwardedGas} is forwarded and the callee receives ${r.calleeGas} (forwarded + ${r.stipend} stipend); the caller retains ${r.callerRetained} at the moment of the call. The new-account charge is always 0 for these opcodes. Computed locally from the values you gave — no call is made and no chain is queried.`;
     });
 
+    /* SELFDESTRUCT gas */
+    const sdBtn = document.getElementById("sd-btn");
+    if (sdBtn) sdBtn.addEventListener("click", () => {
+      const r = selfdestructGasCalc(
+        document.getElementById("sd-access").value === "cold",
+        document.getElementById("sd-beneficiary").value === "empty",
+        document.getElementById("sd-balance").value);
+      const el = document.getElementById("sd-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the balance is the contract's whole balance in wei, a non-negative amount in decimal or 0x hex (only zero vs non-zero changes the price).";
+        return;
+      }
+      el.textContent = `SELFDESTRUCT gas: ${r.totalGas} total — ${r.baseGas} for the opcode itself + ${r.accessGas} beneficiary access + ${r.newAccountGas} new-account charge; refund ${r.refund} (the old 24,000 refund was removed by EIP-3529). Under EIP-6780 the code and storage are deleted only if the contract was created in this same transaction; otherwise only the balance moves. Computed locally from the values you gave — nothing is destroyed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4844,5 +4920,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=54"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=55"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2696,6 +2696,59 @@ check("other-call refuses an unknown opcode, a non-boolean warmth flag, and (for
   app.otherCallGasCalc("DELEGATECALL", "100000", "1000000", "not-a-value", true, "0", "0", "0", "0", "0") !== null &&
   app.otherCallGasCalc("DELEGATECALL", "100000", "1000000", "not-a-value", true, "0", "0", "0", "0", "0").transferGas === "0");
 check("other-call tool section present in index.html", html.includes("ocall-btn") && html.includes("Other CALL opcodes gas calculator"));
+
+/* SELFDESTRUCT gas — expected values produced by an independent
+   pure-Python transcription of the pricing (hidden_files/
+   oracle-selfdestruct-gas.py): 5,000 base, +2,600 for a cold
+   beneficiary (EIP-2929, an addition to the base, not a
+   2,600/100 whole cost), +25,000 only when the beneficiary is
+   empty AND the transferred balance is positive, refund 0
+   always (EIP-3529 removed the old 24,000). The oracle is
+   anchored in-script on hand values (the prefilled 32,600,
+   warm/existing 5,000, cold/existing 7,600, warm/empty 30,000,
+   and a zero balance killing the new-account charge even
+   against an empty beneficiary). Vectors are
+   [isCold, beneficiaryEmpty, balance] -> result fields. */
+check("selfdestruct controls labelled in index.html",
+  ["sd-access", "sd-beneficiary", "sd-balance"].every(id => html.includes(`for="${id}"`)));
+check("selfdestruct gas matches the Python oracle",
+  (() => { const V = [
+    [[true, true, "1000000000000000000"], ["5000", "2600", "25000", "0", "32600"]],
+    [[false, false, "1000000000000000000"], ["5000", "0", "0", "0", "5000"]],
+    [[true, false, "1000000000000000000"], ["5000", "2600", "0", "0", "7600"]],
+    [[false, true, "1000000000000000000"], ["5000", "0", "25000", "0", "30000"]],
+    [[true, true, "0"], ["5000", "2600", "0", "0", "7600"]],
+    [[false, true, "0"], ["5000", "0", "0", "0", "5000"]],
+    [[true, false, "0"], ["5000", "2600", "0", "0", "7600"]],
+    [[false, false, "0"], ["5000", "0", "0", "0", "5000"]],
+    [[true, true, "1"], ["5000", "2600", "25000", "0", "32600"]],
+    [[true, true, "0xde0b6b3a7640000"], ["5000", "2600", "25000", "0", "32600"]],
+    [[false, true, "123456789"], ["5000", "0", "25000", "0", "30000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.selfdestructGasCalc(...inp);
+    return r !== null && [r.baseGas, r.accessGas, r.newAccountGas, r.refund, r.totalGas].join(",") === exp.join(","); }); })());
+check("selfdestruct: cold exceeds warm by exactly 2,600, the new-account term is exactly 25,000 and needs BOTH an empty beneficiary and a positive balance, and the refund is always 0",
+  (() => { const pre = app.selfdestructGasCalc(true, true, "1000000000000000000");
+    const warm = app.selfdestructGasCalc(false, true, "1000000000000000000");
+    const existing = app.selfdestructGasCalc(true, false, "1000000000000000000");
+    const zeroBal = app.selfdestructGasCalc(true, true, "0");
+    return pre !== null && warm !== null && existing !== null && zeroBal !== null &&
+      html.includes('id="sd-access"') && html.includes('<option value="cold" selected>') &&
+      html.includes('id="sd-beneficiary"') && html.includes('<option value="empty" selected>') &&
+      pre.totalGas === "32600" &&
+      (BigInt(pre.totalGas) - BigInt(warm.totalGas)).toString() === "2600" &&
+      (BigInt(pre.totalGas) - BigInt(existing.totalGas)).toString() === "25000" &&
+      zeroBal.newAccountGas === "0" && zeroBal.totalGas === "7600" &&
+      [pre, warm, existing, zeroBal].every(r => r.refund === "0" && r.baseGas === "5000"); })());
+check("selfdestruct refuses a non-boolean warmth or emptiness flag and a malformed, negative or over-uint256 balance",
+  app.selfdestructGasCalc("cold", true, "0") === null &&
+  app.selfdestructGasCalc(true, "empty", "0") === null &&
+  app.selfdestructGasCalc(null, true, "0") === null &&
+  app.selfdestructGasCalc(true, null, "0") === null &&
+  app.selfdestructGasCalc(true, true, "abc") === null &&
+  app.selfdestructGasCalc(true, true, "-1") === null &&
+  app.selfdestructGasCalc(true, true, null) === null &&
+  app.selfdestructGasCalc(true, true, (1n << 256n).toString()) === null);
+check("selfdestruct tool section present in index.html", html.includes("sd-btn") && html.includes("SELFDESTRUCT gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

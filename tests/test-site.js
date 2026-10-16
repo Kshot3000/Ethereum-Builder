@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=56"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=57"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2810,6 +2810,54 @@ check("precompile refuses an unknown or non-string precompile and a malformed, n
   app.precompileGasCalc("sha256", "137438953441") === null &&
   app.precompileGasCalc("sha256", "137438953440") !== null);
 check("precompile tool section present in index.html", html.includes("pc-btn") && html.includes("Original precompile gas calculator"));
+
+/* alt_bn128 precompile gas — expected values produced by an
+   independent pure-Python transcription of the pricing
+   (hidden_files/oracle-bn128-gas.py): ecAdd (0x06) flat 150,
+   ecMul (0x07) flat 6,000, pairing (0x08) 45,000 + 34,000 per
+   pair (a pair is 192 bytes of input), at the EIP-1108 prices
+   current mainnet applies. The oracle is anchored in-script on
+   hand values (the prefilled 2-pair check at 113,000, 0 pairs
+   paying the 45,000 base alone, 1 pair at 79,000, ecMul at
+   exactly 40x ecAdd, and each extra pair adding exactly
+   34,000). Vectors are [name, pairs] -> result fields; the
+   pair count is never read for ecAdd/ecMul. */
+check("bn128 controls labelled in index.html",
+  ["bn-name", "bn-pairs"].every(id => html.includes(`for="${id}"`)));
+check("bn128 gas matches the Python oracle",
+  (() => { const V = [
+    [["pairing", "2"], ["pairing", "0x0000000000000000000000000000000000000008", "45000", "34000", "2", "68000", "384", "113000"]],
+    [["pairing", "0"], ["pairing", "0x0000000000000000000000000000000000000008", "45000", "34000", "0", "0", "0", "45000"]],
+    [["pairing", "1"], ["pairing", "0x0000000000000000000000000000000000000008", "45000", "34000", "1", "34000", "192", "79000"]],
+    [["pairing", "3"], ["pairing", "0x0000000000000000000000000000000000000008", "45000", "34000", "3", "102000", "576", "147000"]],
+    [["pairing", "4"], ["pairing", "0x0000000000000000000000000000000000000008", "45000", "34000", "4", "136000", "768", "181000"]],
+    [["pairing", "10"], ["pairing", "0x0000000000000000000000000000000000000008", "45000", "34000", "10", "340000", "1920", "385000"]],
+    [["pairing", "100"], ["pairing", "0x0000000000000000000000000000000000000008", "45000", "34000", "100", "3400000", "19200", "3445000"]],
+    [["ecadd", "2"], ["ecadd", "0x0000000000000000000000000000000000000006", "150", "0", "0", "0", "128", "150"]],
+    [["ecmul", "2"], ["ecmul", "0x0000000000000000000000000000000000000007", "6000", "0", "0", "0", "96", "6000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.bn128GasCalc(...inp);
+    return r !== null && [r.precompile, r.address, r.baseGas, r.perPairGas, r.pairs, r.pairGas, r.inputBytes, r.totalGas].join(",") === exp.join(","); }); })());
+check("bn128: each extra pair adds exactly 34,000, ecMul is exactly 40x ecAdd, and the flat two never read the pair count",
+  (() => { const p2 = app.bn128GasCalc("pairing", "2");
+    const p3 = app.bn128GasCalc("pairing", "3");
+    const add = app.bn128GasCalc("ecadd", "abc");
+    const mul = app.bn128GasCalc("ecmul", null);
+    return p2 !== null && p3 !== null && add !== null && mul !== null &&
+      html.includes('id="bn-name"') && html.includes('<option value="pairing" selected>') &&
+      (BigInt(p3.totalGas) - BigInt(p2.totalGas)).toString() === "34000" &&
+      (BigInt(mul.totalGas) / BigInt(add.totalGas)).toString() === "40" &&
+      add.totalGas === "150" && mul.totalGas === "6000"; })());
+check("bn128 refuses an unknown or non-string precompile and a malformed, negative, hex or over-bound pair count",
+  app.bn128GasCalc("blake2f", "2") === null &&
+  app.bn128GasCalc("PAIRING", "2") === null &&
+  app.bn128GasCalc(null, "2") === null &&
+  app.bn128GasCalc("pairing", "abc") === null &&
+  app.bn128GasCalc("pairing", "-1") === null &&
+  app.bn128GasCalc("pairing", "0x2") === null &&
+  app.bn128GasCalc("pairing", null) === null &&
+  app.bn128GasCalc("pairing", "715827883") === null &&
+  app.bn128GasCalc("pairing", "715827882") !== null);
+check("bn128 tool section present in index.html", html.includes("bn-btn") && html.includes("alt_bn128 precompile gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

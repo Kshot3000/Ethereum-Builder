@@ -3918,6 +3918,73 @@ function precompileGasCalc(nameStr, inputLenStr) {
   };
 }
 
+/* alt_bn128 (BN254) precompile gas — what the three elliptic-
+   curve precompiles added for the Byzantium fork charge, at the
+   prices current mainnet applies. EIP-196 defined ecAdd (0x06)
+   and ecMul (0x07), EIP-197 the pairing check (0x08); EIP-1108
+   repriced all three at Istanbul (both EIP-196/197 and EIP-1108
+   are CC0; the schedule is restated here in my own words, and
+   the constants were cross-verified across two independent
+   sources this run):
+     - ecAdd: a flat 150, whatever the points. Its defined input
+       is two G1 points, 128 bytes; a short input is read as
+       zero-padded and extra bytes are ignored, so no input term
+       exists to price.
+     - ecMul: a flat 6,000 — exactly 40x ecAdd. Its defined
+       input is a G1 point and a scalar, 96 bytes, read the
+       same way.
+     - pairing: 45,000 plus 34,000 per pair, a pair being one
+       192-byte element of the input (a G1 point's 64 bytes and
+       a G2 point's 128 bytes). An empty input is 0 pairs and
+       pays the 45,000 base alone — the empty product is the
+       pairing identity, so that call succeeds and returns
+       true. An input whose length is not a multiple of 192
+       fails for a non-gas reason and is not modelled; the
+       calculator takes the pair count directly.
+   Before Istanbul the prices were far higher — ecAdd 500,
+   ecMul 40,000, pairing 100,000 plus 80,000 per pair — and
+   those superseded prices are not offered here.
+   There is no EIP-2929 access term: like the original four,
+   these precompiles start warm. This prices the precompile's
+   OWN charge only: the CALL or STATICCALL that invokes it
+   charges its own terms separately (the CALL calculator
+   above). The points' and pairs' CONTENTS move no term — only
+   the pair count, for the pairing check. The pair count is a
+   decimal count bounded so the implied input (192 bytes per
+   pair) fits the same size bound the memory tools use; for
+   ecAdd and ecMul the pair-count argument is not even parsed,
+   exactly as their pricing never reads it. A point that is
+   not on the curve, or a pairing element outside its subgroup,
+   fails for a non-gas reason and is not modelled. */
+const BN128_GAS_TABLE = {
+  ecadd: { address: "0x0000000000000000000000000000000000000006", base: 150n, perPair: 0n, inputBytes: 128n },
+  ecmul: { address: "0x0000000000000000000000000000000000000007", base: 6000n, perPair: 0n, inputBytes: 96n },
+  pairing: { address: "0x0000000000000000000000000000000000000008", base: 45000n, perPair: 34000n, inputBytes: null }
+};
+function bn128GasCalc(nameStr, pairsStr) {
+  if (typeof nameStr !== "string") return null;
+  const entry = BN128_GAS_TABLE[nameStr.trim()];
+  if (!entry) return null;
+  if (entry.perPair === 0n) {
+    return {
+      precompile: nameStr.trim(), address: entry.address,
+      baseGas: entry.base.toString(), perPairGas: "0",
+      pairs: "0", pairGas: "0", inputBytes: entry.inputBytes.toString(),
+      totalGas: entry.base.toString()
+    };
+  }
+  const pairs = memParseBytes(pairsStr);
+  if (pairs === null || pairs * 192n > MEM_MAX_BYTES) return null;
+  const pairGas = entry.perPair * pairs;
+  return {
+    precompile: "pairing", address: entry.address,
+    baseGas: entry.base.toString(), perPairGas: entry.perPair.toString(),
+    pairs: pairs.toString(), pairGas: pairGas.toString(),
+    inputBytes: (pairs * 192n).toString(),
+    totalGas: (entry.base + pairGas).toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4986,6 +5053,22 @@ if (typeof document !== "undefined") {
       el.textContent = `${r.precompile} precompile (${r.address}) gas: ${r.totalGas} total — ${r.baseGas} base + ${r.wordGas} for ${r.words} word(s) of input at ${r.perWordGas} per word. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* alt_bn128 precompile gas */
+    const bnBtn = document.getElementById("bn-btn");
+    if (bnBtn) bnBtn.addEventListener("click", () => {
+      const r = bn128GasCalc(
+        document.getElementById("bn-name").value,
+        document.getElementById("bn-pairs").value);
+      const el = document.getElementById("bn-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the pair count is a count in decimal (0 or more), used only by the pairing check.";
+        return;
+      }
+      el.textContent = r.precompile === "pairing"
+        ? `pairing precompile (${r.address}) gas: ${r.totalGas} total — ${r.baseGas} base + ${r.pairGas} for ${r.pairs} pair(s) at ${r.perPairGas} per pair (a pair is 192 bytes of input, so this check reads ${r.inputBytes} bytes). This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`
+        : `${r.precompile} precompile (${r.address}) gas: ${r.totalGas} total — a flat charge at any input: the defined input is ${r.inputBytes} bytes, read as zero-padded if short, and the pair count is never read. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4999,5 +5082,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

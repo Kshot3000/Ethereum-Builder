@@ -4193,6 +4193,73 @@ function blsGasCalc(nameStr, pairsStr) {
   };
 }
 
+/* secp256r1 precompile gas — P256VERIFY at address 0x0100,
+   defined by EIP-7951 for checking an ECDSA signature over
+   the secp256r1 curve (P-256 — the curve secure hardware
+   such as phone enclaves and WebAuthn/passkey authenticators
+   sign with, so this precompile is what lets a contract
+   check a passkey signature cheaply). The EIP is Final and
+   CC0; the schedule is restated here in my own words, and
+   the constants were cross-verified across two independent
+   sources this run: EIP-7951's own gas schedule, and client
+   implementations agreeing at the same price, address and
+   input width (an empirical go-ethereum probe found the
+   required gas is this same constant at every input length
+   it tried, and a second client's release notes state the
+   same figures). EIP-7951 shipped in the Fulu/Osaka upgrade
+   (the EIP-7607 hardfork meta, also Final, lists it among
+   its core EIPs): mainnet activation at epoch 411392
+   (December 2025), so this is a live mainnet price, not a
+   proposal:
+     - the defined input is exactly 160 bytes: the message
+       hash, then the signature's r and s, then the public
+       key's x and y — five 32-byte fields;
+     - the charge is a flat 6,900 — no base-plus-term split,
+       no per-word or per-byte term, and nothing in the
+       input's contents moves it;
+     - on a valid signature it returns 32 bytes holding the
+       value 1; on any failure it returns nothing (0 bytes).
+   Deliberate contrast with the KZG tool above: that
+   precompile's calculator refuses other lengths because its
+   length is a validity condition with no stated burn rule,
+   but this EIP states its failure rule outright — the
+   precompile never reverts, and a bad input (a wrong length
+   included) or a failed verification returns empty while
+   burning the same 6,900 a success would have, the charge
+   being taken before the precompile runs. So this
+   calculator quotes 6,900 at ANY length and reports whether
+   the length is the exact 160 at which success is possible;
+   at any other length the return is necessarily empty.
+   A second deliberate contrast: RIP-7212, the earlier
+   rollup version with the same address and input shape,
+   charges 3,450 on the L2s that deployed it — exactly half
+   this L1 price; the two are not interchangeable. There is
+   no EIP-2929 access term: like the other precompiles, this
+   one starts warm. This prices the precompile's OWN charge
+   only: the CALL or STATICCALL that invokes it charges its
+   own terms separately (the CALL calculator above). An r
+   or s outside (0, n), a public key off the curve, at the
+   point at infinity or with a coordinate at or above the
+   field modulus, or a signature that simply does not verify
+   all return empty at this same price — the failure modes
+   are named, but which of them a given input hits depends
+   on the input's contents, which this calculator does not
+   read: it takes the input length only. */
+const P256_INPUT_BYTES = 160n;
+const P256_GAS = 6900n;
+function p256GasCalc(inputLenStr) {
+  const len = memParseBytes(inputLenStr);
+  if (len === null) return null;
+  const exact = len === P256_INPUT_BYTES;
+  return {
+    precompile: "p256verify", address: "0x0000000000000000000000000000000000000100",
+    inputBytes: len.toString(), requiredInputBytes: P256_INPUT_BYTES.toString(),
+    exactLength: exact ? "yes" : "no",
+    outputBytesOnSuccess: exact ? "32" : "0",
+    totalGas: P256_GAS.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -5325,6 +5392,21 @@ if (typeof document !== "undefined") {
       el.textContent = `BLS12-381 precompile ${r.precompile} (${r.address}) gas: ${r.totalGas} total — a flat charge over its fixed ${r.inputBytes}-byte input. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* secp256r1 (P256VERIFY) precompile gas */
+    const p256Btn = document.getElementById("p256-btn");
+    if (p256Btn) p256Btn.addEventListener("click", () => {
+      const r = p256GasCalc(
+        document.getElementById("p256-len").value);
+      const el = document.getElementById("p256-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the input length is a decimal byte count (0 or more, within the size bound the memory tools use).";
+        return;
+      }
+      el.textContent = r.exactLength === "yes"
+        ? `P256VERIFY precompile (${r.address}) gas: ${r.totalGas} total — a flat charge for verifying one secp256r1 signature over its fixed ${r.inputBytes}-byte input, returning ${r.outputBytesOnSuccess} bytes holding 1 if the signature verifies and nothing if it does not. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`
+        : `P256VERIFY precompile (${r.address}) gas: ${r.totalGas} total — the flat charge is taken at any input length, and this precompile never reverts: at ${r.inputBytes} bytes (not the exact ${r.requiredInputBytes}) it returns nothing and still burns the same ${r.totalGas}. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -5338,5 +5420,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

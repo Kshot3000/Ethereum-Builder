@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=60"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=61"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -3004,6 +3004,59 @@ check("bls refuses a malformed, empty, zero-count or over-bound input",
   app.blsGasCalc("pairing", "357913942") === null &&
   app.blsGasCalc("g1add", "not-a-count") !== null);
 check("bls tool section present in index.html", html.includes("bls-btn") && html.includes("BLS12-381 precompile gas calculator"));
+
+/* secp256r1 precompile gas — expected values produced by an
+   independent pure-Python transcription of the pricing
+   (hidden_files/oracle-p256-gas.py): P256VERIFY at 0x0100
+   (EIP-7951, Final, live since the Fulu/Osaka upgrade —
+   EIP-7607 lists it as a core EIP, mainnet epoch 411392)
+   charges a flat 6,900 over a defined 160-byte input (five
+   32-byte fields: hash, r, s, qx, qy). The precompile never
+   reverts: a wrong length or a failed verification returns
+   empty and burns the same 6,900, so every length has this
+   price and only exactly 160 can succeed. The oracle is
+   anchored in-script on hand values (6,900 at each of the
+   lengths a client probe exercised — 0, 1, 159, 160, 161,
+   320, 1024 — the price exactly double RIP-7212's 3,450 and
+   exactly 3,900 above ecrecover's 3,000, 160 = 5 x 32).
+   Vectors are [input length] -> result fields. */
+check("p256 controls labelled in index.html",
+  ["p256-len"].every(id => html.includes(`for="${id}"`)));
+check("p256 gas matches the Python oracle",
+  (() => { const V = [
+    [["0"], ["p256verify", "0x0000000000000000000000000000000000000100", "0", "160", "no", "0", "6900"]],
+    [["1"], ["p256verify", "0x0000000000000000000000000000000000000100", "1", "160", "no", "0", "6900"]],
+    [["32"], ["p256verify", "0x0000000000000000000000000000000000000100", "32", "160", "no", "0", "6900"]],
+    [["159"], ["p256verify", "0x0000000000000000000000000000000000000100", "159", "160", "no", "0", "6900"]],
+    [["160"], ["p256verify", "0x0000000000000000000000000000000000000100", "160", "160", "yes", "32", "6900"]],
+    [["161"], ["p256verify", "0x0000000000000000000000000000000000000100", "161", "160", "no", "0", "6900"]],
+    [["192"], ["p256verify", "0x0000000000000000000000000000000000000100", "192", "160", "no", "0", "6900"]],
+    [["320"], ["p256verify", "0x0000000000000000000000000000000000000100", "320", "160", "no", "0", "6900"]],
+    [["1024"], ["p256verify", "0x0000000000000000000000000000000000000100", "1024", "160", "no", "0", "6900"]]
+  ]; return V.every(([inp, exp]) => { const r = app.p256GasCalc(...inp);
+    return r !== null && [r.precompile, r.address, r.inputBytes, r.requiredInputBytes, r.exactLength, r.outputBytesOnSuccess, r.totalGas].join(",") === exp.join(","); }); })());
+check("p256: the prefill is 160 at 6,900, exactly double the RIP-7212 price and 3,900 above ecrecover",
+  (() => { const r = app.p256GasCalc("160");
+    const ec = app.precompileGasCalc("ecrecover", "128");
+    return r !== null && ec !== null &&
+      html.includes('id="p256-len"') && html.includes('value="160"') &&
+      (BigInt(r.totalGas) / 2n).toString() === "3450" &&
+      (BigInt(r.totalGas) - BigInt(ec.totalGas)).toString() === "3900" &&
+      r.totalGas === "6900"; })());
+check("p256 refuses only a malformed, negative, hex, non-string or over-bound length — never a wrong length",
+  app.p256GasCalc("abc") === null &&
+  app.p256GasCalc("-1") === null &&
+  app.p256GasCalc("0xa0") === null &&
+  app.p256GasCalc("1.5") === null &&
+  app.p256GasCalc("") === null &&
+  app.p256GasCalc(null) === null &&
+  app.p256GasCalc(160) === null &&
+  app.p256GasCalc("137438953441") === null &&
+  app.p256GasCalc("0") !== null &&
+  app.p256GasCalc("159") !== null &&
+  app.p256GasCalc("161") !== null &&
+  app.p256GasCalc("160") !== null);
+check("p256 tool section present in index.html", html.includes("p256-btn") && html.includes("secp256r1 precompile gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

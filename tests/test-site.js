@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=55"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=56"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2749,6 +2749,67 @@ check("selfdestruct refuses a non-boolean warmth or emptiness flag and a malform
   app.selfdestructGasCalc(true, true, null) === null &&
   app.selfdestructGasCalc(true, true, (1n << 256n).toString()) === null);
 check("selfdestruct tool section present in index.html", html.includes("sd-btn") && html.includes("SELFDESTRUCT gas calculator"));
+
+/* Original precompile gas — expected values produced by an
+   independent pure-Python transcription of the pricing
+   (hidden_files/oracle-precompile-gas.py): ecrecover (0x01)
+   flat 3,000 with no per-word term at any input length,
+   SHA-256 (0x02) 60 + 12 per word, RIPEMD-160 (0x03)
+   600 + 120 per word, identity (0x04) 15 + 3 per word, words
+   the input length rounded UP to whole 32-byte words. The
+   oracle is anchored in-script on hand values (the prefilled
+   SHA-256 over 64 bytes at 84, 0 bytes paying each base alone,
+   33 bytes costing exactly one more word than 32, RIPEMD-160
+   at exactly 10x SHA-256's base and per-word, and ecrecover
+   at 3,000 for lengths 0, 128 and 999,999). Vectors are
+   [name, inputLen] -> result fields. */
+check("precompile controls labelled in index.html",
+  ["pc-name", "pc-len"].every(id => html.includes(`for="${id}"`)));
+check("precompile gas matches the Python oracle",
+  (() => { const V = [
+    [["sha256", "64"], ["sha256", "0x0000000000000000000000000000000000000002", "60", "12", "2", "24", "84"]],
+    [["sha256", "0"], ["sha256", "0x0000000000000000000000000000000000000002", "60", "12", "0", "0", "60"]],
+    [["sha256", "1"], ["sha256", "0x0000000000000000000000000000000000000002", "60", "12", "1", "12", "72"]],
+    [["sha256", "32"], ["sha256", "0x0000000000000000000000000000000000000002", "60", "12", "1", "12", "72"]],
+    [["sha256", "33"], ["sha256", "0x0000000000000000000000000000000000000002", "60", "12", "2", "24", "84"]],
+    [["sha256", "100"], ["sha256", "0x0000000000000000000000000000000000000002", "60", "12", "4", "48", "108"]],
+    [["sha256", "1000000"], ["sha256", "0x0000000000000000000000000000000000000002", "60", "12", "31250", "375000", "375060"]],
+    [["ripemd160", "0"], ["ripemd160", "0x0000000000000000000000000000000000000003", "600", "120", "0", "0", "600"]],
+    [["ripemd160", "32"], ["ripemd160", "0x0000000000000000000000000000000000000003", "600", "120", "1", "120", "720"]],
+    [["ripemd160", "33"], ["ripemd160", "0x0000000000000000000000000000000000000003", "600", "120", "2", "240", "840"]],
+    [["ripemd160", "128"], ["ripemd160", "0x0000000000000000000000000000000000000003", "600", "120", "4", "480", "1080"]],
+    [["identity", "0"], ["identity", "0x0000000000000000000000000000000000000004", "15", "3", "0", "0", "15"]],
+    [["identity", "32"], ["identity", "0x0000000000000000000000000000000000000004", "15", "3", "1", "3", "18"]],
+    [["identity", "33"], ["identity", "0x0000000000000000000000000000000000000004", "15", "3", "2", "6", "21"]],
+    [["identity", "1024"], ["identity", "0x0000000000000000000000000000000000000004", "15", "3", "32", "96", "111"]],
+    [["ecrecover", "0"], ["ecrecover", "0x0000000000000000000000000000000000000001", "3000", "0", "0", "0", "3000"]],
+    [["ecrecover", "128"], ["ecrecover", "0x0000000000000000000000000000000000000001", "3000", "0", "4", "0", "3000"]],
+    [["ecrecover", "999999"], ["ecrecover", "0x0000000000000000000000000000000000000001", "3000", "0", "31250", "0", "3000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.precompileGasCalc(...inp);
+    return r !== null && [r.precompile, r.address, r.baseGas, r.perWordGas, r.words, r.wordGas, r.totalGas].join(",") === exp.join(","); }); })());
+check("precompile: words round up (33 bytes pays one more word than 32), RIPEMD-160 is exactly 10x SHA-256's base and per-word, and ecrecover's price never moves with length",
+  (() => { const s32 = app.precompileGasCalc("sha256", "32");
+    const s33 = app.precompileGasCalc("sha256", "33");
+    const r32 = app.precompileGasCalc("ripemd160", "32");
+    const e0 = app.precompileGasCalc("ecrecover", "0");
+    const eBig = app.precompileGasCalc("ecrecover", "999999");
+    return s32 !== null && s33 !== null && r32 !== null && e0 !== null && eBig !== null &&
+      html.includes('id="pc-name"') && html.includes('<option value="sha256" selected>') &&
+      (BigInt(s33.totalGas) - BigInt(s32.totalGas)).toString() === "12" &&
+      (BigInt(r32.baseGas) / BigInt(s32.baseGas)).toString() === "10" &&
+      (BigInt(r32.perWordGas) / BigInt(s32.perWordGas)).toString() === "10" &&
+      e0.totalGas === "3000" && eBig.totalGas === "3000" && eBig.wordGas === "0"; })());
+check("precompile refuses an unknown or non-string precompile and a malformed, negative, hex or over-bound input length",
+  app.precompileGasCalc("modexp", "64") === null &&
+  app.precompileGasCalc("SHA256", "64") === null &&
+  app.precompileGasCalc(null, "64") === null &&
+  app.precompileGasCalc("sha256", "abc") === null &&
+  app.precompileGasCalc("sha256", "-1") === null &&
+  app.precompileGasCalc("sha256", "0x40") === null &&
+  app.precompileGasCalc("sha256", null) === null &&
+  app.precompileGasCalc("sha256", "137438953441") === null &&
+  app.precompileGasCalc("sha256", "137438953440") !== null);
+check("precompile tool section present in index.html", html.includes("pc-btn") && html.includes("Original precompile gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

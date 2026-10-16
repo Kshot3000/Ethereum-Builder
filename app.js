@@ -3853,6 +3853,71 @@ function selfdestructGasCalc(isCold, beneficiaryEmpty, balanceStr) {
   };
 }
 
+/* Original precompile gas — ecrecover / SHA-256 / RIPEMD-160 /
+   identity, the four precompiled contracts at addresses 0x01 to
+   0x04 that have existed since Frontier. Their pricing, from the
+   Yellow Paper's precompile definitions as go-ethereum's
+   precompile gas functions implement it (formulas paraphrased;
+   constants cross-verified across two independent sources: the
+   Yellow Paper's own values and independent gas tables listing
+   all four at exactly these prices):
+     - a flat base, plus — for three of the four — a per-word
+       charge on the input length rounded UP to whole 32-byte
+       words: words = ceil(len / 32), so a 0-length input is
+       0 words and pays the base alone, 1 byte pays for a full
+       word just as 32 does, and 33 bytes pays for two;
+     - ecrecover (0x01): 3,000 flat, NO per-word term — the
+       input length moves nothing. Its defined input is four
+       32-byte fields (hash, v, r, s); a short input is read as
+       zero-padded and extra bytes are ignored, and the charge
+       is 3,000 at any length, including 0. (A failed recovery
+       returns empty output; the charge is the same.)
+     - SHA-256 (0x02): 60 + 12 per word.
+     - RIPEMD-160 (0x03): 600 + 120 per word — base and per-word
+       are each exactly 10x SHA-256's.
+     - identity (0x04): 15 + 3 per word; it copies its input to
+       its output unchanged.
+   There is no EIP-2929 access term: the precompiles start warm
+   (they are in every transaction's accessed-addresses set from
+   the start), so no cold surcharge is ever added. This prices
+   the precompile's OWN charge only: the CALL or STATICCALL
+   that invokes it charges its own terms separately (the CALL
+   calculator above — access, memory expansion for the input
+   and output regions, forwarding), and those are not included
+   here. The input's CONTENTS move no term — only its length.
+   Deliberate contrasts: the ModExp precompile (0x05) has its
+   own calculator above (its price depends on the operand
+   lengths and the exponent's head, not the input length
+   alone), and the SHA3 OPCODE (30 + 6 per word, plus memory
+   expansion) is a different thing from the SHA-256 PRECOMPILE
+   priced here (60 + 12 per word, no memory term) — Ethereum
+   has no Keccak precompile; contracts hash with the opcode.
+   The input length is a byte count in decimal, bounded like
+   the memory tools' sizes (an input lives in the caller's
+   memory, whose size the client's gas calculation bounds);
+   anything else is refused. */
+const PRECOMPILE_GAS_TABLE = {
+  ecrecover: { address: "0x0000000000000000000000000000000000000001", base: 3000n, perWord: 0n },
+  sha256: { address: "0x0000000000000000000000000000000000000002", base: 60n, perWord: 12n },
+  ripemd160: { address: "0x0000000000000000000000000000000000000003", base: 600n, perWord: 120n },
+  identity: { address: "0x0000000000000000000000000000000000000004", base: 15n, perWord: 3n }
+};
+function precompileGasCalc(nameStr, inputLenStr) {
+  if (typeof nameStr !== "string") return null;
+  const entry = PRECOMPILE_GAS_TABLE[nameStr.trim()];
+  if (!entry) return null;
+  const len = memParseBytes(inputLenStr);
+  if (len === null) return null;
+  const words = (len + 31n) / 32n;
+  const wordGas = entry.perWord * words;
+  return {
+    precompile: nameStr.trim(), address: entry.address,
+    baseGas: entry.base.toString(), perWordGas: entry.perWord.toString(),
+    words: words.toString(), wordGas: wordGas.toString(),
+    totalGas: (entry.base + wordGas).toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4907,6 +4972,20 @@ if (typeof document !== "undefined") {
       el.textContent = `SELFDESTRUCT gas: ${r.totalGas} total — ${r.baseGas} for the opcode itself + ${r.accessGas} beneficiary access + ${r.newAccountGas} new-account charge; refund ${r.refund} (the old 24,000 refund was removed by EIP-3529). Under EIP-6780 the code and storage are deleted only if the contract was created in this same transaction; otherwise only the balance moves. Computed locally from the values you gave — nothing is destroyed and no chain is queried.`;
     });
 
+    /* Original precompile gas */
+    const pcBtn = document.getElementById("pc-btn");
+    if (pcBtn) pcBtn.addEventListener("click", () => {
+      const r = precompileGasCalc(
+        document.getElementById("pc-name").value,
+        document.getElementById("pc-len").value);
+      const el = document.getElementById("pc-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the input length is a byte count in decimal (0 or more).";
+        return;
+      }
+      el.textContent = `${r.precompile} precompile (${r.address}) gas: ${r.totalGas} total — ${r.baseGas} base + ${r.wordGas} for ${r.words} word(s) of input at ${r.perWordGas} per word. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4920,5 +4999,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

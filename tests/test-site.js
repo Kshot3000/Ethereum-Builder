@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=53"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=54"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2645,6 +2645,57 @@ check("transient refuses an unknown or malformed opcode (persistent-storage name
   app.transientGasCalc(100) === null &&
   app.transientGasCalc(undefined) === null);
 check("transient tool section present in index.html", html.includes("trans-btn") && html.includes("Transient storage gas calculator"));
+
+/* Other CALL opcodes gas (CALLCODE / DELEGATECALL / STATICCALL)
+   — expected values produced by an independent pure-Python
+   transcription of the CALL-family pricing (hidden_files/
+   oracle-other-call-gas.py): all three share CALL's EIP-2929
+   access, memory expansion and EIP-150 forwarding; CALLCODE
+   keeps the 9,000 transfer and 2,300 stipend for non-zero
+   value but never the 25,000 new-account charge, and
+   DELEGATECALL / STATICCALL have no value terms at all. The
+   oracle is anchored in-script on hand values (the prefilled
+   CALLCODE split, DELEGATECALL at 95,879 forwarded,
+   STATICCALL agreeing with DELEGATECALL, and CALL-to-empty
+   basing exactly 25,000 above CALLCODE). Vectors are
+   [opcode, available, requested, value, isCold, curMem,
+   inOff, inSize, outOff, outSize] -> result fields. */
+check("other-call controls labelled in index.html",
+  ["ocall-op", "ocall-available", "ocall-requested", "ocall-value", "ocall-access", "ocall-mem", "ocall-in-off", "ocall-in-size", "ocall-out-off", "ocall-out-size"].every(id => html.includes(`for="${id}"`)));
+check("other-call gas matches the Python oracle (CALLCODE / DELEGATECALL / STATICCALL)",
+  (() => { const V = [
+    [["CALLCODE", "100000", "1000000", "1000000000000000000", true, "0", "0", "0", "0", "0"], ["CALLCODE", "2600", "9000", "0", "0", "11600", "0", "false", "88400", "87019", "87019", "2300", "89319", "1381"]],
+    [["DELEGATECALL", "100000", "1000000", "1000000000000000000", true, "0", "0", "0", "0", "0"], ["DELEGATECALL", "2600", "0", "0", "0", "2600", "0", "false", "97400", "95879", "95879", "0", "95879", "1521"]],
+    [["STATICCALL", "100000", "1000000", "1000000000000000000", true, "0", "0", "0", "0", "0"], ["STATICCALL", "2600", "0", "0", "0", "2600", "0", "false", "97400", "95879", "95879", "0", "95879", "1521"]],
+    [["CALLCODE", "100000", "1000000", "0", true, "0", "0", "0", "0", "0"], ["CALLCODE", "2600", "0", "0", "0", "2600", "0", "false", "97400", "95879", "95879", "0", "95879", "1521"]],
+    [["CALLCODE", "100000", "1000000", "1000000000000000000", false, "0", "0", "0", "0", "0"], ["CALLCODE", "100", "9000", "0", "0", "9100", "0", "false", "90900", "89480", "89480", "2300", "91780", "1420"]],
+    [["DELEGATECALL", "100000", "1000000", "0", false, "0", "0", "128", "0", "0"], ["DELEGATECALL", "100", "0", "0", "12", "112", "128", "false", "99888", "98328", "98328", "0", "98328", "1560"]],
+    [["STATICCALL", "2000", "1000000", "0", true, "0", "0", "0", "0", "0"], ["STATICCALL", "2600", "0", "0", "0", "2600", "0", "true", "0", "0", "0", "0", "0", "0"]],
+    [["CALLCODE", "100000", "5000", "1000000000000000000", true, "0", "0", "0", "0", "0"], ["CALLCODE", "2600", "9000", "0", "0", "11600", "0", "false", "88400", "87019", "5000", "2300", "7300", "83400"]]
+  ]; return V.every(([inp, exp]) => { const r = app.otherCallGasCalc(...inp);
+    return r !== null && [r.opcode, r.accessGas, r.transferGas, r.newAccountGas, r.memoryGas, r.baseGas, r.newMemBytes, String(r.outOfGas), r.remaining, r.capGas, r.forwardedGas, r.stipend, r.calleeGas, r.callerRetained].join(",") === exp.join(","); }); })());
+check("other-call: prefilled CALLCODE split equals the CALL prefill, DELEGATECALL and STATICCALL agree with each other, and CALLCODE sits exactly 25,000 below a CALL to an empty target",
+  (() => { const cc = app.otherCallGasCalc("CALLCODE", "100000", "1000000", "1000000000000000000", true, "0", "0", "0", "0", "0");
+    const call = app.callGasCalc("100000", "1000000", "1000000000000000000", true, false, "0", "0", "0", "0", "0");
+    const callEmpty = app.callGasCalc("100000", "1000000", "1000000000000000000", true, true, "0", "0", "0", "0", "0");
+    const dc = app.otherCallGasCalc("DELEGATECALL", "100000", "1000000", "1000000000000000000", true, "0", "0", "0", "0", "0");
+    const sc = app.otherCallGasCalc("STATICCALL", "100000", "1000000", "1000000000000000000", true, "0", "0", "0", "0", "0");
+    return cc !== null && call !== null && callEmpty !== null && dc !== null && sc !== null &&
+      html.includes('id="ocall-op"') && html.includes('<option value="CALLCODE" selected>') &&
+      cc.baseGas === call.baseGas && cc.forwardedGas === call.forwardedGas && cc.calleeGas === call.calleeGas && cc.callerRetained === call.callerRetained &&
+      cc.newAccountGas === "0" && callEmpty.newAccountGas === "25000" &&
+      (BigInt(callEmpty.baseGas) - BigInt(cc.baseGas)).toString() === "25000" &&
+      dc.baseGas === sc.baseGas && dc.forwardedGas === "95879" && dc.forwardedGas === sc.forwardedGas && dc.stipend === "0" && sc.stipend === "0"; })());
+check("other-call refuses an unknown opcode, a non-boolean warmth flag, and (for CALLCODE) a malformed value, while DELEGATECALL ignores the value string entirely",
+  app.otherCallGasCalc("CALL", "100000", "1000000", "0", true, "0", "0", "0", "0", "0") === null &&
+  app.otherCallGasCalc("callcode", "100000", "1000000", "0", true, "0", "0", "0", "0", "0") === null &&
+  app.otherCallGasCalc("CALLCODE", "100000", "1000000", "0", "cold", "0", "0", "0", "0", "0") === null &&
+  app.otherCallGasCalc("CALLCODE", "100000", "1000000", "abc", true, "0", "0", "0", "0", "0") === null &&
+  app.otherCallGasCalc("CALLCODE", "100000", "1000000", null, true, "0", "0", "0", "0", "0") === null &&
+  app.otherCallGasCalc(null, "100000", "1000000", "0", true, "0", "0", "0", "0", "0") === null &&
+  app.otherCallGasCalc("DELEGATECALL", "100000", "1000000", "not-a-value", true, "0", "0", "0", "0", "0") !== null &&
+  app.otherCallGasCalc("DELEGATECALL", "100000", "1000000", "not-a-value", true, "0", "0", "0", "0", "0").transferGas === "0");
+check("other-call tool section present in index.html", html.includes("ocall-btn") && html.includes("Other CALL opcodes gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

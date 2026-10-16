@@ -615,6 +615,33 @@
     </div>
 
     <div class="tool">
+      <h3>Other CALL opcodes gas calculator (CALLCODE / DELEGATECALL / STATICCALL)</h3>
+      <p>The <code>CALL</code> calculator above deliberately left out CALL's three siblings — they share its rules but differ on the value terms, and the differences are the point. All three pay the same <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> access cost for the code address (2,600 cold, 100 warm), the same memory expansion for the input and output regions together, and the same <a href="https://eips.ethereum.org/EIPS/eip-150">EIP-150</a> forwarding rule: of what remains after the opcode's own costs, at most <code>R − floor(R ÷ 64)</code> can be forwarded. Where they split: <code>CALLCODE</code> (0xf2) <em>has</em> a value argument, but the value is taken from the executing contract's own balance and credited to its <em>own</em> account — the child runs the target's code in the caller's context — so a non-zero value pays the 9,000 transfer charge and earns the child the 2,300 stipend exactly as <code>CALL</code> does, while the 25,000 new-account charge can <em>never</em> apply, because the recipient is the caller's own account, which necessarily already exists (there is deliberately no target-state input below). <code>DELEGATECALL</code> (0xf4) has <em>no value argument at all</em>: the child inherits the caller's sender and apparent value and no balance moves, so there is no transfer charge, no new-account charge and no stipend. <code>STATICCALL</code> (0xfa) likewise has no value argument — its child's value is forced to zero in a static context — so it prices exactly as <code>DELEGATECALL</code> does; the value field below applies to <code>CALLCODE</code> only and is ignored for the other two. The prefilled call — a <code>CALLCODE</code>, cold, carrying 1 ETH, with 100,000 gas available and 1,000,000 requested — pays 11,600 of its own costs, is capped at forwarding 87,019, delivers 89,319 to the callee with the stipend, and keeps exactly its 1,381 reserve: the same split as the <code>CALL</code> calculator's prefill, because the difference from <code>CALL</code> appears only against an empty target, where <code>CALL</code> would add 25,000 and <code>CALLCODE</code> never does. A <code>DELEGATECALL</code> or <code>STATICCALL</code> on the same frame numbers pays only the 2,600 access cost and forwards 95,879. Honest scope: a call the caller cannot fund, a value-bearing <code>CALLCODE</code> inside a static context, and a <code>STATICCALL</code> child attempting a state change all fail for non-gas reasons that are not modelled, and warmth and memory are values <em>you</em> supply, not execution state this page reads. Computed locally; no call is made and no chain is queried.</p>
+      <label for="ocall-op">Opcode (the value terms differ — see above)</label>
+      <select id="ocall-op"><option value="CALLCODE" selected>CALLCODE — has a value argument; transfer 9,000 + stipend 2,300 when non-zero, new-account charge never</option><option value="DELEGATECALL">DELEGATECALL — no value argument; no transfer, new-account or stipend terms</option><option value="STATICCALL">STATICCALL — no value argument; prices exactly as DELEGATECALL</option></select>
+      <label for="ocall-available">Gas available (the calling frame's remaining gas just before the opcode)</label>
+      <input id="ocall-available" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <label for="ocall-requested">Gas requested (the opcode's gas argument — what the caller asks to forward)</label>
+      <input id="ocall-requested" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="ocall-value">Value carried (wei — decimal or 0x hex; CALLCODE only, ignored for DELEGATECALL / STATICCALL; only zero vs non-zero changes the price)</label>
+      <input id="ocall-value" type="text" inputmode="numeric" spellcheck="false" value="1000000000000000000">
+      <label for="ocall-access">Code address access in this transaction</label>
+      <select id="ocall-access"><option value="cold" selected>Cold — first access of this address in the transaction (2,600)</option><option value="warm">Warm — address already accessed in this transaction (100)</option></select>
+      <label for="ocall-mem">Current memory size (bytes — what the calling frame has already allocated)</label>
+      <input id="ocall-mem" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="ocall-in-off">Input region offset (bytes)</label>
+      <input id="ocall-in-off" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="ocall-in-size">Input region size (bytes — 0 touches nothing)</label>
+      <input id="ocall-in-size" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="ocall-out-off">Output region offset (bytes)</label>
+      <input id="ocall-out-off" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="ocall-out-size">Output region size (bytes — 0 touches nothing)</label>
+      <input id="ocall-out-size" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <button id="ocall-btn" type="button">Calculate other CALL gas</button>
+      <p id="ocall-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -948,6 +975,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=53"></script>
+<script src="app.js?v=54"></script>
 </body>
 </html>

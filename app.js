@@ -3698,6 +3698,100 @@ function transientGasCalc(opcode) {
   };
 }
 
+/* Other CALL opcodes gas -- CALLCODE / DELEGATECALL /
+   STATICCALL (EIP-2929, EIP-150). The CALL calculator above
+   deliberately excluded these three: they share CALL's
+   access, memory-expansion and all-but-one-64th forwarding
+   rules but differ on the value terms, and the differences
+   are the whole content here (rules paraphrased from
+   go-ethereum's gas functions for these opcodes, cross-
+   verified this run against an independent CALL-family
+   analysis: CALLCODE is "same as CALL but without new
+   account creation", DELEGATECALL has "no value transfer
+   costs", STATICCALL is "same as DELEGATECALL", and the
+   2,300 stipend is added for CALL or CALLCODE when the
+   transferred value is non-zero).
+   - Access: the code address costs 2,600 cold / 100 warm
+     (EIP-2929), exactly as for CALL.
+   - Memory expansion for the input and output regions
+     together, exactly as for CALL (the frame must reach the
+     larger region end; a zero-size region touches nothing).
+   - CALLCODE (0xf2) HAS a value argument, but the value is
+     taken from the executing contract's own balance and
+     credited to the executing contract's own account -- the
+     child frame runs the target's code in the caller's
+     context -- so a non-zero value pays the 9,000 transfer
+     charge and earns the child the 2,300 stipend exactly as
+     CALL does, while the 25,000 new-account charge can
+     NEVER apply: the recipient is the caller's own account,
+     which necessarily already exists. There is deliberately
+     no target-state input for this opcode.
+   - DELEGATECALL (0xf4) has NO value argument at all: the
+     child runs the target's code in the caller's context
+     and inherits the caller's sender and apparent value, no
+     balance moves, so no transfer charge, no new-account
+     charge and no stipend. The value string is not parsed.
+   - STATICCALL (0xfa) likewise has NO value argument: the
+     child runs with its value forced to zero in a static
+     context, so it prices exactly as DELEGATECALL does.
+   Forwarding then follows EIP-150 exactly as for CALL: of
+   the remainder R after the opcode's own costs at most
+   R - floor(R / 64) can be forwarded, the callee receives
+   min(requested, cap) plus any stipend (the stipend is
+   added for the callee and not deducted from the caller),
+   and if the frame's gas does not cover the own costs the
+   opcode runs out of gas and forwards nothing. Honest
+   scope: a call the caller cannot fund, a value-bearing
+   CALLCODE attempted inside a static context, and a
+   STATICCALL child attempting a state change all fail for
+   non-gas reasons not modelled here; warmth and memory are
+   user-supplied values, not execution state read here. */
+function otherCallGasCalc(opcode, availableStr, requestedStr, valueStr, isCold,
+    curMemStr, inOffStr, inSizeStr, outOffStr, outSizeStr) {
+  if (!["CALLCODE", "DELEGATECALL", "STATICCALL"].includes(opcode)) return null;
+  if (typeof isCold !== "boolean") return null;
+  const available = callParseGas(availableStr);
+  const requested = callParseGas(requestedStr);
+  const curMem = memParseBytes(curMemStr);
+  if (available === null || requested === null || curMem === null) return null;
+  let value = 0n;
+  if (opcode === "CALLCODE") {
+    value = sstoreParseWord(valueStr);
+    if (value === null) return null;
+  }
+  const inOff = memParseBytes(inOffStr), inSize = memParseBytes(inSizeStr);
+  const outOff = memParseBytes(outOffStr), outSize = memParseBytes(outSizeStr);
+  if (inOff === null || inSize === null || outOff === null || outSize === null) return null;
+  const inEnd = inSize === 0n ? 0n : inOff + inSize;
+  const outEnd = outSize === 0n ? 0n : outOff + outSize;
+  if (inEnd > MEM_MAX_BYTES || outEnd > MEM_MAX_BYTES) return null;
+  const newMem = inEnd > outEnd ? inEnd : outEnd;
+  const accessGas = isCold ? 2600n : 100n;
+  const transferGas = value > 0n ? 9000n : 0n;
+  const newAccountGas = 0n;
+  const curWords = (curMem + 31n) / 32n;
+  const newWords = (newMem + 31n) / 32n;
+  const memoryGas = newWords > curWords ? memTotalCost(newWords) - memTotalCost(curWords) : 0n;
+  const baseGas = accessGas + transferGas + newAccountGas + memoryGas;
+  const zero = {
+    opcode, accessGas: accessGas.toString(), transferGas: transferGas.toString(),
+    newAccountGas: newAccountGas.toString(), memoryGas: memoryGas.toString(),
+    baseGas: baseGas.toString(), newMemBytes: newMem.toString()
+  };
+  if (available < baseGas) {
+    return { ...zero, outOfGas: true, remaining: "0", capGas: "0",
+      forwardedGas: "0", stipend: "0", calleeGas: "0", callerRetained: "0" };
+  }
+  const remaining = available - baseGas;
+  const capGas = remaining - remaining / 64n;
+  const forwardedGas = requested < capGas ? requested : capGas;
+  const stipend = value > 0n ? 2300n : 0n;
+  return { ...zero, outOfGas: false, remaining: remaining.toString(),
+    capGas: capGas.toString(), forwardedGas: forwardedGas.toString(),
+    stipend: stipend.toString(), calleeGas: (forwardedGas + stipend).toString(),
+    callerRetained: (remaining - forwardedGas).toString() };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4711,6 +4805,32 @@ if (typeof document !== "undefined") {
       el.textContent = `${r.opcode} gas: ${r.totalGas} — a flat charge with no cold price and no other term; the value moved is a stack word, so no memory expansion applies, and no refund is ever earned. Computed locally — transient storage is not read or written and no chain is queried.`;
     });
 
+    /* CALLCODE / DELEGATECALL / STATICCALL gas */
+    const ocallBtn = document.getElementById("ocall-btn");
+    if (ocallBtn) ocallBtn.addEventListener("click", () => {
+      const r = otherCallGasCalc(
+        document.getElementById("ocall-op").value,
+        document.getElementById("ocall-available").value,
+        document.getElementById("ocall-requested").value,
+        document.getElementById("ocall-value").value,
+        document.getElementById("ocall-access").value === "cold",
+        document.getElementById("ocall-mem").value,
+        document.getElementById("ocall-in-off").value,
+        document.getElementById("ocall-in-size").value,
+        document.getElementById("ocall-out-off").value,
+        document.getElementById("ocall-out-size").value);
+      const el = document.getElementById("ocall-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: gas and memory values are non-negative decimal integers, and the value (CALLCODE only) is a wei amount in decimal or 0x hex.";
+        return;
+      }
+      if (r.outOfGas) {
+        el.textContent = `${r.opcode} runs out of gas: its own cost is ${r.baseGas} (access ${r.accessGas} + value transfer ${r.transferGas} + new account ${r.newAccountGas} + memory expansion ${r.memoryGas}), more than the available gas — nothing is forwarded. Computed locally — no call is made and no chain is queried.`;
+        return;
+      }
+      el.textContent = `${r.opcode} gas: own cost ${r.baseGas} (access ${r.accessGas} + value transfer ${r.transferGas} + new account ${r.newAccountGas} + memory expansion ${r.memoryGas}); of the ${r.remaining} remaining, at most ${r.capGas} can be forwarded under the all-but-one-64th rule, so ${r.forwardedGas} is forwarded and the callee receives ${r.calleeGas} (forwarded + ${r.stipend} stipend); the caller retains ${r.callerRetained} at the moment of the call. The new-account charge is always 0 for these opcodes. Computed locally from the values you gave — no call is made and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4724,5 +4844,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

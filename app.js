@@ -4083,6 +4083,116 @@ function kzgGasCalc(inputLenStr) {
   };
 }
 
+/* BLS12-381 precompile gas — the seven precompiles at
+   addresses 0x0b-0x11 defined by EIP-2537 for operations on
+   the BLS12-381 curve (the curve BLS signatures and the
+   consensus layer use, offering roughly 120+ bits of security
+   where alt_bn128 offers roughly 80). The EIP is Final and
+   CC0; the schedule is restated here in my own words, and the
+   constants were cross-verified across two independent
+   sources this run: EIP-2537's own gas schedule and an
+   independent client implementation's per-precompile gas
+   listing (a second implementation's pricing table agreed).
+   EIP-2537 shipped in the Prague/Electra upgrade (the
+   EIP-7600 hardfork meta, also Final): mainnet activation at
+   epoch 364032, so these are live mainnet prices, not a
+   proposal. The seven:
+     - G1ADD (0x0b): a flat 375. Its defined input is two G1
+       points, 256 bytes, and its output one G1 point.
+     - G2ADD (0x0d): a flat 600. Input two G2 points, 512
+       bytes.
+     - MAP_FP_TO_G1 (0x10): a flat 5,500, mapping one 64-byte
+       base-field element to a G1 point.
+     - MAP_FP2_TO_G2 (0x11): a flat 23,800, mapping one
+       128-byte extension-field element to a G2 point.
+     - PAIRING (0x0f): 37,700 plus 32,600 per pair, a pair
+       being one 384-byte element (a 128-byte G1 point and a
+       256-byte G2 point). (An early draft price of 43,000
+       per pair still circulates in stale write-ups; the
+       Final EIP and live clients charge 32,600.)
+     - G1MSM (0x0c) and G2MSM (0x0e): multi-scalar
+       multiplication — k point/scalar pairs priced as
+       floor(k * mulCost * discount(k) / 1000), where mulCost
+       is the single-multiplication cost (12,000 for G1,
+       22,500 for G2) and discount(k) is a per-k discount
+       from the EIP's tables (Pippenger's algorithm beats k
+       separate multiplications, and the discount is that
+       saving): the tables run k = 1..128 and the discount is
+       capped past the table at 519 (G1) / 524 (G2). At k = 1
+       the discount is 1000, so an MSM of one pair costs
+       exactly the single-multiplication price. A G1 pair is
+       160 bytes of input (128-byte point + 32-byte scalar),
+       a G2 pair 288 bytes (256 + 32).
+   Unlike the alt_bn128 pairing check, whose empty input
+   succeeds, the EIP requires the variable-length operations
+   (both MSMs and the pairing check) to return an error on an
+   empty input, so a count of 0 has no price here and is
+   refused. There is no dedicated single-MUL precompile: an
+   MSM with k = 1 is the multiplication. There is no
+   EIP-2929 access term: like the other precompiles, these
+   start warm. This prices the precompile's OWN charge only:
+   the CALL or STATICCALL that invokes it charges its own
+   terms separately (the CALL calculator above). For the flat
+   operations the count argument is not even parsed, exactly
+   as their pricing never reads it; for the variable ones the
+   count is bounded so the implied input fits the same size
+   bound the memory tools use. A point not on its curve, a
+   point outside its subgroup where a subgroup check applies
+   (the MSMs and the pairing check; the ADDs perform none),
+   a non-canonical field element, or an input length that is
+   not the defined width (or a multiple of it) fails for a
+   non-gas reason and is not modelled — on error a BLS
+   precompile burns all the gas supplied to the call, which
+   is also not modelled. */
+const BLS_G1_DISCOUNT = [1000, 949, 848, 797, 764, 750, 738, 728, 719, 712, 705, 698, 692, 687, 682, 677, 673, 669, 665, 661, 658, 654, 651, 648, 645, 642, 640, 637, 635, 632, 630, 627, 625, 623, 621, 619, 617, 615, 613, 611, 609, 608, 606, 604, 603, 601, 599, 598, 596, 595, 593, 592, 591, 589, 588, 586, 585, 584, 582, 581, 580, 579, 577, 576, 575, 574, 573, 572, 570, 569, 568, 567, 566, 565, 564, 563, 562, 561, 560, 559, 558, 557, 556, 555, 554, 553, 552, 551, 550, 549, 548, 547, 547, 546, 545, 544, 543, 542, 541, 540, 540, 539, 538, 537, 536, 536, 535, 534, 533, 532, 532, 531, 530, 529, 528, 528, 527, 526, 525, 525, 524, 523, 522, 522, 521, 520, 520, 519];
+const BLS_G2_DISCOUNT = [1000, 1000, 923, 884, 855, 832, 812, 796, 782, 770, 759, 749, 740, 732, 724, 717, 711, 704, 699, 693, 688, 683, 679, 674, 670, 666, 663, 659, 655, 652, 649, 646, 643, 640, 637, 634, 632, 629, 627, 624, 622, 620, 618, 615, 613, 611, 609, 607, 606, 604, 602, 600, 598, 597, 595, 593, 592, 590, 589, 587, 586, 584, 583, 582, 580, 579, 578, 576, 575, 574, 573, 571, 570, 569, 568, 567, 566, 565, 563, 562, 561, 560, 559, 558, 557, 556, 555, 554, 553, 552, 552, 551, 550, 549, 548, 547, 546, 545, 545, 544, 543, 542, 541, 541, 540, 539, 538, 537, 537, 536, 535, 535, 534, 533, 532, 532, 531, 530, 530, 529, 528, 528, 527, 526, 526, 525, 524, 524];
+const BLS_GAS_TABLE = {
+  "g1add": { address: "0x000000000000000000000000000000000000000b", flat: 375n, inputBytes: 256n },
+  "g2add": { address: "0x000000000000000000000000000000000000000d", flat: 600n, inputBytes: 512n },
+  "map-fp-to-g1": { address: "0x0000000000000000000000000000000000000010", flat: 5500n, inputBytes: 64n },
+  "map-fp2-to-g2": { address: "0x0000000000000000000000000000000000000011", flat: 23800n, inputBytes: 128n },
+  "g1msm": { address: "0x000000000000000000000000000000000000000c", perPairBytes: 160n, mulCost: 12000n, discount: BLS_G1_DISCOUNT, maxDiscount: 519n },
+  "g2msm": { address: "0x000000000000000000000000000000000000000e", perPairBytes: 288n, mulCost: 22500n, discount: BLS_G2_DISCOUNT, maxDiscount: 524n },
+  "pairing": { address: "0x000000000000000000000000000000000000000f", perPairBytes: 384n, base: 37700n, perPair: 32600n }
+};
+function blsGasCalc(nameStr, pairsStr) {
+  if (typeof nameStr !== "string") return null;
+  const name = nameStr.trim();
+  const entry = BLS_GAS_TABLE[name];
+  if (!entry) return null;
+  if (entry.flat !== undefined) {
+    return {
+      precompile: name, address: entry.address,
+      baseGas: entry.flat.toString(), perPairGas: "0",
+      pairs: "0", pairGas: "0", discount: "0",
+      inputBytes: entry.inputBytes.toString(),
+      totalGas: entry.flat.toString()
+    };
+  }
+  const pairs = memParseBytes(pairsStr);
+  if (pairs === null || pairs < 1n || pairs * entry.perPairBytes > MEM_MAX_BYTES) return null;
+  if (entry.perPair !== undefined) {
+    const pairGas = entry.perPair * pairs;
+    return {
+      precompile: name, address: entry.address,
+      baseGas: entry.base.toString(), perPairGas: entry.perPair.toString(),
+      pairs: pairs.toString(), pairGas: pairGas.toString(), discount: "0",
+      inputBytes: (pairs * entry.perPairBytes).toString(),
+      totalGas: (entry.base + pairGas).toString()
+    };
+  }
+  const discount = pairs <= 128n ? BigInt(entry.discount[Number(pairs) - 1]) : entry.maxDiscount;
+  const totalGas = (pairs * entry.mulCost * discount) / 1000n;
+  return {
+    precompile: name, address: entry.address,
+    baseGas: "0", perPairGas: entry.mulCost.toString(),
+    pairs: pairs.toString(), pairGas: totalGas.toString(),
+    discount: discount.toString(),
+    inputBytes: (pairs * entry.perPairBytes).toString(),
+    totalGas: totalGas.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -5193,6 +5303,28 @@ if (typeof document !== "undefined") {
       el.textContent = `KZG point evaluation precompile (${r.address}) gas: ${r.totalGas} total — a flat charge for verifying one point evaluation over its fixed ${r.inputBytes}-byte input, returning ${r.outputBytes} bytes (${r.fieldElementsPerBlob} field elements per blob and the BLS modulus). This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* BLS12-381 precompile gas */
+    const blsBtn = document.getElementById("bls-btn");
+    if (blsBtn) blsBtn.addEventListener("click", () => {
+      const name = document.getElementById("bls-name").value;
+      const r = blsGasCalc(name,
+        document.getElementById("bls-pairs").value);
+      const el = document.getElementById("bls-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: for the MSM and pairing operations the count is a decimal count of at least 1 (an empty input errors, so it has no price), bounded so the implied input fits the size bound the memory tools use.";
+        return;
+      }
+      if (r.discount !== "0") {
+        el.textContent = `BLS12-381 precompile ${r.precompile} (${r.address}) gas: ${r.totalGas} total — ${r.pairs} pair(s) at a ${r.perPairGas} single-multiplication cost with the EIP-2537 MSM discount of ${r.discount}/1000 applied (floor of pairs × cost × discount / 1000), over ${r.inputBytes} bytes of input. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
+        return;
+      }
+      if (r.perPairGas !== "0") {
+        el.textContent = `BLS12-381 precompile ${r.precompile} (${r.address}) gas: ${r.totalGas} total — ${r.baseGas} base + ${r.perPairGas} per pair × ${r.pairs} pair(s), over ${r.inputBytes} bytes of input. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
+        return;
+      }
+      el.textContent = `BLS12-381 precompile ${r.precompile} (${r.address}) gas: ${r.totalGas} total — a flat charge over its fixed ${r.inputBytes}-byte input. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -5206,5 +5338,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

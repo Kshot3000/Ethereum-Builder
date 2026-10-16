@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=59"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=60"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2943,6 +2943,67 @@ check("kzg refuses a malformed, negative, hex, non-string or wrong-length input"
   app.kzgGasCalc("137438953441") === null &&
   app.kzgGasCalc("192") !== null);
 check("kzg tool section present in index.html", html.includes("kzg-btn") && html.includes("KZG point evaluation precompile gas calculator"));
+
+/* BLS12-381 precompile gas — expected values produced by an
+   independent pure-Python transcription of the pricing
+   (hidden_files/oracle-bls-gas.py): the seven precompiles at
+   0x0b-0x11 (EIP-2537, live since Prague/Electra). Four are
+   flat (G1ADD 375, G2ADD 600, MAP_FP_TO_G1 5500,
+   MAP_FP2_TO_G2 23800); the pairing check is 37700 + 32600
+   per 384-byte pair; the MSMs are floor(k * mulCost *
+   discount(k) / 1000) with mulCost 12000 (G1) / 22500 (G2)
+   and the EIP's discount tables (cap 519 / 524 past k = 128).
+   The oracle is anchored in-script on hand values (the
+   prefilled G1MSM over 2 pairs at 22,776, k = 1 at exactly
+   the single-multiplication cost, G2MSM at k = 3 flooring
+   62,302.5 to 62,302, the pairing pair at 70,300, empty
+   counts refused). Vectors are [name, count] -> result
+   fields; the count is ignored for the flat operations. */
+check("bls controls labelled in index.html",
+  ["bls-name", "bls-pairs"].every(id => html.includes(`for="${id}"`)));
+check("bls gas matches the Python oracle",
+  (() => { const V = [
+    [["g1add", ""], ["g1add", "0x000000000000000000000000000000000000000b", "375", "0", "0", "0", "0", "256", "375"]],
+    [["g2add", ""], ["g2add", "0x000000000000000000000000000000000000000d", "600", "0", "0", "0", "0", "512", "600"]],
+    [["map-fp-to-g1", ""], ["map-fp-to-g1", "0x0000000000000000000000000000000000000010", "5500", "0", "0", "0", "0", "64", "5500"]],
+    [["map-fp2-to-g2", ""], ["map-fp2-to-g2", "0x0000000000000000000000000000000000000011", "23800", "0", "0", "0", "0", "128", "23800"]],
+    [["g1msm", "1"], ["g1msm", "0x000000000000000000000000000000000000000c", "0", "12000", "1", "12000", "1000", "160", "12000"]],
+    [["g1msm", "2"], ["g1msm", "0x000000000000000000000000000000000000000c", "0", "12000", "2", "22776", "949", "320", "22776"]],
+    [["g1msm", "128"], ["g1msm", "0x000000000000000000000000000000000000000c", "0", "12000", "128", "797184", "519", "20480", "797184"]],
+    [["g1msm", "129"], ["g1msm", "0x000000000000000000000000000000000000000c", "0", "12000", "129", "803412", "519", "20640", "803412"]],
+    [["g2msm", "1"], ["g2msm", "0x000000000000000000000000000000000000000e", "0", "22500", "1", "22500", "1000", "288", "22500"]],
+    [["g2msm", "2"], ["g2msm", "0x000000000000000000000000000000000000000e", "0", "22500", "2", "45000", "1000", "576", "45000"]],
+    [["g2msm", "3"], ["g2msm", "0x000000000000000000000000000000000000000e", "0", "22500", "3", "62302", "923", "864", "62302"]],
+    [["pairing", "1"], ["pairing", "0x000000000000000000000000000000000000000f", "37700", "32600", "1", "32600", "0", "384", "70300"]],
+    [["pairing", "2"], ["pairing", "0x000000000000000000000000000000000000000f", "37700", "32600", "2", "65200", "0", "768", "102900"]]
+  ]; return V.every(([inp, exp]) => { const r = app.blsGasCalc(...inp);
+    return r !== null && [r.precompile, r.address, r.baseGas, r.perPairGas, r.pairs, r.pairGas, r.discount, r.inputBytes, r.totalGas].join(",") === exp.join(","); }); })());
+check("bls: the prefill is g1msm over 2 pairs at 22,776 and one G1MSM pair is exactly one multiplication",
+  (() => { const r = app.blsGasCalc("g1msm", "2");
+    const one = app.blsGasCalc("g1msm", "1");
+    return r !== null && one !== null &&
+      html.includes('id="bls-pairs"') && html.includes('value="2"') &&
+      html.includes('<option value="g1msm" selected>') &&
+      r.totalGas === "22776" && one.totalGas === "12000" &&
+      (BigInt(one.totalGas) * 2n - BigInt(r.totalGas)).toString() === "1224"; })());
+check("bls refuses a malformed, empty, zero-count or over-bound input",
+  app.blsGasCalc("bogus", "2") === null &&
+  app.blsGasCalc("g1msm", "abc") === null &&
+  app.blsGasCalc("g1msm", "-1") === null &&
+  app.blsGasCalc("g1msm", "0x2") === null &&
+  app.blsGasCalc("g1msm", "") === null &&
+  app.blsGasCalc("g1msm", null) === null &&
+  app.blsGasCalc(null, "2") === null &&
+  app.blsGasCalc("g1msm", 2) === null &&
+  app.blsGasCalc("g1msm", "0") === null &&
+  app.blsGasCalc("g2msm", "0") === null &&
+  app.blsGasCalc("pairing", "0") === null &&
+  app.blsGasCalc("g1msm", "858993460") === null &&
+  app.blsGasCalc("g1msm", "858993459") !== null &&
+  app.blsGasCalc("g2msm", "477218589") === null &&
+  app.blsGasCalc("pairing", "357913942") === null &&
+  app.blsGasCalc("g1add", "not-a-count") !== null);
+check("bls tool section present in index.html", html.includes("bls-btn") && html.includes("BLS12-381 precompile gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -3625,6 +3625,39 @@ function accountAccessGasCalc(opcode, isCold) {
   };
 }
 
+/* SLOAD gas. SLOAD reads one 32-byte slot of the executing
+   contract's OWN storage, and under EIP-2929 (CC0; formula
+   paraphrased, constants cross-verified this run against a
+   second independent gas-cost reference listing SLOAD at the
+   same prices) the access charge is again the WHOLE cost:
+   2,100 (COLD_SLOAD_COST) if the (address, storage_key) pair
+   -- where address is the contract whose storage is read --
+   is not yet in the transaction's accessed_storage_keys set,
+   100 (WARM_STORAGE_READ_COST) if it is; a cold read adds the
+   pair, so later reads of the same slot in the same
+   transaction are warm, and an SSTORE to the slot warms it
+   too (SSTORE's cold surcharge is this same constant). Warmth
+   is keyed by the PAIR, not the slot number alone: the same
+   slot number in a different contract is a separate cold
+   access. A pair named in an EIP-2930 access list starts
+   warm. There is no other term: the value read is a single
+   stack word, never written to memory, so no memory expansion
+   applies, and the value stored moves no term (an untouched
+   slot reads as 0 at the same price). Deliberate contrasts: a
+   cold ACCOUNT access costs 2,600, not 2,100 -- an account is
+   not a slot -- and transient storage (TLOAD, EIP-1153) is a
+   flat 100 with no cold price at all. Before Berlin, SLOAD
+   was a flat 800. Warmth is a user-supplied value here, not
+   execution state read here. */
+function sloadGasCalc(isCold) {
+  if (typeof isCold !== "boolean") return null;
+  const accessGas = isCold ? 2100n : 100n;
+  return {
+    accessGas: accessGas.toString(),
+    totalGas: accessGas.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -4612,6 +4645,19 @@ if (typeof document !== "undefined") {
       el.textContent = `${r.opcode} gas: ${r.totalGas} — the whole cost is the ${r.accessGas} account-access charge; the value returned is a stack word, so no memory expansion or other term applies. Computed locally from the warmth you gave — the account's balance, code and code hash are not read and move no term; no chain is queried.`;
     });
 
+    /* SLOAD gas */
+    const sloadBtn = document.getElementById("sload-btn");
+    if (sloadBtn) sloadBtn.addEventListener("click", () => {
+      const r = sloadGasCalc(
+        document.getElementById("sload-access").value === "cold");
+      const el = document.getElementById("sload-out");
+      if (r === null) {
+        el.textContent = "Check the input: choose whether the (contract, slot) pair is cold or warm in this transaction.";
+        return;
+      }
+      el.textContent = `SLOAD gas: ${r.totalGas} — the whole cost is the ${r.accessGas} slot-access charge; the value read is a stack word, so no memory expansion or other term applies. Computed locally from the warmth you gave — the slot's value is not read and moves no term; no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -4625,5 +4671,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

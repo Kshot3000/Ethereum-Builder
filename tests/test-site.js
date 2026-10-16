@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=51"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=52"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2580,6 +2580,37 @@ check("account access refuses opcodes outside the three priced (EXTCODECOPY and 
   app.accountAccessGasCalc("BALANCE", null) === null &&
   app.accountAccessGasCalc("BALANCE", 1) === null);
 check("account access tool section present in index.html", html.includes("acct-btn") && html.includes("Account access gas calculator"));
+
+/* SLOAD gas — expected values produced by an independent
+   pure-Python transcription of EIP-2929's storage-read pricing
+   (hidden_files/oracle-sload-gas.py): the access charge is the
+   whole cost -- 2,100 cold / 100 warm, keyed by the (address,
+   storage_key) pair, no other term. The oracle is anchored
+   in-script on hand values (prefilled cold 2,100 / warm 100,
+   cold-warm difference exactly 2,000, cold SLOAD exactly 500
+   below cold account access). Vectors are [isCold] -> result. */
+check("sload controls labelled in index.html",
+  ["sload-access"].every(id => html.includes(`for="${id}"`)));
+check("sload gas matches the Python oracle (cold and warm)",
+  (() => { const V = [
+    [[true], ["2100", "2100"]],
+    [[false], ["100", "100"]]
+  ]; return V.every(([inp, exp]) => { const r = app.sloadGasCalc(...inp);
+    return r !== null && [r.accessGas, r.totalGas].join(",") === exp.join(","); }); })());
+check("sload: prefilled page values (cold) cost exactly 2,100, warm 100, differing by exactly 2,000 and exactly 500 below a cold account access",
+  (() => { const cold = app.sloadGasCalc(true);
+    const warm = app.sloadGasCalc(false);
+    return cold !== null && warm !== null && html.includes('id="sload-access"') && html.includes('<option value="cold" selected>') &&
+      cold.accessGas === "2100" && cold.totalGas === "2100" && warm.totalGas === "100" &&
+      (BigInt(cold.totalGas) - BigInt(warm.totalGas)).toString() === "2000" &&
+      (BigInt(app.accountAccessGasCalc("BALANCE", true).totalGas) - BigInt(cold.totalGas)).toString() === "500"; })());
+check("sload refuses a non-boolean warmth flag (string, null, number, undefined)",
+  app.sloadGasCalc("cold") === null &&
+  app.sloadGasCalc(null) === null &&
+  app.sloadGasCalc(1) === null &&
+  app.sloadGasCalc(0) === null &&
+  app.sloadGasCalc(undefined) === null);
+check("sload tool section present in index.html", html.includes("sload-btn") && html.includes("SLOAD gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

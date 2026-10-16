@@ -597,6 +597,15 @@
     </div>
 
     <div class="tool">
+      <h3>SLOAD gas calculator</h3>
+      <p><code>SLOAD</code> reads one 32-byte slot of the executing contract's <em>own</em> storage, and under <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> the access charge is the <em>whole</em> cost: 2,100 if the (contract, slot) pair is cold — not yet touched in this transaction — 100 if it is warm. A cold read warms the pair, so every later read of the same slot in the same transaction costs 100, and an <code>SSTORE</code> to the slot warms it too (its cold surcharge is this same 2,100). Warmth is keyed by the <em>pair</em>, not the slot number alone: the same slot number in a different contract is a separate cold access, and a pair named in an EIP-2930 access list starts warm. There is no other term: the value read is a single stack word, never written to memory, so no memory expansion applies, and the value stored moves no term — an untouched slot reads as 0 at exactly the same price. Two deliberate contrasts: a cold <em>account</em> access (the tool above) costs 2,600, not 2,100 — an account is not a slot — and transient storage (<code>TLOAD</code>, EIP-1153) is a flat 100 with no cold price at all, because it never touches persistent state. Before Berlin, <code>SLOAD</code> was a flat 800. The prefilled read — a cold slot — costs exactly 2,100, and 100 warm. Honest scope: this prices the one opcode only, and the slot's warmth is a value <em>you</em> supply, not execution state this page reads. Computed locally; nothing is read and no chain is queried.</p>
+      <label for="sload-access">Slot access (EIP-2929 — whether this transaction has already touched this contract's slot)</label>
+      <select id="sload-access"><option value="cold" selected>Cold — first access of this (contract, slot) pair in the transaction (2,100)</option><option value="warm">Warm — pair already accessed in this transaction, or pre-warmed by an access list (100)</option></select>
+      <button id="sload-btn" type="button">Calculate SLOAD gas</button>
+      <p id="sload-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -930,6 +939,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=51"></script>
+<script src="app.js?v=52"></script>
 </body>
 </html>

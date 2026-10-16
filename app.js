@@ -4776,6 +4776,43 @@ function divCalc(opStr, aStr, bStr) {
   };
 }
 
+const CMP_GAS = 3n;
+const CMP_OPCODE_BYTES = { lt: "0x10", gt: "0x11", slt: "0x12", sgt: "0x13", eq: "0x14", iszero: "0x15" };
+function cmpCalc(opStr, aStr, bStr) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(CMP_OPCODE_BYTES, op)) return null;
+  const a = parseWord256(aStr);
+  if (a === null) return null;
+  const unary = op === "iszero";
+  /* ISZERO pops one word only: b is never read, and is reported as a
+     itself (flagged unary) so the result fields stay uniform. */
+  const b = unary ? a : parseWord256(bStr);
+  if (b === null) return null;
+  const signedA = a >= (1n << 255n) ? a - (1n << 256n) : a;
+  const signedB = b >= (1n << 255n) ? b - (1n << 256n) : b;
+  let result;
+  if (op === "lt") result = a < b ? 1n : 0n;
+  else if (op === "gt") result = a > b ? 1n : 0n;
+  else if (op === "slt") result = signedA < signedB ? 1n : 0n;
+  else if (op === "sgt") result = signedA > signedB ? 1n : 0n;
+  else if (op === "eq") result = a === b ? 1n : 0n;
+  else result = a === 0n ? 1n : 0n;
+  return {
+    opcode: op, opcodeByte: CMP_OPCODE_BYTES[op],
+    a: a.toString(),
+    b: b.toString(),
+    aHex: "0x" + a.toString(16).padStart(64, "0"),
+    bHex: "0x" + b.toString(16).padStart(64, "0"),
+    signedA: signedA.toString(),
+    signedB: signedB.toString(),
+    unary: unary ? "true" : "false",
+    result: result.toString(),
+    resultHex: "0x" + result.toString(16).padStart(64, "0"),
+    totalGas: CMP_GAS.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -6077,6 +6114,34 @@ if (typeof document !== "undefined") {
       el.textContent = `${name} (${r.opcodeByte}): ${expr} pushes ${shown}.${zero} Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
     });
 
+    /* Comparison opcodes (LT / GT / SLT / SGT / EQ / ISZERO) */
+    const cmpBtn = document.getElementById("cmp-btn");
+    if (cmpBtn) cmpBtn.addEventListener("click", () => {
+      const r = cmpCalc(
+        document.getElementById("cmp-op").value,
+        document.getElementById("cmp-a").value,
+        document.getElementById("cmp-b").value);
+      const el = document.getElementById("cmp-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter a and b each as one 256-bit word, decimal or 0x hex (0 up to 2^256 \u2212 1). For ISZERO only a is read.";
+        return;
+      }
+      const name = r.opcode.toUpperCase();
+      if (r.unary === "true") {
+        el.textContent = `ISZERO (${r.opcodeByte}): the word ${r.a} (${r.aHex}) pushes ${r.result} \u2014 ISZERO pops one word only and pushes 1 exactly when that word is 0, and 0 for every other word. Gas: ${r.totalGas} \u2014 a flat charge with no other term. Computed locally from the value you gave \u2014 nothing is executed and no chain is queried.`;
+        return;
+      }
+      const signed = r.opcode === "slt" || r.opcode === "sgt";
+      const sym = { lt: "<", gt: ">", slt: "<", sgt: ">", eq: "=" }[r.opcode];
+      const expr = signed ? `${r.signedA} ${sym} ${r.signedB}` : `${r.a} ${sym} ${r.b}`;
+      const note = r.opcode === "eq"
+        ? " EQ is reading-independent \u2014 the words are equal or they are not, signed or unsigned."
+        : signed
+          ? " The signed opcodes read the words as two's-complement integers \u2014 the same two words can answer oppositely under the unsigned pair."
+          : " The unsigned opcodes read the words as plain magnitudes \u2014 the same two words can answer oppositely under the signed pair.";
+      el.textContent = `${name} (${r.opcodeByte}): ${expr} is ${r.result === "1" ? "true" : "false"}, so the opcode pushes ${r.result} (${r.resultHex}) \u2014 a comparison pushes 1 or 0, never an operand.${note} Gas: ${r.totalGas} \u2014 a flat charge with no other term. Computed locally from the values you gave \u2014 nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -6090,5 +6155,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

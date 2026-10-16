@@ -813,6 +813,19 @@
     </div>
 
     <div class="tool">
+      <h3>Comparison opcode calculator — LT / GT / SLT / SGT / EQ / ISZERO</h3>
+      <p>The EVM's comparison opcodes, all Frontier, all a flat 3 gas (the verylow tier): <code>LT</code> (<code>0x10</code>), <code>GT</code> (<code>0x11</code>), <code>SLT</code> (<code>0x12</code>), <code>SGT</code> (<code>0x13</code>), <code>EQ</code> (<code>0x14</code>) and <code>ISZERO</code> (<code>0x15</code>). The five binary opcodes each pop a first, then b, and push 1 when the comparison holds and 0 when it does not — a comparison pushes 1 or 0, never an operand — and the comparisons are strict, so equal operands push 0 for LT, GT, SLT and SGT alike. <code>ISZERO</code> is the family's unary member: it pops one word only and pushes 1 exactly when that word is 0. The trap is the reading. <code>LT</code> and <code>GT</code> read their operands unsigned, as plain magnitudes; <code>SLT</code> and <code>SGT</code> read the <em>same words</em> as signed two's-complement integers — so one pair of words can answer oppositely under the two pairs. The all-ones word is the largest unsigned value there is, but read signed it is −1: against 1 it makes LT push 0 and SLT push 1, GT push 1 and SGT push 0. An implementation that compares every word unsigned passes every small-number test and is wrong on exactly the words with the top bit set — which is also why Solidity needs both pairs: its unsigned types compile to LT/GT and its signed types to SLT/SGT. <code>EQ</code> alone is reading-independent: the words are equal or they are not. The prefilled call is the flip: SLT of the all-ones word (read signed as −1) against 1 pushes exactly 1, where LT on the same words pushes 0. Honest scope: a and b are values <em>you</em> supply, in decimal or 0x hex, not execution state this page reads; anything wider than a 256-bit word is refused rather than wrapped, because the stack words the opcodes consume cannot hold it. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="cmp-op">Opcode</label>
+      <select id="cmp-op"><option value="lt">LT (0x10) — a &lt; b, unsigned</option><option value="gt">GT (0x11) — a &gt; b, unsigned</option><option value="slt" selected>SLT (0x12) — a &lt; b, signed</option><option value="sgt">SGT (0x13) — a &gt; b, signed</option><option value="eq">EQ (0x14) — a = b, either reading</option><option value="iszero">ISZERO (0x15) — a is 0, unary</option></select>
+      <label for="cmp-a">Operand a (one 256-bit value, decimal or 0x hex — popped first; for ISZERO the only operand)</label>
+      <input id="cmp-a" type="text" inputmode="numeric" spellcheck="false" value="115792089237316195423570985008687907853269984665640564039457584007913129639935">
+      <label for="cmp-b">Operand b (one 256-bit value, decimal or 0x hex — ignored for ISZERO, which pops one word only)</label>
+      <input id="cmp-b" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <button id="cmp-btn" type="button">Calculate comparison result &amp; gas</button>
+      <p id="cmp-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1146,6 +1159,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=70"></script>
+<script src="app.js?v=71"></script>
 </body>
 </html>

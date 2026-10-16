@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=63"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=64"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2526,6 +2526,55 @@ check("copy refuses malformed opcode, size and memory inputs and a non-zero dest
   app.copyGasCalc("CALLDATACOPY", "137438953440", "32", "0") === null &&
   app.copyGasCalc("CALLDATACOPY", "0", "0", "137438953441") === null);
 check("copy tool section present in index.html", html.includes("copy-btn") && html.includes("COPY gas calculator"));
+
+/* MCOPY gas (EIP-5656) — expected values produced by an independent
+   pure-Python transcription of EIP-5656's pricing
+   (hidden_files/oracle-mcopy-gas.py): 3 flat, 3 per 32-byte word
+   rounded up, plus memory expansion over the LARGER of the source
+   and destination region ends (both regions are memory), with
+   zero-size copies touching nothing. The oracle is anchored
+   in-script on hand values (the prefilled src-dominant copy at 51,
+   its dst-dominant mirror at 51, an empty copy at 3, 1 and 32
+   bytes at 9, 33 bytes at 15, and the src <= dst partial-growth
+   case agreeing with the plain COPY price of 191).
+   Vectors are [dst, src, size, curMem] -> the full result. */
+check("mcopy controls labelled in index.html",
+  ["mcopy-dst", "mcopy-src", "mcopy-size", "mcopy-mem"].every(id => html.includes(`for="${id}"`)));
+check("MCOPY gas matches the Python oracle (prefill src-dominant, dst-dominant mirror, empty copy, zero-size at large offsets, 1 and 32 and 33 bytes, already-held memory, partial growth with src <= dst and with src dominant, 100,000-byte payload, both region ends exactly at the client's bound, inside large memory, and a 1 MB payload)",
+  (() => { const V = [
+    [["0", "256", "128", "0"], ["3", "4", "12", "36", "51", "384"]],
+    [["256", "0", "128", "0"], ["3", "4", "12", "36", "51", "384"]],
+    [["0", "0", "0", "0"], ["3", "0", "0", "0", "3", "0"]],
+    [["999999", "888888", "0", "0"], ["3", "0", "0", "0", "3", "0"]],
+    [["0", "0", "1", "0"], ["3", "1", "3", "3", "9", "1"]],
+    [["0", "0", "32", "0"], ["3", "1", "3", "3", "9", "32"]],
+    [["0", "0", "33", "0"], ["3", "2", "6", "6", "15", "33"]],
+    [["0", "0", "128", "512"], ["3", "4", "12", "0", "15", "128"]],
+    [["32", "0", "992", "32"], ["3", "31", "93", "95", "191", "1024"]],
+    [["0", "512", "992", "32"], ["3", "31", "93", "142", "238", "1504"]],
+    [["0", "0", "100000", "0"], ["3", "3125", "9375", "28448", "37826", "100000"]],
+    [["137438953408", "0", "32", "0"], ["3", "1", "3", "36028809887088637", "36028809887088643", "137438953440"]],
+    [["0", "137438953408", "32", "0"], ["3", "1", "3", "36028809887088637", "36028809887088643", "137438953440"]],
+    [["64", "64", "128", "4096"], ["3", "4", "12", "0", "15", "192"]],
+    [["0", "0", "1000000", "0"], ["3", "31250", "93750", "2001098", "2094851", "1000000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.mcopyGasCalc(...inp);
+    return r !== null && [r.baseGas, r.words, r.wordGas, r.memoryGas, r.totalGas, r.newMemBytes].join(",") === exp.join(","); }); })());
+check("mcopy: prefilled page values (128 bytes from source 256 to destination 0 in fresh memory) cost exactly 51",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.mcopyGasCalc(g("mcopy-dst"), g("mcopy-src"), g("mcopy-size"), g("mcopy-mem"));
+    return r !== null && r.baseGas === "3" && r.words === "4" && r.wordGas === "12" && r.memoryGas === "36" && r.totalGas === "51" && r.newMemBytes === "384"; })());
+check("mcopy agrees with the plain COPY price whenever src <= dst, and exceeds it when the source end dominates",
+  app.mcopyGasCalc("32", "0", "992", "32").totalGas === app.copyGasCalc("CALLDATACOPY", "32", "992", "32").totalGas &&
+  app.mcopyGasCalc("0", "256", "128", "0").totalGas === "51" &&
+  app.copyGasCalc("CALLDATACOPY", "0", "128", "0").totalGas === "27");
+check("mcopy refuses malformed offsets, size and memory inputs and a non-zero region ending past the client's bound",
+  app.mcopyGasCalc("0", "0", "1.5", "0") === null &&
+  app.mcopyGasCalc("-1", "0", "0", "0") === null &&
+  app.mcopyGasCalc("0", null, "0", "0") === null &&
+  app.mcopyGasCalc("137438953440", "0", "32", "0") === null &&
+  app.mcopyGasCalc("0", "137438953440", "32", "0") === null &&
+  app.mcopyGasCalc("0", "0", "0", "137438953441") === null);
+check("mcopy tool section present in index.html", html.includes("mcopy-btn") && html.includes("MCOPY gas calculator"));
 
 /* EXTCODECOPY gas — expected values produced by an independent
    pure-Python transcription of EIP-2929 access pricing combined

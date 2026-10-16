@@ -571,6 +571,21 @@
     </div>
 
     <div class="tool">
+      <h3>MCOPY gas calculator (EIP-5656)</h3>
+      <p>The copy the calculator above cannot price: <code>MCOPY</code> (<code>0x5e</code>), live since the Cancun upgrade under <a href="https://eips.ethereum.org/EIPS/eip-5656">EIP-5656</a>, copies a region of memory to another region of the <em>same</em> memory — the efficient memory-to-memory copy the EVM lacked, priced as the EIP specifies it: 3 for the operation itself, and 3 per 32-byte <em>word</em> copied (the size rounds up to whole words), plus memory expansion. The expansion is where <code>MCOPY</code> differs from the three plain copies: their sources are not memory, so only the destination end counts, but here <em>both</em> regions are memory, so the frame must reach the larger of the source end and the destination end — expansion is priced on max(destination, source) + size. When the source starts at or before the destination the two formulas agree exactly. The copy behaves as if through an intermediate buffer, so overlapping regions copy correctly; overlap moves no term, and neither do the data's contents. A copy of size 0 touches no memory whatever its offsets, and still pays the flat 3. The prefilled copy — 128 bytes from source offset 256 to destination offset 0 in fresh memory — costs exactly 51: 3 + 12 of word charges + 36 of memory expansion for the twelve words the frame must reach (the same copy priced as a plain copy, whose source is not memory, would count only the destination's four words and cost 27). Honest scope: this prices the one opcode only, and the offsets, size and memory state are values <em>you</em> supply, not execution state this page reads. Computed locally; nothing is copied and no chain is queried.</p>
+      <label for="mcopy-dst">Destination offset (bytes — where the copied data starts in the frame's memory)</label>
+      <input id="mcopy-dst" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="mcopy-src">Source offset (bytes — where the data is copied from in the same memory; the frame must also reach the source end)</label>
+      <input id="mcopy-src" type="text" inputmode="numeric" spellcheck="false" value="256">
+      <label for="mcopy-size">Copy size (bytes — a size of 0 touches no memory whatever the offsets)</label>
+      <input id="mcopy-size" type="text" inputmode="numeric" spellcheck="false" value="128">
+      <label for="mcopy-mem">Current memory size (bytes — what the frame has already allocated)</label>
+      <input id="mcopy-mem" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <button id="mcopy-btn" type="button">Calculate MCOPY gas</button>
+      <p id="mcopy-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>EXTCODECOPY gas calculator</h3>
       <p>The copy the calculator above deliberately left out: <code>EXTCODECOPY</code> copies <em>another</em> account's code into memory, and touching that account is priced under <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a>. Its cost, as go-ethereum's EXTCODECOPY gas function implements it and the evm.codes opcode page publishes it, has <em>no</em> flat base — instead it is the target account's access cost (2,600 if the address is cold, the first time this transaction touches it; 100 if it is already warm), plus the same copy terms as the plain copies: 3 per 32-byte <em>word</em> copied (the size rounds up to whole words), plus memory expansion for the region of the frame's memory the code is written <em>to</em> — the frame must reach the destination end, and a copy of size 0 touches no memory whatever its destination offset, though the access cost is still charged, because the account is touched even when nothing is copied. Only the target's warmth, the destination, the size and the frame's current memory are priced — the source offset inside the target's code moves no term, the code's contents move no term, and copying past the end of the target's code zero-pads and prices by the size requested, not the code's length. The prefilled copy — 128 bytes of a cold target's code at destination offset 0 in fresh memory — costs exactly 2,624: 2,600 of access + 12 of word charges + 12 of memory expansion; run the same copy against a warm target and it costs 124. Honest scope: this prices the one opcode only, and the target's warmth, the sizes and the memory state are values <em>you</em> supply, not execution state this page reads. Computed locally; nothing is copied and no chain is queried.</p>
       <label for="ext-copy-access">Target account access (EIP-2929 — whether this transaction has already touched the target address)</label>
@@ -1057,6 +1072,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=63"></script>
+<script src="app.js?v=64"></script>
 </body>
 </html>

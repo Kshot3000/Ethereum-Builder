@@ -3556,6 +3556,49 @@ function copyGasCalc(opcodeStr, destOffStr, sizeStr, curMemStr) {
   };
 }
 
+/* MCOPY gas (EIP-5656) — what copying a region of memory to
+   another region of the SAME memory with the MCOPY opcode
+   (0x5e, live since Cancun) costs, under EIP-5656 (CC0;
+   formula paraphrased, cross-checked against a client
+   implementation's structure this run): a flat 3 for the
+   operation itself, 3 per 32-byte word copied (the size rounds
+   up to whole words), and memory expansion — but, unlike the
+   three plain copies above, BOTH regions are memory, so the
+   frame must reach the LARGER of the source end and the
+   destination end: expansion is priced on max(dst, src) +
+   size, not on the destination alone. That is the one pricing
+   difference from CALLDATACOPY / CODECOPY / RETURNDATACOPY,
+   whose sources are not memory; when src <= dst the two
+   formulas agree exactly. The copy behaves as if through an
+   intermediate buffer (memmove semantics), so overlapping
+   regions copy correctly — overlap moves no term, nor do the
+   data's contents. A zero-size copy touches no memory
+   whatever its offsets, and still pays the flat 3. Gas
+   amounts follow the memory function's bound: a region end
+   above 0x1FFFFFFFE0 bytes is refused, as the client's gas
+   calculation overflows there. */
+function mcopyGasCalc(dstStr, srcStr, sizeStr, curMemStr) {
+  const dst = memParseBytes(dstStr);
+  const src = memParseBytes(srcStr);
+  const size = memParseBytes(sizeStr);
+  const curMem = memParseBytes(curMemStr);
+  if (dst === null || src === null || size === null || curMem === null) return null;
+  const regionEnd = size === 0n ? 0n : (dst > src ? dst : src) + size;
+  if (regionEnd > MEM_MAX_BYTES) return null;
+  const curWords = (curMem + 31n) / 32n;
+  const newWords = (regionEnd + 31n) / 32n;
+  const memoryGas = newWords > curWords ? memTotalCost(newWords) - memTotalCost(curWords) : 0n;
+  const words = (size + 31n) / 32n;
+  const baseGas = 3n;
+  const wordGas = 3n * words;
+  return {
+    baseGas: baseGas.toString(), words: words.toString(),
+    wordGas: wordGas.toString(), memoryGas: memoryGas.toString(),
+    totalGas: (baseGas + wordGas + memoryGas).toString(),
+    newMemBytes: regionEnd.toString()
+  };
+}
+
 /* EXTCODECOPY gas — what copying another account's code into
    memory costs, under EIP-2929 (CC0) combined with the Yellow
    Paper's copy-cost group, as go-ethereum's EXTCODECOPY gas
@@ -5300,6 +5343,22 @@ if (typeof document !== "undefined") {
       el.textContent = `${r.opcode} gas: ${r.totalGas} — 3 for the operation + ${r.wordGas} for its ${r.words} word(s) + ${r.memoryGas} of memory expansion. Computed locally from the values you gave — the source offset and the data contents are not read and move no term; nothing is copied and no chain is queried.`;
     });
 
+    /* MCOPY gas (EIP-5656) */
+    const mcopyBtn = document.getElementById("mcopy-btn");
+    if (mcopyBtn) mcopyBtn.addEventListener("click", () => {
+      const r = mcopyGasCalc(
+        document.getElementById("mcopy-dst").value,
+        document.getElementById("mcopy-src").value,
+        document.getElementById("mcopy-size").value,
+        document.getElementById("mcopy-mem").value);
+      const el = document.getElementById("mcopy-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the destination offset, source offset, copy size and current memory size are whole numbers of bytes at most 137,438,953,440 with neither region reaching past that bound.";
+        return;
+      }
+      el.textContent = `MCOPY gas: ${r.totalGas} — 3 for the operation + ${r.wordGas} for its ${r.words} word(s) + ${r.memoryGas} of memory expansion. Computed locally from the values you gave — expansion is priced on the larger of the source and destination ends because both regions are memory; the data contents are not read and move no term; nothing is copied and no chain is queried.`;
+    });
+
     /* EXTCODECOPY gas */
     const extCopyBtn = document.getElementById("ext-copy-btn");
     if (extCopyBtn) extCopyBtn.addEventListener("click", () => {
@@ -5518,5 +5577,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

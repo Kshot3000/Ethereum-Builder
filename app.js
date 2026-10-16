@@ -4646,6 +4646,54 @@ function modMathCalc(opStr, aStr, bStr, nStr) {
   };
 }
 
+/* BYTE opcode (0x1a) — a Frontier opcode, restated in
+   my own words and cross-checked this run against
+   evm.codes and a client implementation (byte 0x1a,
+   flat 3 gas):
+     - it pops the index i FIRST, then the word x, and
+       pushes the single byte of x at position i, placed
+       at the least significant position of the pushed
+       word (so the result is always 0..255);
+     - position 0 is the MOST significant byte of x —
+       the byte extracted is (x >> (248 - 8*i)) & 0xff.
+       This end convention is the trap: SIGNEXTEND
+       counts its byte index from the LEAST significant
+       end, BYTE from the most significant end, so the
+       same index selects opposite bytes in the two
+       opcodes — on 0xab00...0001, BYTE at index 0
+       pushes 0xab (171) where an LSB-first reading
+       would push 1, and BYTE at index 31 pushes 1;
+     - an index of 32 or more pushes 0 — out of range
+       is a defined result, not an error;
+     - the charge is a flat 3 — the verylow tier, on
+       par with ADD — with no other term: the inputs
+       are stack words, nothing touches memory, an
+       account or storage.
+   Both inputs are single 256-bit words YOU supply, in
+   decimal or 0x hex; anything malformed, negative,
+   fractional, or wider than 2^256 - 1 is refused
+   rather than wrapped, because the stack words cannot
+   hold it. (An index wider than a word cannot occur
+   on the real stack either — it arrives AS a word.) */
+const BYTE_GAS = 3n;
+function byteCalc(indexStr, valueStr) {
+  const i = parseWord256(indexStr);
+  const x = parseWord256(valueStr);
+  if (i === null || x === null) return null;
+  const outOfRange = i >= 32n;
+  const result = outOfRange ? 0n : ((x >> (248n - 8n * i)) & 0xffn);
+  return {
+    opcode: "byte", opcodeByte: "0x1a",
+    byteIndex: i.toString(),
+    value: x.toString(),
+    valueHex: "0x" + x.toString(16).padStart(64, "0"),
+    outOfRange: outOfRange ? "true" : "false",
+    result: result.toString(),
+    resultHex: "0x" + result.toString(16).padStart(64, "0"),
+    totalGas: BYTE_GAS.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -5903,6 +5951,22 @@ if (typeof document !== "undefined") {
       el.textContent = `${name} (${r.opcodeByte}): ${expr} pushes ${r.result} (${r.resultHex}).${zero} Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
     });
 
+    /* BYTE opcode (byte extraction) */
+    const byteBtn = document.getElementById("byte-btn");
+    if (byteBtn) byteBtn.addEventListener("click", () => {
+      const r = byteCalc(
+        document.getElementById("byte-index").value,
+        document.getElementById("byte-value").value);
+      const el = document.getElementById("byte-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter the byte index and the value each as one 256-bit word, decimal or 0x hex (0 up to 2^256 − 1).";
+        return;
+      }
+      el.textContent = r.outOfRange === "true"
+        ? `BYTE (${r.opcodeByte}) at index ${r.byteIndex}: the index is 32 or more, so the opcode pushes 0 — out of range is a defined result, not an error. Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`
+        : `BYTE (${r.opcodeByte}) at index ${r.byteIndex}: byte ${r.byteIndex} of ${r.value} (${r.valueHex}), counting from the most significant byte, is ${r.result} (${r.resultHex}) — that byte, pushed at the least significant position. Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -5916,5 +5980,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

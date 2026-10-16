@@ -789,6 +789,17 @@
     </div>
 
     <div class="tool">
+      <h3>BYTE opcode calculator</h3>
+      <p>A Frontier opcode for pulling one byte out of a word: <code>BYTE</code> (<code>0x1a</code>) pops an index i and then a word x — index first — and pushes the byte of x at position i, placed at the least significant position of the pushed word, so the result is always between 0 and 255, at a flat 3 gas, the verylow tier. The defining subtlety is which end the index counts from: position 0 is the <em>most</em> significant byte of x, so the byte extracted is <code>(x &gt;&gt; (248 − 8×i)) &amp; 0xff</code>. That is the opposite end from <code>SIGNEXTEND</code> above, whose byte 0 is the least significant byte — the same index selects opposite bytes in the two opcodes, and an implementation that mixes the conventions up passes every symmetric test (an all-zero or all-<code>0xff</code> word, a middle byte of a palindromic word) while being wrong at both ends. An index of 32 or more pushes 0: out of range is a defined result, not an error, which is what lets extraction code skip a bounds check. This is the opcode compilers emit when code indexes into a <code>bytes32</code> or pulls a byte out of packed data. The prefilled call is the end-convention case: BYTE at index 0 of <code>0xab00…0001</code> pushes 171 (<code>0xab</code>), where a least-significant-first reading would push 1 — and at index 31 the true answer is 1. Honest scope: the index and value are values <em>you</em> supply, in decimal or 0x hex, not execution state this page reads; anything wider than a 256-bit word is refused rather than wrapped, because the stack words the opcode consumes cannot hold it. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="byte-index">Byte index (one 256-bit value, decimal or 0x hex — 0 is the most significant byte; 32 or more pushes 0)</label>
+      <input id="byte-index" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="byte-value">Value (one 256-bit value, decimal or 0x hex — the word the byte is extracted from)</label>
+      <input id="byte-value" type="text" inputmode="numeric" spellcheck="false" value="0xab00000000000000000000000000000000000000000000000000000000000001">
+      <button id="byte-btn" type="button">Calculate BYTE result &amp; gas</button>
+      <p id="byte-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1122,6 +1133,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=68"></script>
+<script src="app.js?v=69"></script>
 </body>
 </html>

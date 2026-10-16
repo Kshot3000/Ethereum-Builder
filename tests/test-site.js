@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=62"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=63"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -3091,6 +3091,65 @@ check("p256 refuses only a malformed, negative, hex, non-string or over-bound le
   app.p256GasCalc("161") !== null &&
   app.p256GasCalc("160") !== null);
 check("p256 tool section present in index.html", html.includes("p256-btn") && html.includes("secp256r1 precompile gas calculator"));
+
+/* CLZ opcode — expected values produced by an independent
+   pure-Python transcription of the semantics
+   (hidden_files/oracle-clz.py): CLZ at 0x1e (EIP-7939,
+   Final, live since the Fulu/Osaka upgrade — EIP-7607
+   lists it as a core EIP, mainnet epoch 411392) pops one
+   256-bit word and pushes its count of leading zero bits,
+   with zero defined as 256; the charge is a flat 5, the
+   MUL tier. The oracle is anchored in-script on hand
+   values (the EIP's own published test cases — 0 at 256,
+   0x8000...00 and 0xffff...ff at 0, 0x4000...00 and
+   0x7fff...ff at 1, 1 at 255 — plus 255 at 248, 256 at
+   247, 10^18 at 196 and every sampled power of two at
+   255 - k). Vectors are [input] -> result fields. */
+check("clz controls labelled in index.html",
+  ["clz-value"].every(id => html.includes(`for="${id}"`)));
+check("clz matches the Python oracle",
+  (() => { const V = [
+    [["0"], ["clz", "0x1e", "0", "0x0000000000000000000000000000000000000000000000000000000000000000", "256", "0", "none", "5"]],
+    [["1"], ["clz", "0x1e", "1", "0x0000000000000000000000000000000000000000000000000000000000000001", "255", "1", "0", "5"]],
+    [["255"], ["clz", "0x1e", "255", "0x00000000000000000000000000000000000000000000000000000000000000ff", "248", "8", "7", "5"]],
+    [["256"], ["clz", "0x1e", "256", "0x0000000000000000000000000000000000000000000000000000000000000100", "247", "9", "8", "5"]],
+    [["1000000000000000000"], ["clz", "0x1e", "1000000000000000000", "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000", "196", "60", "59", "5"]],
+    [["0xff"], ["clz", "0x1e", "255", "0x00000000000000000000000000000000000000000000000000000000000000ff", "248", "8", "7", "5"]],
+    [["0x8000000000000000000000000000000000000000000000000000000000000000"], ["clz", "0x1e", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0x8000000000000000000000000000000000000000000000000000000000000000", "0", "256", "255", "5"]],
+    [["0x4000000000000000000000000000000000000000000000000000000000000000"], ["clz", "0x1e", "28948022309329048855892746252171976963317496166410141009864396001978282409984", "0x4000000000000000000000000000000000000000000000000000000000000000", "1", "255", "254", "5"]],
+    [["0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"], ["clz", "0x1e", "57896044618658097711785492504343953926634992332820282019728792003956564819967", "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1", "255", "254", "5"]],
+    [["0x0000000000000000000000000000000000000000000000000000000000000001"], ["clz", "0x1e", "1", "0x0000000000000000000000000000000000000000000000000000000000000001", "255", "1", "0", "5"]],
+    [["115792089237316195423570985008687907853269984665640564039457584007913129639935"], ["clz", "0x1e", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "0", "256", "255", "5"]],
+    [["0x00000000000000000000000000000000000000000000000000000000000000ff"], ["clz", "0x1e", "255", "0x00000000000000000000000000000000000000000000000000000000000000ff", "248", "8", "7", "5"]]
+  ]; return V.every(([inp, exp]) => { const r = app.clzCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.value, r.valueHex, r.leadingZeros, r.bitLength, r.highestSetBit, r.totalGas].join(",") === exp.join(","); }); })());
+check("clz: the prefill is 10^18 at 196 with bit length 60, zero is the 256 special case, and each power of two drops the count by exactly 1",
+  (() => { const r = app.clzCalc("1000000000000000000");
+    const z = app.clzCalc("0");
+    return r !== null && z !== null &&
+      html.includes('id="clz-value"') && html.includes('value="1000000000000000000"') &&
+      r.leadingZeros === "196" && r.bitLength === "60" && r.highestSetBit === "59" &&
+      z.leadingZeros === "256" && z.bitLength === "0" && z.highestSetBit === "none" &&
+      [0, 1, 7, 8, 59, 128, 254, 255].every(k =>
+        app.clzCalc((1n << BigInt(k)).toString()).leadingZeros === String(255 - k)) &&
+      r.totalGas === "5" && z.totalGas === "5"; })());
+check("clz: decimal and hex forms of the same word agree, and surrounding spaces are trimmed",
+  app.clzCalc("255").valueHex === app.clzCalc("0xff").valueHex &&
+  app.clzCalc("  0XFF  ").leadingZeros === "248" &&
+  app.clzCalc("0").leadingZeros === "256");
+check("clz refuses a malformed, negative, fractional, empty, non-string or over-256-bit word",
+  app.clzCalc("abc") === null &&
+  app.clzCalc("-1") === null &&
+  app.clzCalc("1.5") === null &&
+  app.clzCalc("") === null &&
+  app.clzCalc("0x") === null &&
+  app.clzCalc("0xzz") === null &&
+  app.clzCalc(null) === null &&
+  app.clzCalc(255) === null &&
+  app.clzCalc("115792089237316195423570985008687907853269984665640564039457584007913129639936") === null &&
+  app.clzCalc("0x10000000000000000000000000000000000000000000000000000000000000000") === null &&
+  app.clzCalc("115792089237316195423570985008687907853269984665640564039457584007913129639935") !== null);
+check("clz tool section present in index.html", html.includes("clz-btn") && html.includes("CLZ opcode calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

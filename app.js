@@ -4272,6 +4272,75 @@ function p256GasCalc(inputLenStr) {
   };
 }
 
+/* CLZ opcode — count leading zeros, defined by EIP-7939.
+   The EIP is Final and CC0; the semantics are restated here
+   in my own words, and the constants were cross-verified
+   across two independent sources this run: EIP-7939's own
+   specification (opcode 0x1e, cost 5, zero returning 256,
+   with published test cases) and independent client
+   implementations of the Osaka fork pricing CLZ in the
+   G_low tier at exactly 5. EIP-7939 shipped in the
+   Fulu/Osaka upgrade (the EIP-7607 hardfork meta, also
+   Final, lists it among its core EIPs): mainnet activation
+   at epoch 411392 (December 2025), so this is a live
+   mainnet opcode, not a proposal:
+     - CLZ (0x1e) pops one 256-bit word and pushes the
+       number of leading zero bits in it — the count of
+       zero bits before the most significant set bit;
+     - zero is the defined special case: with no set bit
+       to count up to, CLZ(0) returns 256;
+     - for a non-zero word the result is 256 minus the
+       word's bit length, so the highest set bit sits at
+       index 255 minus the result — which is also
+       floor(log2(x)), the quantity the fixed-point math
+       libraries (log, sqrt, power routines), bitmap
+       scans and calldata compression code that motivated
+       the opcode actually consume;
+     - the charge is a flat 5 — the MUL tier; the EIP's
+       rationale records that 5 was chosen over 3 to avoid
+       under-pricing DoS risk. There is no other term: the
+       value is a stack word, never written to memory, and
+       the opcode touches no account, storage or accessed
+       set, so no memory, EIP-2929 or refund term exists.
+   Unlike every gas tool above, this opcode's RESULT is
+   the utility, so the calculator computes both: the count
+   itself (with the word's bit length and highest set bit
+   derived from it) and the flat 5-gas charge. Before this
+   opcode, the fastest known Solidity routine for the same
+   count cost about 184 gas and over a hundred bytes of
+   inlined bytecode; the native opcode is 5 gas and one
+   byte. The input is one word YOU supply, in decimal or
+   0x hex: anything that is not a single 256-bit word —
+   malformed, negative, fractional, or wider than
+   2^256 - 1 — is refused rather than wrapped or truncated,
+   because the stack word it models cannot hold it. */
+const CLZ_GAS = 5n;
+const UINT256_MAX = (1n << 256n) - 1n;
+function clzCalc(valueStr) {
+  if (typeof valueStr !== "string") return null;
+  const s = valueStr.trim();
+  let v;
+  if (/^0[xX]/.test(s)) {
+    const h = s.slice(2);
+    if (!/^[0-9a-fA-F]+$/.test(h) || h.length > 128) return null;
+    v = BigInt("0x" + h);
+  } else {
+    if (!/^\d+$/.test(s) || s.length > 128) return null;
+    v = BigInt(s);
+  }
+  if (v > UINT256_MAX) return null;
+  const bitLength = v === 0n ? 0n : BigInt(v.toString(2).length);
+  return {
+    opcode: "clz", opcodeByte: "0x1e",
+    value: v.toString(),
+    valueHex: "0x" + v.toString(16).padStart(64, "0"),
+    leadingZeros: (256n - bitLength).toString(),
+    bitLength: bitLength.toString(),
+    highestSetBit: v === 0n ? "none" : (bitLength - 1n).toString(),
+    totalGas: CLZ_GAS.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -5421,6 +5490,21 @@ if (typeof document !== "undefined") {
         : `P256VERIFY precompile (${r.address}) gas: ${r.totalGas} total — the flat charge is taken at any input length, and this precompile never reverts: at ${r.inputBytes} bytes (not the exact ${r.requiredInputBytes}) it returns nothing and still burns the same ${r.totalGas}. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* CLZ opcode (count leading zeros, EIP-7939) */
+    const clzBtn = document.getElementById("clz-btn");
+    if (clzBtn) clzBtn.addEventListener("click", () => {
+      const r = clzCalc(
+        document.getElementById("clz-value").value);
+      const el = document.getElementById("clz-out");
+      if (r === null) {
+        el.textContent = "Check the input: enter one 256-bit word as a decimal integer or 0x hex (0 up to 2^256 − 1).";
+        return;
+      }
+      el.textContent = r.highestSetBit === "none"
+        ? `CLZ (${r.opcodeByte}) of 0: ${r.leadingZeros} — the defined special case: the word has no set bit, so the count is the full width. Gas: ${r.totalGas} — a flat charge, the MUL tier, with no other term. Computed locally from the value you gave — no chain is queried.`
+        : `CLZ (${r.opcodeByte}) of ${r.value} (${r.valueHex}): ${r.leadingZeros} leading zero bits — the word's bit length is ${r.bitLength} and its highest set bit is bit ${r.highestSetBit}, so the count is also 255 − floor(log2(value)). Gas: ${r.totalGas} — a flat charge, the MUL tier, with no other term. Computed locally from the value you gave — no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -5434,5 +5518,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

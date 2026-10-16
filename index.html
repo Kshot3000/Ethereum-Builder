@@ -800,6 +800,19 @@
     </div>
 
     <div class="tool">
+      <h3>Division &amp; modulo opcode calculator — DIV / SDIV / MOD / SMOD</h3>
+      <p>The EVM's four division opcodes, all Frontier, all a flat 5 gas (the low tier): <code>DIV</code> (<code>0x04</code>) and <code>MOD</code> (<code>0x06</code>) read their operands unsigned; <code>SDIV</code> (<code>0x05</code>) and <code>SMOD</code> (<code>0x07</code>) read them as two's-complement signed. Each pops the dividend a first, then the divisor b. Three rules separate the opcodes from the division most programmers know. First, a divisor of 0 pushes 0 for all four — division by zero is a defined result, not an error (Solidity's <code>/</code> and <code>%</code> check first and revert with Panic(0x12); that check is the language's, not the opcode's, and this calculator computes the opcode). Second, <code>SDIV</code> truncates toward zero: −255 ÷ 2 pushes −127, not the −128 a floor division gives, and −1 ÷ 2 pushes 0 — anyone porting Python's flooring <code>//</code> gets exactly these cases wrong; <code>SDIV</code> also has the EVM's one arithmetic overflow, −2<sup>255</sup> ÷ −1, whose true quotient 2<sup>255</sup> no signed word holds, so the opcode pushes the −2<sup>255</sup> word itself rather than trapping. Third, <code>SMOD</code>'s result takes the sign of the <em>dividend</em>, never the divisor: −255 mod 2 pushes −1 and 255 mod −2 pushes 1, the opposite of a floor-mod in both mixed-sign cases. The prefilled call is the truncation case: SDIV of −255 (the word <code>0xffff…ff01</code>) by 2 pushes −127, where a flooring implementation answers −128. Honest scope: a and b are values <em>you</em> supply, in decimal or 0x hex, not execution state this page reads; anything wider than a 256-bit word is refused rather than wrapped, because the stack words the opcodes consume cannot hold it. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="div-op">Opcode</label>
+      <select id="div-op"><option value="div">DIV (0x04) — a ÷ b, unsigned</option><option value="sdiv" selected>SDIV (0x05) — a ÷ b, signed, truncating toward zero</option><option value="mod">MOD (0x06) — a mod b, unsigned</option><option value="smod">SMOD (0x07) — a mod b, signed, sign of the dividend</option></select>
+      <label for="div-a">Dividend a (one 256-bit value, decimal or 0x hex — popped first)</label>
+      <input id="div-a" type="text" inputmode="numeric" spellcheck="false" value="115792089237316195423570985008687907853269984665640564039457584007913129639681">
+      <label for="div-b">Divisor b (one 256-bit value, decimal or 0x hex — 0 pushes 0)</label>
+      <input id="div-b" type="text" inputmode="numeric" spellcheck="false" value="2">
+      <button id="div-btn" type="button">Calculate division / modulo result &amp; gas</button>
+      <p id="div-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1133,6 +1146,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=69"></script>
+<script src="app.js?v=70"></script>
 </body>
 </html>

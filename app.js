@@ -4694,6 +4694,88 @@ function byteCalc(indexStr, valueStr) {
   };
 }
 
+/* Division and modulo opcodes — DIV (0x04), SDIV (0x05),
+   MOD (0x06) and SMOD (0x07), Frontier opcodes, restated
+   in my own words and cross-checked this run against
+   independent opcode references (bytes 0x04-0x07, flat
+   5 gas each):
+     - each pops the dividend a FIRST, then the divisor
+       b, and pushes a / b (DIV, unsigned), the signed
+       quotient (SDIV), a mod b (MOD, unsigned) or the
+       signed remainder (SMOD);
+     - a divisor of 0 pushes 0 for all four — division
+       by zero is a defined result, not an error or a
+       revert at the opcode level. (Solidity's / and %
+       check first and revert with Panic(0x12); that
+       check is the language's, not the opcode's.)
+     - SDIV truncates toward zero: -255 / 2 pushes -127,
+       NOT the -128 a floor division gives (the SAR
+       lesson again: rounding direction is per-opcode).
+       And -1 / 2 pushes 0, not -1. This is the trap for
+       anyone porting Python's //, which floors.
+     - SDIV has exactly one overflow: -2^255 / -1 would
+       be 2^255, which no signed word holds, so the
+       opcode pushes the -2^255 word itself (0x8000...0)
+       — the quotient wraps, it does not trap.
+     - SMOD's result takes the sign of the DIVIDEND a,
+       never the divisor: -255 mod 2 pushes -1 and
+       255 mod -2 pushes 1. A floor-mod (Python's %)
+       takes the divisor's sign and answers the opposite
+       in both mixed-sign cases.
+     - the charge is a flat 5 — the Low tier — with no
+       other term: the inputs are stack words, nothing
+       touches memory, an account or storage.
+   Both inputs are single 256-bit words YOU supply, in
+   decimal or 0x hex; anything malformed, negative,
+   fractional, or wider than 2^256 - 1 is refused rather
+   than wrapped, as is an opcode name other than
+   div / sdiv / mod / smod. Signed readings are the
+   two's-complement reading of the same words. */
+const DIV_GAS = 5n;
+const DIV_OPCODE_BYTES = { div: "0x04", sdiv: "0x05", mod: "0x06", smod: "0x07" };
+function divCalc(opStr, aStr, bStr) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(DIV_OPCODE_BYTES, op)) return null;
+  const a = parseWord256(aStr);
+  const b = parseWord256(bStr);
+  if (a === null || b === null) return null;
+  const signedA = a >= (1n << 255n) ? a - (1n << 256n) : a;
+  const signedB = b >= (1n << 255n) ? b - (1n << 256n) : b;
+  let result;
+  if (op === "div") result = b === 0n ? 0n : a / b;
+  else if (op === "mod") result = b === 0n ? 0n : a % b;
+  else if (op === "sdiv") {
+    if (signedB === 0n) result = 0n;
+    else {
+      const q = signedA / signedB; /* BigInt division truncates toward zero */
+      result = q < 0n ? q + (1n << 256n) : q & UINT256_MAX; /* -2^255 / -1 wraps to the 2^255 word */
+    }
+  } else {
+    if (signedB === 0n) result = 0n;
+    else {
+      const m = (signedA < 0n ? -signedA : signedA) % (signedB < 0n ? -signedB : signedB);
+      const sr = signedA < 0n ? -m : m;
+      result = sr < 0n ? sr + (1n << 256n) : sr;
+    }
+  }
+  const signedResult = result >= (1n << 255n) ? result - (1n << 256n) : result;
+  return {
+    opcode: op, opcodeByte: DIV_OPCODE_BYTES[op],
+    a: a.toString(),
+    b: b.toString(),
+    aHex: "0x" + a.toString(16).padStart(64, "0"),
+    bHex: "0x" + b.toString(16).padStart(64, "0"),
+    signedA: signedA.toString(),
+    signedB: signedB.toString(),
+    zeroDivisor: b === 0n ? "true" : "false",
+    result: result.toString(),
+    resultHex: "0x" + result.toString(16).padStart(64, "0"),
+    signedResult: signedResult.toString(),
+    totalGas: DIV_GAS.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -5967,6 +6049,34 @@ if (typeof document !== "undefined") {
         : `BYTE (${r.opcodeByte}) at index ${r.byteIndex}: byte ${r.byteIndex} of ${r.value} (${r.valueHex}), counting from the most significant byte, is ${r.result} (${r.resultHex}) — that byte, pushed at the least significant position. Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
     });
 
+    /* Division / modulo opcodes (DIV / SDIV / MOD / SMOD) */
+    const divBtn = document.getElementById("div-btn");
+    if (divBtn) divBtn.addEventListener("click", () => {
+      const r = divCalc(
+        document.getElementById("div-op").value,
+        document.getElementById("div-a").value,
+        document.getElementById("div-b").value);
+      const el = document.getElementById("div-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter the dividend a and the divisor b each as one 256-bit word, decimal or 0x hex (0 up to 2^256 − 1).";
+        return;
+      }
+      const name = r.opcode.toUpperCase();
+      const signed = r.opcode === "sdiv" || r.opcode === "smod";
+      const expr = r.opcode === "div" || r.opcode === "sdiv"
+        ? (signed ? `${r.signedA} ÷ ${r.signedB}` : `${r.a} ÷ ${r.b}`)
+        : (signed ? `${r.signedA} mod ${r.signedB}` : `${r.a} mod ${r.b}`);
+      const shown = signed ? `${r.result} (${r.resultHex}), read signed as ${r.signedResult}` : `${r.result} (${r.resultHex})`;
+      const zero = r.zeroDivisor === "true"
+        ? " The divisor is 0, so the opcode pushes 0 — division by zero is a defined result at the opcode level (Solidity's / and % check first and revert instead; that check is the language's, not the opcode's)."
+        : signed
+          ? (r.opcode === "sdiv"
+            ? " SDIV truncates toward zero — it does not floor — and −2^255 ÷ −1 pushes the −2^255 word itself, the one overflow case."
+            : " SMOD's result takes the sign of the dividend a, never the divisor.")
+          : "";
+      el.textContent = `${name} (${r.opcodeByte}): ${expr} pushes ${shown}.${zero} Gas: ${r.totalGas} — a flat charge with no other term. Computed locally from the values you gave — nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -5980,5 +6090,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

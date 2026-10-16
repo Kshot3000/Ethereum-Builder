@@ -4032,6 +4032,57 @@ function blake2fGasCalc(roundsStr) {
   };
 }
 
+/* KZG point evaluation precompile gas — the precompile at
+   address 0x0a added by EIP-4844 at Cancun (Deneb) so a
+   contract can verify that a blob's polynomial evaluates to
+   a claimed value at a claimed point (the EIP is CC0; the
+   schedule is restated here in my own words, and the price
+   was cross-verified across two independent sources this
+   run: EIP-4844's own parameter table, which names
+   POINT_EVALUATION_PRECOMPILE_GAS as 50000 and the address
+   as Bytes20(0x0A), and independent implementation write-ups
+   of the precompile at exactly 50,000 over a 192-byte input):
+     - the input is fixed-width, exactly 192 bytes: the
+       32-byte versioned hash, then the evaluation point z
+       and the claimed value y as 32-byte field elements,
+       then the 48-byte KZG commitment and the 48-byte proof;
+     - the charge is a flat 50,000 — no base-plus-term split,
+       no per-word or per-element term, and nothing in the
+       input's contents moves it. Unlike BLAKE2f (0x09), whose
+       price is read from a field inside its input, this price
+       does not depend on the input at all: the input's LENGTH
+       is a validity condition, not a priced quantity — any
+       length other than exactly 192 fails the precompile's
+       own length check, so no gas price exists for it and
+       this calculator refuses it rather than quoting 50,000
+       for a call that cannot run;
+     - on success the precompile returns 64 bytes:
+       FIELD_ELEMENTS_PER_BLOB (4096) and the BLS modulus,
+       each a 32-byte big-endian value.
+   There is no EIP-2929 access term: like the other
+   precompiles, this one starts warm. This prices the
+   precompile's OWN charge only: the CALL or STATICCALL that
+   invokes it charges its own terms separately (the CALL
+   calculator above). A versioned hash that does not match
+   the commitment, a z or y that is not a canonical field
+   element (not strictly below the BLS modulus), or a proof
+   that does not verify all fail for non-gas reasons and are
+   not modelled — the calculator takes the input length
+   directly, as the other precompile tools take their priced
+   or validity quantity. */
+const KZG_INPUT_BYTES = 192n;
+const KZG_GAS = 50000n;
+function kzgGasCalc(inputLenStr) {
+  const len = memParseBytes(inputLenStr);
+  if (len === null || len !== KZG_INPUT_BYTES) return null;
+  return {
+    precompile: "kzg-point-evaluation", address: "0x000000000000000000000000000000000000000a",
+    inputBytes: KZG_INPUT_BYTES.toString(), outputBytes: "64",
+    fieldElementsPerBlob: "4096",
+    totalGas: KZG_GAS.toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -5129,6 +5180,19 @@ if (typeof document !== "undefined") {
       el.textContent = `BLAKE2f precompile (${r.address}) gas: ${r.totalGas} total — ${r.rounds} round(s) at ${r.perRoundGas} gas per round, over its fixed ${r.inputBytes}-byte input. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* KZG point evaluation precompile gas */
+    const kzgBtn = document.getElementById("kzg-btn");
+    if (kzgBtn) kzgBtn.addEventListener("click", () => {
+      const r = kzgGasCalc(
+        document.getElementById("kzg-len").value);
+      const el = document.getElementById("kzg-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the input length is a decimal byte count, and the precompile accepts exactly 192 bytes — any other length fails its length check, so no gas price exists for it.";
+        return;
+      }
+      el.textContent = `KZG point evaluation precompile (${r.address}) gas: ${r.totalGas} total — a flat charge for verifying one point evaluation over its fixed ${r.inputBytes}-byte input, returning ${r.outputBytes} bytes (${r.fieldElementsPerBlob} field elements per blob and the BLS modulus). This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -5142,5 +5206,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

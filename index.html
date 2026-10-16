@@ -686,6 +686,15 @@
     </div>
 
     <div class="tool">
+      <h3>KZG point evaluation precompile gas calculator (EIP-4844)</h3>
+      <p>One precompile remains from Cancun: at address 0x0a sits the KZG point evaluation precompile, added by <a href="https://eips.ethereum.org/EIPS/eip-4844">EIP-4844</a> so a contract can check a blob claim — that the polynomial committed to by a blob's KZG commitment evaluates to a claimed value y at a claimed point z — without holding the blob. Its input is fixed-width, exactly 192 bytes: the 32-byte versioned hash, then z and y as 32-byte field elements, then the 48-byte commitment and the 48-byte proof. Its price is the simplest on this page: a flat 50,000, whatever the values — there is no base-plus-term split and no per-word or per-element term, and unlike BLAKE2f above, whose price is read from a field inside its input, this price does not depend on the input at all. The input's length is a validity condition instead: any length other than exactly 192 fails the precompile's own length check, so this calculator refuses other lengths rather than quoting 50,000 for a call that cannot run. On success the precompile returns 64 bytes — 4096 (the field elements per blob) and the BLS modulus, each a 32-byte big-endian value. As with the precompiles above, there is no <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> access term: the precompiles start warm. The prefilled call — one evaluation over a 192-byte input — costs exactly 50,000. Honest scope: this prices the precompile's own charge only — the <code>CALL</code> or <code>STATICCALL</code> that invokes it charges its own terms separately (see the CALL calculator); a versioned hash that does not match the commitment, a z or y that is not a canonical field element (not strictly below the BLS modulus), or a proof that does not verify all fail for non-gas reasons that are not modelled, and the input length is a value <em>you</em> supply, not execution state this page reads. Computed locally; nothing is called and no chain is queried.</p>
+      <label for="kzg-len">Input length (bytes, decimal — must be exactly 192: versioned hash 32 + z 32 + y 32 + commitment 48 + proof 48)</label>
+      <input id="kzg-len" type="text" inputmode="numeric" spellcheck="false" value="192">
+      <button id="kzg-btn" type="button">Calculate KZG point evaluation gas</button>
+      <p id="kzg-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1019,6 +1028,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=58"></script>
+<script src="app.js?v=59"></script>
 </body>
 </html>

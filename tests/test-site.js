@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=58"));
+check("cache keys current", html.includes("styles.css?v=2") && html.includes("app.js?v=59"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2901,6 +2901,48 @@ check("blake2f refuses a malformed, negative, hex, non-string or over-uint32 rou
   app.blake2fGasCalc("4294967296") === null &&
   app.blake2fGasCalc("4294967295") !== null);
 check("blake2f tool section present in index.html", html.includes("b2-btn") && html.includes("BLAKE2f precompile gas calculator"));
+
+/* KZG point evaluation precompile gas — expected values produced
+   by an independent pure-Python transcription of the pricing
+   (hidden_files/oracle-kzg-gas.py): the precompile at 0x0a
+   (EIP-4844) charges a flat 50,000 over a fixed 192-byte input
+   (versioned hash 32 + z 32 + y 32 + commitment 48 + proof 48),
+   returning 64 bytes (4096 field elements per blob and the BLS
+   modulus). The oracle is anchored in-script on hand values
+   (the one valid length at 50,000, 0/191/193 bytes refused, the
+   flat price 5,000 above the pairing check's 45,000 base).
+   Vectors are [input length] -> result fields; 192 is the only
+   length with a price, because any other length fails the
+   precompile's own length check. */
+check("kzg controls labelled in index.html",
+  ["kzg-len"].every(id => html.includes(`for="${id}"`)));
+check("kzg gas matches the Python oracle",
+  (() => { const V = [
+    [["192"], ["kzg-point-evaluation", "0x000000000000000000000000000000000000000a", "192", "64", "4096", "50000"]]
+  ]; return V.every(([inp, exp]) => { const r = app.kzgGasCalc(...inp);
+    return r !== null && [r.precompile, r.address, r.inputBytes, r.outputBytes, r.fieldElementsPerBlob, r.totalGas].join(",") === exp.join(","); }); })());
+check("kzg: the flat 50,000 sits exactly 5,000 above the pairing base and the prefill is 192",
+  (() => { const r = app.kzgGasCalc("192");
+    const pairing = app.bn128GasCalc("pairing", "0");
+    return r !== null && pairing !== null &&
+      html.includes('id="kzg-len"') && html.includes('value="192"') &&
+      (BigInt(r.totalGas) - BigInt(pairing.totalGas)).toString() === "5000" &&
+      r.totalGas === "50000"; })());
+check("kzg refuses a malformed, negative, hex, non-string or wrong-length input",
+  app.kzgGasCalc("abc") === null &&
+  app.kzgGasCalc("-1") === null &&
+  app.kzgGasCalc("0xc0") === null &&
+  app.kzgGasCalc("1.5") === null &&
+  app.kzgGasCalc("") === null &&
+  app.kzgGasCalc(null) === null &&
+  app.kzgGasCalc(192) === null &&
+  app.kzgGasCalc("0") === null &&
+  app.kzgGasCalc("191") === null &&
+  app.kzgGasCalc("193") === null &&
+  app.kzgGasCalc("213") === null &&
+  app.kzgGasCalc("137438953441") === null &&
+  app.kzgGasCalc("192") !== null);
+check("kzg tool section present in index.html", html.includes("kzg-btn") && html.includes("KZG point evaluation precompile gas calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

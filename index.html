@@ -1025,6 +1025,21 @@
       <button id="bh-btn" type="button">Apply BLOCKHASH</button>
       <p id="bh-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Execution-state opcode calculator — PC, MSIZE and GAS report the frame itself</h3>
+      <p><code>PC</code> (<code>0x58</code>), <code>MSIZE</code> (<code>0x59</code>) and <code>GAS</code> (<code>0x5a</code>) — all Frontier, each a flat 2 gas (the Base tier) — push facts about the executing frame itself, and each carries one trap. <code>PC</code> pushes the program counter of the PC instruction <em>itself</em> — the byte offset at which the <code>0x58</code> sits in the executing code — not the offset of the next instruction, so a model that pushes pc + 1 is off by one on every use. <code>MSIZE</code> pushes the size in bytes of the <em>active</em> memory — the highest memory end ever touched, rounded <em>up</em> to a whole number of 32-byte words, because memory only ever grows in whole words: 0 for untouched memory, 32 after a single byte is touched, 64 once a 33rd byte is; here the memory is supplied as its byte contents, so the answer is that length rounded up, the same rounding the memory opcode calculator above reports after a store. <code>GAS</code> pushes the frame's gas remaining <em>after</em> the GAS opcode's own cost is deducted: with 100,000 gas in hand when the frame reaches the GAS — the prefilled value — it pushes exactly 99,998, never the 100,000 itself, because the quoted remainder is the gas the <em>next</em> instruction can spend. With fewer than 2 in hand the GAS cannot pay for itself and the frame halts out of gas — nothing pushed, no gas figure to quote. Two contrasts: GAS reports the frame's <em>full</em> remainder — the EIP-150 63/64 cap limits what a later <code>CALL</code> may forward, not what GAS reports — and <code>GASLIMIT</code> (<code>0x45</code>, in the environment calculator above) is a different quantity, the <em>block's</em> total limit, not this frame's remainder. Each opcode reads only its own piece of state, so only the selected opcode's input below is read — a PC computes fine whatever the gas field holds. Honest scope: the program counter, the memory contents and the gas in hand are values <em>you</em> supply — this page executes nothing and reads no chain, so none of this is live execution state. The supplied memory is capped at 4,096 bytes so the byte string stays displayable, a display cap, stated as such. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="exec-op">Opcode</label>
+      <select id="exec-op"><option value="pc">PC (0x58) — pushes the byte offset of the PC instruction itself</option><option value="msize">MSIZE (0x59) — pushes the active memory size in bytes, rounded up to whole 32-byte words</option><option value="gas" selected>GAS (0x5a) — pushes the gas remaining after GAS pays its own 2</option></select>
+      <label for="exec-pc">Program counter (PC only — the byte offset of the PC instruction itself in the executing code, one 256-bit value, decimal or 0x hex)</label>
+      <input id="exec-pc" type="text" inputmode="numeric" spellcheck="false" value="2">
+      <label for="exec-memory">Memory contents (MSIZE only — the frame's memory as hex, 0x prefix optional, even length, at most 4,096 bytes; its length rounded up to whole words is the answer)</label>
+      <input id="exec-memory" type="text" spellcheck="false" value="0x605b5b615b5b5b">
+      <label for="exec-gasbefore">Gas in hand (GAS only — the frame's gas remaining when it reaches the GAS instruction, one 256-bit value, decimal or 0x hex; GAS pushes this minus its own 2, and halts below 2)</label>
+      <input id="exec-gasbefore" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <button id="exec-btn" type="button">Apply execution-state opcode</button>
+      <p id="exec-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1413,6 +1428,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=85"></script>
+<script src="app.js?v=86"></script>
 </body>
 </html>

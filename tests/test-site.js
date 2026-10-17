@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=85"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=86"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -4805,6 +4805,94 @@ check("blockhash refuses a duplicate block number, an over-cap entry list, a sho
   app.blockhashCalc(null, "21000000", BH_ENTRIES) === null &&
   app.blockhashCalc("21000256", "21000000", null) === null);
 check("blockhash tool section present in index.html", html.includes("bh-btn") && html.includes("BLOCKHASH opcode calculator"));
+
+/* Execution-state opcodes PC (0x58) / MSIZE (0x59) / GAS (0x5a),
+   all Frontier, all a flat 2 (Base tier): the frame reports on
+   itself. PC pushes the PC instruction's OWN byte offset, not the
+   next instruction's; MSIZE pushes the active memory size, the
+   supplied memory length rounded UP to whole 32-byte words; GAS
+   pushes the gas remaining AFTER its own 2 is deducted, and with
+   fewer than 2 in hand it halts out of gas with nothing pushed
+   and no gas figure. Each op reads only its own input (lazy,
+   per-op parsing). Verified against an independent pure-Python
+   transcription (oracle-exec-op.py) anchored in-script on hand
+   values (prefill 100000 -> 99998, GAS at exactly 2 pushing 0,
+   the halts at 1 and 0, PC at its own offset 2, MSIZE at 0 / 7 /
+   32 / 33 supplied bytes) before generating. */
+check("exec controls labelled in index.html",
+  ["exec-op", "exec-pc", "exec-memory", "exec-gasbefore"].every(id => html.includes(`for="${id}"`)));
+check("exec matches the Python oracle",
+  (() => { const V = [
+    [["gas", "2", "0x605b5b615b5b5b", "100000"], "gas|0x5a|Frontier|||100000|false|99998|0x000000000000000000000000000000000000000000000000000000000001869e|2"],
+    [["pc", "2", "0x605b5b615b5b5b", "100000"], "pc|0x58|Frontier|2|||false|2|0x0000000000000000000000000000000000000000000000000000000000000002|2"],
+    [["msize", "2", "0x605b5b615b5b5b", "100000"], "msize|0x59|Frontier||7||false|32|0x0000000000000000000000000000000000000000000000000000000000000020|2"],
+    [["gas", "2", "0x605b5b615b5b5b", "2"], "gas|0x5a|Frontier|||2|false|0|0x0000000000000000000000000000000000000000000000000000000000000000|2"],
+    [["gas", "2", "0x605b5b615b5b5b", "3"], "gas|0x5a|Frontier|||3|false|1|0x0000000000000000000000000000000000000000000000000000000000000001|2"],
+    [["gas", "2", "0x605b5b615b5b5b", "1"], "gas|0x5a|Frontier|||1|true|||"],
+    [["gas", "2", "0x605b5b615b5b5b", "0"], "gas|0x5a|Frontier|||0|true|||"],
+    [["gas", "2", "0x605b5b615b5b5b", "115792089237316195423570985008687907853269984665640564039457584007913129639935"], "gas|0x5a|Frontier|||115792089237316195423570985008687907853269984665640564039457584007913129639935|false|115792089237316195423570985008687907853269984665640564039457584007913129639933|0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd|2"],
+    [["pc", "0", "0x605b5b615b5b5b", "100000"], "pc|0x58|Frontier|0|||false|0|0x0000000000000000000000000000000000000000000000000000000000000000|2"],
+    [["pc", "6", "0x605b5b615b5b5b", "100000"], "pc|0x58|Frontier|6|||false|6|0x0000000000000000000000000000000000000000000000000000000000000006|2"],
+    [["pc", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0x605b5b615b5b5b", "100000"], "pc|0x58|Frontier|115792089237316195423570985008687907853269984665640564039457584007913129639935|||false|115792089237316195423570985008687907853269984665640564039457584007913129639935|0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff|2"],
+    [["pc", "0x2a", "0x605b5b615b5b5b", "100000"], "pc|0x58|Frontier|42|||false|42|0x000000000000000000000000000000000000000000000000000000000000002a|2"],
+    [["msize", "2", "", "100000"], "msize|0x59|Frontier||0||false|0|0x0000000000000000000000000000000000000000000000000000000000000000|2"],
+    [["msize", "2", "0xabababababababababababababababababababababababababababababababab", "100000"], "msize|0x59|Frontier||32||false|32|0x0000000000000000000000000000000000000000000000000000000000000020|2"],
+    [["msize", "2", "0xababababababababababababababababababababababababababababababababab", "100000"], "msize|0x59|Frontier||33||false|64|0x0000000000000000000000000000000000000000000000000000000000000040|2"],
+    [["msize", "2", "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab", "100000"], "msize|0x59|Frontier||64||false|64|0x0000000000000000000000000000000000000000000000000000000000000040|2"],
+    [["msize", "2", "0xff", "100000"], "msize|0x59|Frontier||1||false|32|0x0000000000000000000000000000000000000000000000000000000000000020|2"],
+    [["pc", "42", "garbage", null], "pc|0x58|Frontier|42|||false|42|0x000000000000000000000000000000000000000000000000000000000000002a|2"],
+    [["gas", null, "garbage", "100000"], "gas|0x5a|Frontier|||100000|false|99998|0x000000000000000000000000000000000000000000000000000000000001869e|2"],
+    [["msize", null, "0x00", null], "msize|0x59|Frontier||1||false|32|0x0000000000000000000000000000000000000000000000000000000000000020|2"],
+    [["gas", "2", "0x605b5b615b5b5b", "0x186a0"], "gas|0x5a|Frontier|||100000|false|99998|0x000000000000000000000000000000000000000000000000000000000001869e|2"],
+  ]; return V.every(([inp, exp]) => { const r = app.execCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.fork, r.pc, r.memoryBytes, r.gasBefore, r.halted, r.result, r.resultHex, r.totalGas].join("|") === exp; }); })());
+check("exec: prefilled page values -- GAS selected, 100000 in hand pushes exactly 99998 at 2 gas",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const sel = html.match(/<select id="exec-op">([\s\S]*?)<\/select>/);
+    const r = app.execCalc("gas", g("exec-pc"), g("exec-memory"), g("exec-gasbefore"));
+    return sel !== null && sel[1].includes('value="gas" selected') &&
+      r !== null && r.result === "99998" && r.gasBefore === "100000" && r.halted === "false" && r.totalGas === "2"; })());
+check("exec: GAS pays for itself -- it never pushes the amount in hand, and exactly 2 in hand pushes 0",
+  app.execCalc("gas", "2", "", "100000").result === "99998" &&
+  app.execCalc("gas", "2", "", "2").result === "0" &&
+  app.execCalc("gas", "2", "", "3").result === "1");
+check("exec: GAS with fewer than 2 in hand halts out of gas -- nothing pushed, no gas figure",
+  (() => { const a = app.execCalc("gas", "2", "", "1"); const b = app.execCalc("gas", "2", "", "0");
+    return a.halted === "true" && a.result === "" && a.resultHex === "" && a.totalGas === "" &&
+      b.halted === "true" && b.gasBefore === "0"; })());
+check("exec: PC pushes its own offset, not the next instruction's",
+  app.execCalc("pc", "2", "", "").result === "2" &&
+  app.execCalc("pc", "0", "", "").result === "0" &&
+  app.execCalc("pc", "6", "", "").result !== "7");
+check("exec: MSIZE rounds the supplied memory length up to whole words -- 0 stays 0, a 33rd byte opens a second word",
+  app.execCalc("msize", "", "", "").result === "0" &&
+  app.execCalc("msize", "", "0x" + "ab".repeat(7), "").result === "32" &&
+  app.execCalc("msize", "", "0x" + "ab".repeat(32), "").result === "32" &&
+  app.execCalc("msize", "", "0x" + "ab".repeat(33), "").result === "64");
+check("exec: MSIZE agrees with the memory opcode tool -- the size after a store is the size MSIZE pushes for that memory",
+  (() => { const w = app.memCalc("mstore", "64", "0xdeadbeef", "");
+    const r = app.execCalc("msize", "", w.memoryAfter, "");
+    return w.msizeAfter === "96" && r !== null && r.result === w.msizeAfter && r.memoryBytes === w.memoryAfterBytes; })());
+check("exec: each opcode reads only its own input -- garbage or missing values in the other fields change nothing",
+  app.execCalc("pc", "42", "garbage", null).result === "42" &&
+  app.execCalc("gas", null, "garbage", "100000").result === "99998" &&
+  app.execCalc("msize", null, "0x00", null).result === "32" &&
+  app.execCalc("gas", "garbage", "garbage", "100000").result === "99998");
+check("exec: all three opcodes pay the flat Base tier 2, the same 2 the environment tool quotes for GASLIMIT",
+  app.execCalc("pc", "2", "", "").totalGas === "2" &&
+  app.execCalc("msize", "", "", "").totalGas === "2" &&
+  app.execCalc("gas", "", "", "100000").totalGas === app.envCalc("gaslimit", ...ENV_BASE).totalGas);
+check("exec refuses an unknown opcode, a word at or past 2^256 for the selected op, a negative gas, odd-length or over-cap memory, and a null selected input -- and accepts exactly 4,096 memory bytes",
+  app.execCalc("jump", "2", "", "100000") === null &&
+  app.execCalc("pc", "115792089237316195423570985008687907853269984665640564039457584007913129639936", "", "") === null &&
+  app.execCalc("gas", "", "", "-1") === null &&
+  app.execCalc("msize", "", "0x0", "") === null &&
+  app.execCalc("msize", "", "0x" + "00".repeat(4097), "") === null &&
+  app.execCalc("msize", "", "0x" + "00".repeat(4096), "") !== null &&
+  app.execCalc("pc", null, "", "") === null &&
+  app.execCalc("gas", "", "", null) === null &&
+  app.execCalc(null, "2", "", "100000") === null);
+check("exec tool section present in index.html", html.includes("exec-btn") && html.includes("Execution-state opcode calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

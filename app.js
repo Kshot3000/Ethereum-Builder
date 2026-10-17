@@ -6020,6 +6020,82 @@ function blockhashCalc(currentStr, targetStr, entriesStr) {
     resultHex: "0x" + v.toString(16).padStart(64, "0") };
 }
 
+/* Execution-state opcodes PC (0x58) / MSIZE (0x59) / GAS (0x5a),
+   all Frontier, all a flat 2 (the Base tier) — what the executing
+   frame itself reports: where it is, how much memory it holds,
+   and how much gas it has left. This page executes nothing, so
+   each piece of state is an input YOU supply, and each opcode
+   reads only its own — the inputs are parsed lazily, inside each
+   op's branch, because a real frame's PC executes fine whatever
+   its gas counter holds.
+   PC pushes the program counter of the PC instruction ITSELF —
+   the byte offset at which the 0x58 sits in the executing code —
+   not the offset of the next instruction: an implementation (or
+   a mental model) pushing pc + 1 is off by one on every use, and
+   in hand-written assembly that off-by-one is exactly a jump
+   landing one byte early. PC takes no argument and reads no
+   stack item; the value is fixed by where the opcode sits.
+   MSIZE pushes the size in bytes of the ACTIVE memory: the
+   highest memory end ever touched, rounded UP to a whole number
+   of 32-byte words, because memory only ever grows in whole
+   words — 0 for untouched memory, 32 after a single byte is
+   touched, 64 once a 33rd byte is. The memory here is supplied
+   as its byte contents, so the answer is the supplied length
+   rounded up the same way the hub's memory opcode tool reports
+   msizeAfter for a store.
+   GAS pushes the frame's gas remaining AFTER the GAS opcode's
+   own 2 is deducted: with G in hand when the frame reaches the
+   GAS it pushes G − 2, never G — the quoted remainder is the
+   gas the NEXT instruction can spend. With fewer than 2 in hand
+   the GAS cannot pay for itself: an out-of-gas exceptional halt,
+   the frame's gas consumed, nothing pushed, reported here as a
+   halt with no result and no gas figure, exactly as the hub's
+   other halts are reported. Two contrasts. GAS reports the
+   frame's FULL remainder: the EIP-150 63/64 cap limits what a
+   later CALL may forward, not what GAS reports. And GASLIMIT
+   (0x45, in the environment calculator above) is a different
+   quantity — the BLOCK's total gas limit, not this frame's
+   remaining gas.
+   Inputs are refused rather than wrapped: the pc and the gas in
+   hand are single 256-bit words in decimal or 0x hex via
+   parseWord256; the supplied memory hex must be even-length,
+   and it is capped at 4,096 bytes so the byte string stays
+   displayable — a display cap, stated as such, matching the
+   hub's memory tools. */
+const EXEC_STATE_BYTES = { pc: "0x58", msize: "0x59", gas: "0x5a" };
+const EXEC_STATE_MEM_MAX = 4096;
+function execCalc(opStr, pcStr, memoryStr, gasBeforeStr) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(EXEC_STATE_BYTES, op)) return null;
+  const wordHex = v => "0x" + v.toString(16).padStart(64, "0");
+  const base = { opcode: op, opcodeByte: EXEC_STATE_BYTES[op], fork: "Frontier",
+    pc: "", memoryBytes: "", gasBefore: "", halted: "false",
+    result: "", resultHex: "", totalGas: "2" };
+  if (op === "pc") {
+    const v = parseWord256(pcStr);
+    if (v === null) return null;
+    return { ...base, pc: v.toString(), result: v.toString(), resultHex: wordHex(v) };
+  }
+  if (op === "msize") {
+    if (typeof memoryStr !== "string") return null;
+    let h = memoryStr.trim();
+    if (/^0[xX]/.test(h)) h = h.slice(2);
+    if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+    if (h.length / 2 > EXEC_STATE_MEM_MAX) return null;
+    const len = h.length / 2;
+    const v = BigInt(Math.ceil(len / 32) * 32);
+    return { ...base, memoryBytes: String(len), result: v.toString(), resultHex: wordHex(v) };
+  }
+  const before = parseWord256(gasBeforeStr);
+  if (before === null) return null;
+  if (before < 2n) {
+    return { ...base, gasBefore: before.toString(), halted: "true", totalGas: "" };
+  }
+  const v = before - 2n;
+  return { ...base, gasBefore: before.toString(), result: v.toString(), resultHex: wordHex(v) };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -7711,6 +7787,36 @@ if (typeof document !== "undefined") {
       el.textContent = `BLOCKHASH (${r.opcodeByte}, ${r.fork}): pushes 0 — ${why}. An out-of-window argument pushes 0 rather than halting, and it pushes 0 even if a hash for that block is among the entries you supplied: supplying data does not extend the window. Gas: 20 — the flat G_blockhash, unchanged since Frontier. ${tail}`;
     });
 
+    /* Execution-state opcodes PC (0x58) / MSIZE (0x59) / GAS (0x5a) */
+    const execBtn = document.getElementById("exec-btn");
+    if (execBtn) execBtn.addEventListener("click", () => {
+      const r = execCalc(
+        document.getElementById("exec-op").value,
+        document.getElementById("exec-pc").value,
+        document.getElementById("exec-memory").value,
+        document.getElementById("exec-gasbefore").value);
+      const el = document.getElementById("exec-out");
+      if (r === null) {
+        el.textContent = "Check the inputs for the selected opcode: PC takes one 256-bit value, decimal or 0x hex (the byte offset of the PC instruction itself); MSIZE takes memory as even-length hex, at most 4,096 bytes; GAS takes the gas in hand as one 256-bit value, decimal or 0x hex. Only the selected opcode's input is read.";
+        return;
+      }
+      const NAME = { pc: "PC", msize: "MSIZE", gas: "GAS" }[r.opcode];
+      const tail = "Computed locally from the execution state you supplied — nothing is executed and no chain is queried.";
+      if (r.halted === "true") {
+        el.textContent = `GAS (${r.opcodeByte}, ${r.fork}): HALTS out of gas — the frame has ${r.gasBefore} gas in hand, less than the 2 the GAS opcode itself costs, so it cannot pay for itself: the frame's gas is consumed, nothing is pushed, and there is no gas figure to quote. ${tail}`;
+        return;
+      }
+      if (r.opcode === "pc") {
+        el.textContent = `PC (${r.opcodeByte}, ${r.fork}): pushes ${r.result} (the word ${r.resultHex}) — the byte offset of the PC instruction itself in the executing code, not the offset of the next instruction (${(BigInt(r.result) + 1n).toString()}). Gas: 2 — the flat Base tier. ${tail}`;
+        return;
+      }
+      if (r.opcode === "msize") {
+        el.textContent = `MSIZE (${r.opcodeByte}, ${r.fork}): pushes ${r.result} — the active memory size in bytes for the ${r.memoryBytes} byte(s) of memory you supplied, rounded up to a whole number of 32-byte words, because memory only ever grows in whole words. Gas: 2 — the flat Base tier. ${tail}`;
+        return;
+      }
+      el.textContent = `GAS (${r.opcodeByte}, ${r.fork}): pushes ${r.result} (the word ${r.resultHex}) — the frame's gas remaining after the GAS opcode's own cost is deducted: ${r.gasBefore} in hand minus 2, never the ${r.gasBefore} itself, and the frame's full remainder — the EIP-150 63/64 cap limits what a later CALL may forward, not what GAS reports. Gas: 2 — the flat Base tier. ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -7724,5 +7830,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -6850,6 +6850,195 @@ function sha3Calc(offsetStr, sizeStr, memoryStr) {
   };
 }
 
+/* CREATE (0xf0, Frontier) / CREATE2 (0xf5, Constantinople,
+   EIP-1014) — applies a contract creation to the state the user
+   supplies: the creator and its nonce and balance, the value
+   (endowment), the initcode region of the frame's memory, CREATE2's
+   salt, the depth and static flag, the derived account's existing
+   nonce / balance / code flag, and the initcode outcome the user
+   supplies (whether it succeeds, reverts or halts, the gas it uses,
+   the code it returns, the data it reverts with). The address is
+   derived BEFORE the creator's nonce increments — CREATE from
+   keccak256(rlp([creator, nonce])), CREATE2 from
+   keccak256(0xff ++ creator ++ salt ++ keccak256(initcode)) — and
+   both derivations are the hub's own address tools, cross-checked
+   against them exactly in tests. Gas is the hub's CREATE gas tool's
+   price, cross-checked against it exactly in tests: an upfront
+   32,000 + 2 per initcode word (EIP-3860; CREATE2 pays 8 per word,
+   the extra 6 being the Keccak hashing of the initcode) + the
+   memory-expansion increase, then all-but-one-64th of the remainder
+   (EIP-150) is forwarded to the initcode. Four failures are soft —
+   depth at the 1,024 limit, a value-carrying creation inside a
+   static frame, a creator balance below the value, and a COLLISION
+   (the derived account already has a non-zero nonce or any code) —
+   checked in the client's order; each pushes 0, forwards nothing
+   and consumes the upfront alone, and the creator's nonce does NOT
+   move. Once the initcode runs, the creator's nonce HAS incremented
+   by one and stays incremented on revert, halt and deposit failure
+   alike. A reverting initcode returns its unused gas and sets the
+   returndata buffer; a halting one consumes its whole allowance and
+   empties it. On success the returned code is deposited at 200 per
+   byte charged against the SAME forwarded allowance: if the
+   initcode's use plus the deposit exceeds the allowance the deposit
+   runs out of gas and the whole allowance is consumed (the classic
+   trap — a creation can fail at the deposit step after flawless
+   initcode), and returned code over the EIP-170 cap of 24,576 bytes
+   fails the same way. A successful creation leaves the new account
+   at nonce 1 with the deployed code and the endowment added to any
+   balance it already carried (a funded, nonce-0, code-less account
+   is creatable — collision needs a nonce or code, not a balance).
+   Inputs are refused rather than wrapped: words are single 256-bit
+   words; the supplied memory, the initcode size and a non-empty
+   region's end are capped at 4,096 bytes as stated display caps;
+   the deployed code is capped at 24,577 bytes so the EIP-170 edge
+   stays reachable; CREATE's salt field and the unused outcome
+   fields are never read (lazily parsed; garbage-field tests). */
+const CREATEOP_MAX_BYTES = 4096;
+const CREATEOP_MAX_DEPLOYED = 24577;
+function createCalc(opStr, gasAvailStr, valueStr, creatorStr, nonceStr, saltStr,
+    creatorBalStr, depthStr, outcomeStr, initGasUsedStr, deployedStr, retDataStr,
+    memoryStr, initOffStr, initSizeStr, targetNonceStr, targetBalStr,
+    targetHasCode, inStatic) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (op !== "create" && op !== "create2") return null;
+  if (typeof targetHasCode !== "boolean" || typeof inStatic !== "boolean") return null;
+  if (typeof memoryStr !== "string") return null;
+  const parseAddr = s => {
+    if (typeof s !== "string") return null;
+    let h = s.trim();
+    if (/^0[xX]/.test(h)) h = h.slice(2);
+    if (!/^[0-9a-fA-F]{40}$/.test(h)) return null;
+    return "0x" + h.toLowerCase();
+  };
+  const parseBytes = (s, cap) => {
+    if (typeof s !== "string") return null;
+    let h = s.trim();
+    if (/^0[xX]/.test(h)) h = h.slice(2);
+    if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+    if (h.length / 2 > cap) return null;
+    const arr = [];
+    for (let i = 0; i < h.length; i += 2) arr.push(parseInt(h.slice(i, i + 2), 16));
+    return arr;
+  };
+  const gasAvail = sstoreParseWord(gasAvailStr);
+  const value = sstoreParseWord(valueStr);
+  const creator = parseAddr(creatorStr);
+  const nonce = sstoreParseWord(nonceStr);
+  const creatorBal = sstoreParseWord(creatorBalStr);
+  const depth = sstoreParseWord(depthStr);
+  const targetNonce = sstoreParseWord(targetNonceStr);
+  const targetBal = sstoreParseWord(targetBalStr);
+  const memory = parseBytes(memoryStr, CREATEOP_MAX_BYTES);
+  const initOff = sstoreParseWord(initOffStr), initSize = sstoreParseWord(initSizeStr);
+  if (gasAvail === null || value === null || creator === null || nonce === null ||
+      creatorBal === null || depth === null || targetNonce === null || targetBal === null ||
+      memory === null || initOff === null || initSize === null) return null;
+  if (nonce >= (1n << 256n) - 1n) return null;
+  if (initSize > BigInt(CREATEOP_MAX_BYTES)) return null;
+  const regionEnd = initSize === 0n ? 0n : initOff + initSize;
+  if (initSize > 0n && regionEnd > BigInt(CREATEOP_MAX_BYTES)) return null;
+  const sz = Number(initSize), off = Number(initOff);
+  const initcode = [];
+  for (let i = 0; i < sz; i++) initcode.push(off + i < memory.length ? memory[off + i] : 0);
+  const toHex = arr => "0x" + arr.map(b => b.toString(16).padStart(2, "0")).join("");
+  const initcodeHex = toHex(initcode);
+  let targetAddress;
+  if (op === "create2") {
+    const salt = parseBytes(saltStr, 32);
+    if (salt === null || salt.length !== 32) return null;
+    targetAddress = create2Address(creator, toHex(salt), initcodeHex);
+  } else {
+    targetAddress = createAddress(creator, nonce.toString());
+  }
+  if (targetAddress === null) return null;
+  const g = createGasCalc(gasAvail.toString(), op, initSize.toString(),
+    initSize === 0n ? "0" : initOff.toString(), String(memory.length), "0");
+  if (g === null) return null;
+  const upfront = BigInt(g.upfrontGas);
+  const expanded = memory.slice();
+  while (expanded.length < Number(regionEnd)) expanded.push(0);
+  const head = { opcode: op, opcodeByte: op === "create" ? "0xf0" : "0xf5",
+    fork: op === "create" ? "Frontier" : "Constantinople",
+    targetAddress, initcode: initcodeHex, initcodeBytes: initSize.toString(),
+    upfrontGas: g.upfrontGas, wordGas: g.wordGas, initcodeWords: g.initcodeWords,
+    memoryGas: g.memoryGas };
+  const unchanged = { creatorAfter: creatorBal.toString(), targetAfter: targetBal.toString() };
+  if (g.outOfGas) {
+    return { ...head, pushed: "", outcome: "halt", failReason: "",
+      forwardedGas: "0", creatorRetained: "0", initGasUsed: "", depositGas: "0",
+      gasUsed: "", gasAfter: "", ...unchanged, transferred: "false",
+      creatorNonceAfter: nonce.toString(), targetNonceAfter: targetNonce.toString(),
+      deployedCode: "0x", deployedCodeBytes: "0", returndata: "0x", returndataBytes: "0",
+      memoryAfter: toHex(memory), memoryAfterBytes: String(memory.length), halted: "true" };
+  }
+  const forwarded = BigInt(g.forwardedGas);
+  let fail = "";
+  if (depth >= 1024n) fail = "depth";
+  else if (inStatic && value > 0n) fail = "static";
+  else if (creatorBal < value) fail = "balance";
+  else if (targetNonce !== 0n || targetHasCode) fail = "collision";
+  if (fail) {
+    return { ...head, pushed: "0", outcome: "failed", failReason: fail,
+      forwardedGas: "0", creatorRetained: g.creatorRetained, initGasUsed: "0",
+      depositGas: "0", gasUsed: upfront.toString(), gasAfter: (gasAvail - upfront).toString(),
+      ...unchanged, transferred: "false",
+      creatorNonceAfter: nonce.toString(), targetNonceAfter: targetNonce.toString(),
+      deployedCode: "0x", deployedCodeBytes: "0", returndata: "0x", returndataBytes: "0",
+      memoryAfter: toHex(expanded), memoryAfterBytes: String(expanded.length), halted: "false" };
+  }
+  if (typeof outcomeStr !== "string") return null;
+  const outcome = outcomeStr.trim().toLowerCase();
+  if (!["success", "revert", "halt"].includes(outcome)) return null;
+  const base = { ...head, forwardedGas: g.forwardedGas, creatorRetained: g.creatorRetained,
+    creatorNonceAfter: (nonce + 1n).toString(),
+    memoryAfter: toHex(expanded), memoryAfterBytes: String(expanded.length), halted: "false" };
+  if (outcome === "halt") {
+    return { ...base, pushed: "0", outcome: "callee-halt", failReason: "",
+      initGasUsed: forwarded.toString(), depositGas: "0",
+      gasUsed: (upfront + forwarded).toString(), gasAfter: (gasAvail - upfront - forwarded).toString(),
+      ...unchanged, transferred: "false", targetNonceAfter: targetNonce.toString(),
+      deployedCode: "0x", deployedCodeBytes: "0", returndata: "0x", returndataBytes: "0" };
+  }
+  if (outcome === "revert") {
+    const used = sstoreParseWord(initGasUsedStr);
+    const retdata = parseBytes(retDataStr, CREATEOP_MAX_BYTES);
+    if (used === null || retdata === null || used > forwarded) return null;
+    return { ...base, pushed: "0", outcome: "revert", failReason: "",
+      initGasUsed: used.toString(), depositGas: "0",
+      gasUsed: (upfront + used).toString(), gasAfter: (gasAvail - upfront - used).toString(),
+      ...unchanged, transferred: "false", targetNonceAfter: targetNonce.toString(),
+      deployedCode: "0x", deployedCodeBytes: "0",
+      returndata: toHex(retdata), returndataBytes: String(retdata.length) };
+  }
+  const used = sstoreParseWord(initGasUsedStr);
+  const deployed = parseBytes(deployedStr, CREATEOP_MAX_DEPLOYED);
+  if (used === null || deployed === null || used > forwarded) return null;
+  if (deployed.length > 24576) {
+    return { ...base, pushed: "0", outcome: "code-too-large", failReason: "",
+      initGasUsed: forwarded.toString(), depositGas: "0",
+      gasUsed: (upfront + forwarded).toString(), gasAfter: (gasAvail - upfront - forwarded).toString(),
+      ...unchanged, transferred: "false", targetNonceAfter: targetNonce.toString(),
+      deployedCode: "0x", deployedCodeBytes: "0", returndata: "0x", returndataBytes: "0" };
+  }
+  const deposit = 200n * BigInt(deployed.length);
+  if (used + deposit > forwarded) {
+    return { ...base, pushed: "0", outcome: "deposit-oog", failReason: "",
+      initGasUsed: used.toString(), depositGas: deposit.toString(),
+      gasUsed: (upfront + forwarded).toString(), gasAfter: (gasAvail - upfront - forwarded).toString(),
+      ...unchanged, transferred: "false", targetNonceAfter: targetNonce.toString(),
+      deployedCode: "0x", deployedCodeBytes: "0", returndata: "0x", returndataBytes: "0" };
+  }
+  return { ...base, pushed: targetAddress, outcome: "success", failReason: "",
+    initGasUsed: used.toString(), depositGas: deposit.toString(),
+    gasUsed: (upfront + used + deposit).toString(),
+    gasAfter: (gasAvail - upfront - used - deposit).toString(),
+    creatorAfter: (creatorBal - value).toString(), targetAfter: (targetBal + value).toString(),
+    transferred: value > 0n ? "true" : "false", targetNonceAfter: "1",
+    deployedCode: toHex(deployed), deployedCodeBytes: String(deployed.length),
+    returndata: "0x", returndataBytes: "0" };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -8778,6 +8967,70 @@ if (typeof document !== "undefined") {
       el.textContent = `SHA3 (${r.opcodeByte}, Frontier): pushes ${r.resultHex} — Keccak-256 of the ${r.size} byte(s) at offset ${r.offset}, ${r.hashedData} (bytes past the supplied memory read as zero). Gas: ${r.totalGas} — 30 flat + ${r.wordGas} for ${r.words} word(s) + ${r.expansionGas} of memory expansion; memory after is ${r.memoryAfterBytes} bytes (MSIZE ${r.msizeAfter}). This is Ethereum's Keccak-256, not NIST SHA3-256, whose digest of the same bytes would differ. ${tail}`;
     });
 
+    /* CREATE / CREATE2 (0xf0 / 0xf5) */
+    const createopBtn = document.getElementById("createop-btn");
+    if (createopBtn) createopBtn.addEventListener("click", () => {
+      const r = createCalc(
+        document.getElementById("createop-op").value,
+        document.getElementById("createop-gas").value,
+        document.getElementById("createop-value").value,
+        document.getElementById("createop-creator").value,
+        document.getElementById("createop-nonce").value,
+        document.getElementById("createop-salt").value,
+        document.getElementById("createop-creatorbal").value,
+        document.getElementById("createop-depth").value,
+        document.getElementById("createop-outcome").value,
+        document.getElementById("createop-used").value,
+        document.getElementById("createop-deployed").value,
+        document.getElementById("createop-ret").value,
+        document.getElementById("createop-memory").value,
+        document.getElementById("createop-off").value,
+        document.getElementById("createop-size").value,
+        document.getElementById("createop-tnonce").value,
+        document.getElementById("createop-tbal").value,
+        document.getElementById("createop-hascode").checked,
+        document.getElementById("createop-static").checked);
+      const el = document.getElementById("createop-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: gas, value, nonces, balances, depth, offset and size must each be one 256-bit word, decimal or 0x hex; addresses must be exactly 40 hex characters; the salt (CREATE2 only) must be exactly 32 bytes; memory and return data must be even-length hex of at most 4,096 bytes, the deployed code at most 24,577 bytes; the initcode size may be at most 4,096 and a non-empty region must end within 4,096 bytes; the initcode gas used may not exceed the forwarded allowance.";
+        return;
+      }
+      const tail = "Computed locally from the state you gave — no initcode is executed and no chain is queried.";
+      const name = `${r.opcode.toUpperCase()} (${r.opcodeByte}, ${r.fork})`;
+      if (r.outcome === "halt") {
+        el.textContent = `${name}: the frame cannot even pay the upfront ${r.upfrontGas}, so the opcode itself halts out of gas — nothing is pushed, no address is created and no nonce moves. ${tail}`;
+        return;
+      }
+      if (r.outcome === "failed") {
+        const why = r.failReason === "depth"
+          ? "the call depth has reached the 1,024 limit"
+          : r.failReason === "static"
+            ? "the calling frame is static and this creation carries value, which a static frame may not move"
+            : r.failReason === "balance"
+              ? "the creator's balance is below the value this creation carries"
+              : "the derived account already has a non-zero nonce or code — an address collision";
+        el.textContent = `${name}: creation fails softly — ${why} — so the opcode pushes 0, forwards nothing, and only the upfront ${r.upfrontGas} is consumed (gas after: ${r.gasAfter}). The derived address was ${r.targetAddress}; the creator's nonce stays at ${r.creatorNonceAfter} and no balance moves. ${tail}`;
+        return;
+      }
+      if (r.outcome === "callee-halt") {
+        el.textContent = `${name}: the initcode at ${r.targetAddress} halts exceptionally, consuming its whole forwarded allowance of ${r.forwardedGas}, so the opcode pushes 0. Total gas used: ${r.gasUsed} (gas after: ${r.gasAfter}). The creator's nonce has still incremented to ${r.creatorNonceAfter}; the endowment rolls back and the returndata buffer is empty. ${tail}`;
+        return;
+      }
+      if (r.outcome === "revert") {
+        el.textContent = `${name}: the initcode at ${r.targetAddress} reverts after using ${r.initGasUsed} of the forwarded ${r.forwardedGas}, so the opcode pushes 0 and the unused gas returns — total gas used ${r.gasUsed} (gas after: ${r.gasAfter}). The returndata buffer holds its ${r.returndataBytes}-byte revert data. The creator's nonce has still incremented to ${r.creatorNonceAfter}; the endowment rolls back, so balances are unchanged — creator ${r.creatorAfter}, derived account ${r.targetAfter}. ${tail}`;
+        return;
+      }
+      if (r.outcome === "deposit-oog") {
+        el.textContent = `${name}: the initcode at ${r.targetAddress} succeeds but leaves too little of its ${r.forwardedGas} allowance for the code deposit — it used ${r.initGasUsed} and depositing the returned code needs ${r.depositGas} — so the deposit runs out of gas, the whole allowance is consumed, and the opcode pushes 0. Total gas used: ${r.gasUsed} (gas after: ${r.gasAfter}). The creator's nonce has still incremented to ${r.creatorNonceAfter}; no code is stored and the endowment rolls back. ${tail}`;
+        return;
+      }
+      if (r.outcome === "code-too-large") {
+        el.textContent = `${name}: the initcode at ${r.targetAddress} returns code over the EIP-170 cap of 24,576 bytes, so creation fails and the whole forwarded allowance of ${r.forwardedGas} is consumed — the opcode pushes 0. Total gas used: ${r.gasUsed} (gas after: ${r.gasAfter}). The creator's nonce has still incremented to ${r.creatorNonceAfter}; no code is stored and the endowment rolls back. ${tail}`;
+        return;
+      }
+      el.textContent = `${name}: creation succeeds and the opcode pushes the new address ${r.targetAddress}. Upfront ${r.upfrontGas} (32,000 + ${r.wordGas} for ${r.initcodeWords} initcode word(s) + ${r.memoryGas} of memory expansion); ${r.forwardedGas} was forwarded to the initcode, which used ${r.initGasUsed}, and depositing its ${r.deployedCodeBytes} byte(s) of code cost ${r.depositGas} — total gas used ${r.gasUsed} (gas after: ${r.gasAfter}). The new account sits at nonce ${r.targetNonceAfter}${r.transferred === "true" ? ` holding the endowment: creator ${r.creatorAfter}, new account ${r.targetAfter}` : ` with balance ${r.targetAfter} and no endowment moved`}; the creator's nonce is now ${r.creatorNonceAfter}. ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -8791,5 +9044,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

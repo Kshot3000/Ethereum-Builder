@@ -1202,6 +1202,51 @@
     </div>
 
     <div class="tool">
+      <h3>CREATE / CREATE2 opcode calculator — contract creation applied</h3>
+      <p><code>CREATE</code> (<code>0xf0</code>, Frontier) and <code>CREATE2</code> (<code>0xf5</code>, Constantinople, EIP-1014) pop a value (the endowment), an offset and a size naming the initcode in memory — CREATE2 also pops a salt, supplied here directly — run the initcode in a new account, and push that account's address, or 0 if creation fails. The address is derived <em>before</em> the creator's nonce increments: CREATE from the creator and its current nonce, CREATE2 from the creator, the salt and the initcode's hash alone — which is why the same creator and initcode at a different nonce give a different CREATE address, while a CREATE2 address can be computed before anything is deployed. Four failures are soft, checked in the client's order — the depth reaches the 1,024 limit, a value-carrying creation inside a static frame, a creator balance below the value, and a <strong>collision</strong>: the derived account already has a non-zero nonce or any code. Each pushes 0, forwards nothing and consumes only the upfront gas, and the creator's nonce does <em>not</em> move; a funded account with nonce 0 and no code is <em>not</em> a collision — creation succeeds onto it and the endowment adds to its balance. Once the initcode runs, the creator's nonce <em>has</em> incremented and stays incremented even if the initcode reverts, halts, or the deposit then fails. The deepest trap is the deposit step: the code the initcode returns is charged 200 per byte against the <em>same</em> all-but-one-64th allowance the initcode ran on, so flawless initcode can still fail creation if it leaves too little for the deposit — the whole allowance is then consumed — and returned code over the EIP-170 cap of 24,576 bytes fails the same way. A reverting initcode returns its unused gas and sets the returndata buffer; a halting one consumes its whole allowance and empties it. A successful creation leaves the new account at nonce 1 holding the deployed code. The prefilled creation — 1 ETH endowed by the creator below at nonce 0, the 10-byte initcode <code>0x600a6000f3600a6000f3</code> at offset 0, initcode using 10,000 gas and returning 100 bytes of code — creates <code>0xCB601083A931558527CC9899c5939433F7cff8aF</code> at 62,002 gas total: an upfront 32,002 (32,000 + 2 for one initcode word + 0 expansion, the supplied memory already filling the word), 952,874 forwarded, and a 20,000 deposit for the 100 bytes. Honest scope: the state and the initcode outcome are values <em>you</em> supply — this page executes no initcode and reads no chain. Supplied memory, the initcode size and a non-empty region's end are capped at 4,096 bytes as stated display caps; the deployed code is capped at 24,577 bytes so the EIP-170 edge stays reachable. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="createop-op">Opcode</label>
+      <select id="createop-op"><option value="create" selected>CREATE (0xf0) — address from creator + nonce</option><option value="create2">CREATE2 (0xf5) — address from creator + salt + initcode hash</option></select>
+      <label for="createop-gas">Gas available (the frame's remaining gas when the opcode runs)</label>
+      <input id="createop-gas" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="createop-value">Value (wei endowed to the new account)</label>
+      <input id="createop-value" type="text" inputmode="numeric" spellcheck="false" value="1000000000000000000">
+      <label for="createop-creator">Creator address (the account executing the opcode)</label>
+      <input id="createop-creator" type="text" spellcheck="false" value="0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a">
+      <label for="createop-nonce">Creator nonce (its current nonce — a CREATE address is derived from exactly this, before it increments)</label>
+      <input id="createop-nonce" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="createop-salt">Salt (CREATE2 only — exactly 32 bytes of hex; never read for CREATE)</label>
+      <input id="createop-salt" type="text" spellcheck="false" value="0x0000000000000000000000000000000000000000000000000000000000000000">
+      <label for="createop-creatorbal">Creator balance (wei)</label>
+      <input id="createop-creatorbal" type="text" inputmode="numeric" spellcheck="false" value="2000000000000000000">
+      <label for="createop-depth">Call depth (the frame's depth; creation fails at 1,024)</label>
+      <input id="createop-depth" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="createop-outcome">Initcode outcome (what the initcode you supply does when run)</label>
+      <select id="createop-outcome"><option value="success" selected>Succeeds and returns the deployed code below</option><option value="revert">Reverts with the return data below</option><option value="halt">Halts exceptionally (out of gas, invalid opcode…)</option></select>
+      <label for="createop-used">Initcode gas used (of the forwarded allowance; never read when the initcode halts)</label>
+      <input id="createop-used" type="text" inputmode="numeric" spellcheck="false" value="10000">
+      <label for="createop-deployed">Deployed code (hex the initcode returns on success — deposited at 200 per byte; at most 24,577 bytes)</label>
+      <input id="createop-deployed" type="text" spellcheck="false" value="0x60016001600160016001600160016001600160016001600160016001600160016001600160016001600160016001600160016001600160016001600160016001600160016001600160016001600160016001600160016001600160016001600160016001">
+      <label for="createop-ret">Return data (hex the initcode reverts with; read only on a revert)</label>
+      <input id="createop-ret" type="text" spellcheck="false" value="0x">
+      <label for="createop-memory">Memory before the opcode (hex bytes, 0x prefix optional, at most 4,096 bytes — bytes past its end read as zero)</label>
+      <input id="createop-memory" type="text" spellcheck="false" value="0x600a6000f3600a6000f3">
+      <label for="createop-off">Initcode offset (bytes into memory the initcode starts at)</label>
+      <input id="createop-off" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="createop-size">Initcode size (bytes; a zero size runs empty initcode and touches no memory whatever the offset)</label>
+      <input id="createop-size" type="text" inputmode="numeric" spellcheck="false" value="10">
+      <label for="createop-tnonce">Derived account's existing nonce (a non-zero nonce is already a collision)</label>
+      <input id="createop-tnonce" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="createop-tbal">Derived account's existing balance (wei — a balance alone is not a collision; the endowment adds to it)</label>
+      <input id="createop-tbal" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="createop-hascode">Derived account already has code (a collision — creation fails softly before anything runs)</label>
+      <input id="createop-hascode" type="checkbox">
+      <label for="createop-static">Calling frame is static (a value-carrying creation then fails softly; a zero-value one still runs)</label>
+      <input id="createop-static" type="checkbox">
+      <button id="createop-btn" type="button">Apply CREATE opcode</button>
+      <p id="createop-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1587,6 +1632,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=93"></script>
+<script src="app.js?v=94"></script>
 </body>
 </html>

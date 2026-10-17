@@ -5116,6 +5116,98 @@ function stackCalc(opStr, nStr, stackStr) {
   };
 }
 
+/* JUMPDEST analysis -- JUMPDEST (0x5b, Frontier).
+   jumpdestCalc(code, dest) walks the bytecode YOU supply
+   from pc 0 and computes the set of VALID jump destinations
+   -- the offsets a JUMP (0x56) or JUMPI (0x57) may legally
+   land on -- exactly as the Yellow Paper's jump-destination
+   validity definition computes it: the next instruction
+   sits at pc + 1 for every opcode except PUSH1..PUSH32
+   (0x60..0x7f), where it sits at pc + 1 + n because the n
+   bytes after the opcode are immediate data, not code;
+   PUSH0 (0x5f) has no immediate and advances by 1 like any
+   other opcode. A byte 0x5b counts as a destination only
+   when the walk lands on it AS an instruction.
+   The naive scan is the trap: grepping the raw bytes for
+   0x5b also matches every 0x5b sitting inside PUSH
+   immediate data, and those bytes are data, never
+   destinations -- a jump onto one is an invalid jump
+   destination, an exceptional halt that consumes the
+   frame's gas, in code where the byte LOOKS like a
+   JUMPDEST. The calculator lists those impostor offsets
+   separately (fakes) precisely so the difference is
+   visible: in the prefilled code 0x605b5b615b5b5b the
+   bytes at 1, 4 and 5 are all 0x5b and none of them is a
+   destination; only 2 and 6 are.
+   A PUSHn whose immediates run past the end of the code
+   consumes the rest of the code (the truncated push of
+   tool 73) and the walk ends there; that is reported as
+   truncatedPush, and any 0x5b among the consumed bytes is
+   a fake like any other push data.
+   JUMPDEST itself is a no-op marker when execution falls
+   through it, charged a flat 1 gas -- the cheapest opcode
+   in the machine -- which is not a term of this analysis
+   and is stated here only to place the opcode.
+   The code is hex bytes YOU supply (0x prefix optional;
+   empty is empty code), capped at 24,576 bytes, the
+   EIP-170 limit on deployed code; odd-length or non-hex
+   input is refused. The optional destination (decimal or
+   0x hex; empty means no query) is answered against the
+   computed set -- a destination at or past the end of the
+   code, on a non-JUMPDEST instruction, or inside push
+   data is not valid. Metadata in deployed code (the CBOR
+   trailer a compiler appends) is walked as instructions
+   like any other bytes, which is what a client's own
+   analysis does; it normally contains no boundary 0x5b
+   the walk lands on, and any it did contain would be a
+   destination by the same rule. */
+const JUMPDEST_MAX_BYTES = 24576;
+function jumpdestCalc(codeStr, destStr) {
+  if (typeof codeStr !== "string" || typeof destStr !== "string") return null;
+  let h = codeStr.trim();
+  if (/^0[xX]/.test(h)) h = h.slice(2);
+  if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+  if (h.length / 2 > JUMPDEST_MAX_BYTES) return null;
+  const bytes = [];
+  for (let i = 0; i < h.length; i += 2) bytes.push(parseInt(h.slice(i, i + 2), 16));
+  let dest = null;
+  const ds = destStr.trim();
+  if (ds !== "") {
+    dest = parseWord256(ds);
+    if (dest === null) return null;
+  }
+  const jumpdests = [], fakes = [];
+  let pc = 0, instructions = 0, truncated = false;
+  while (pc < bytes.length) {
+    const op = bytes[pc];
+    instructions++;
+    if (op === 0x5b) {
+      jumpdests.push(pc);
+      pc += 1;
+    } else if (op >= 0x60 && op <= 0x7f) {
+      const width = op - 0x5f;
+      for (let k = 1; k <= width; k++) {
+        if (pc + k < bytes.length && bytes[pc + k] === 0x5b) fakes.push(pc + k);
+      }
+      if (pc + 1 + width > bytes.length) truncated = true;
+      pc += 1 + width;
+    } else {
+      pc += 1;
+    }
+  }
+  return {
+    codeBytes: String(bytes.length),
+    instructions: String(instructions),
+    jumpdests: jumpdests.map(String),
+    jumpdestCount: String(jumpdests.length),
+    fakes: fakes.map(String),
+    fakeCount: String(fakes.length),
+    truncatedPush: truncated ? "true" : "false",
+    dest: dest === null ? "" : dest.toString(),
+    destValid: dest === null ? "" : (jumpdests.some(d => BigInt(d) === dest) ? "true" : "false")
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -6539,6 +6631,30 @@ if (typeof document !== "undefined") {
       el.textContent = `${name} (${r.opcodeByte}): stack ${fmtStack(r.before)} \u2192 ${fmtStack(r.after)} \u2014 ${effect}. Gas: ${r.totalGas} \u2014 a flat charge (the Base tier, 1 below the Verylow 3 the push family charges), with no other term. Computed locally from the stack you gave \u2014 nothing is executed and no chain is queried.`;
     });
 
+    /* JUMPDEST analyser */
+    const jdBtn = document.getElementById("jd-btn");
+    if (jdBtn) jdBtn.addEventListener("click", () => {
+      const r = jumpdestCalc(
+        document.getElementById("jd-code").value,
+        document.getElementById("jd-dest").value);
+      const el = document.getElementById("jd-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter the bytecode as hex (0x prefix optional, an even number of hex digits, at most 24,576 bytes — the EIP-170 deployed-code limit; empty is empty code), and a destination as a whole number in decimal or 0x hex (or leave it empty to just list the destinations).";
+        return;
+      }
+      const fmt = arr => arr.length === 0 ? "none" : arr.join(", ");
+      const trunc = r.truncatedPush === "true"
+        ? " The code ends inside a PUSH: its missing immediate bytes are consumed as data (padded with zeros when the push executes), so the walk ends there."
+        : "";
+      let verdict = "";
+      if (r.dest !== "") {
+        verdict = r.destValid === "true"
+          ? ` Destination ${r.dest}: VALID — a JUMP or JUMPI landing there is legal.`
+          : ` Destination ${r.dest}: NOT a valid destination — a JUMP or JUMPI landing there is an invalid jump destination and halts exceptionally, consuming the frame's gas${r.fakes.includes(r.dest) ? ", even though the byte stored there is 0x5b: it sits inside PUSH immediate data, so it is data, not a JUMPDEST" : ""}.`;
+      }
+      el.textContent = `Code: ${r.codeBytes} byte(s), ${r.instructions} instruction(s) on the walk from pc 0. Valid jump destinations (${r.jumpdestCount}): ${fmt(r.jumpdests)}. Bytes that are 0x5b but sit inside PUSH data and are NOT destinations (${r.fakeCount}): ${fmt(r.fakes)}.${trunc}${verdict} JUMPDEST itself costs 1 gas when execution reaches it. Computed locally from the code you gave — nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -6552,5 +6668,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

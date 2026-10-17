@@ -873,6 +873,17 @@
       <button id="stack-btn" type="button">Apply opcode to the stack</button>
       <p id="stack-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>JUMPDEST analyser — valid jump destinations in bytecode</h3>
+      <p>Every <code>JUMP</code> (<code>0x56</code>) and <code>JUMPI</code> (<code>0x57</code>) in EVM code may land only on a <code>JUMPDEST</code> (<code>0x5b</code>, Frontier) — and not every byte that <em>reads</em> <code>0x5b</code> is one. This analyser walks the bytecode you supply from pc 0 exactly the way the protocol's own validity rule defines the destination set: the next instruction sits one byte on for every opcode except <code>PUSH1</code>–<code>PUSH32</code> (<code>0x60</code>–<code>0x7f</code>), whose immediate bytes it steps over — those bytes are data, not code — while <code>PUSH0</code> (<code>0x5f</code>) has no immediate and steps by one like everything else. A <code>0x5b</code> counts only when the walk lands on it as an instruction. The trap is the naive scan: grepping the raw bytes for <code>0x5b</code> also matches every <code>0x5b</code> inside push data, and a jump onto one of those is an invalid jump destination — an exceptional halt that consumes the frame's gas — in code where the byte looks exactly like a JUMPDEST. The analyser lists those impostor offsets separately so the difference is visible, and can answer for one destination you name. A push whose immediates run past the end of the code consumes the rest of the code and ends the walk, as the push calculator above describes. <code>JUMPDEST</code> itself is a no-op marker charged a flat 1 gas when execution reaches it — the cheapest opcode in the machine. The prefilled code is the trap in seven bytes — <code>PUSH1 0x5b</code>, a real JUMPDEST, <code>PUSH2 0x5b5b</code>, a real JUMPDEST: its bytes at 1, 4 and 5 are all <code>0x5b</code> and none of them is a destination, while 2 and 6 are — and the prefilled destination, 1, is the first impostor. Honest scope: the bytecode is code <em>you</em> supply, not a contract this page reads from any chain; at most 24,576 bytes are accepted (the EIP-170 limit on deployed code), and compiler metadata appended to deployed code is walked as instructions like any other bytes, as a client's own analysis walks it. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="jd-code">Bytecode (hex, 0x prefix optional — empty is empty code)</label>
+      <input id="jd-code" type="text" spellcheck="false" value="0x605b5b615b5b5b">
+      <label for="jd-dest">Destination to check (byte offset in decimal or 0x hex — leave empty to just list the destinations)</label>
+      <input id="jd-dest" type="text" spellcheck="false" value="1">
+      <button id="jd-btn" type="button">Analyse jump destinations</button>
+      <p id="jd-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1209,6 +1220,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=75"></script>
+<script src="app.js?v=76"></script>
 </body>
 </html>

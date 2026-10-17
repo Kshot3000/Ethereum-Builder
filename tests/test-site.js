@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=82"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=83"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -4549,6 +4549,79 @@ check("returndata refuses a bad opcode, a malformed offset, odd or non-hex retur
   app.rdCalc("returndatacopy", "0", "0", "0", null, "") === null &&
   app.rdCalc(null, "0", "0", "0", RDAT_RD, "") === null);
 check("returndata tool section present in index.html", html.includes("rdat-btn") && html.includes("Returndata opcode calculator"));
+
+
+
+/* CODESIZE / CODECOPY -- expected values from the
+   independent pure-Python oracle (oracle-code-op.py),
+   that keeps code and memory as plain bytearrays:
+   SIZE pushes the byte length; COPY copies code bytes into
+   memory, ZERO-PADDING its source past the code's end (the
+   contrast with RETURNDATACOPY, which halts). Anchored
+   in-script on hand values (the prefill 32-byte copy of the
+   7-byte code at 9 gas with 25 pad bytes, the 5b615b slice
+   at offset 2, an all-padding copy at offset == length, the
+   gap-filled copy at destination 64) before generating. */
+const CODE_CODE = "0x605b5b615b5b5b";
+check("code controls labelled in index.html",
+  ["code-op", "code-offset", "code-dest", "code-size", "code-code", "code-memory"].every(id => html.includes(`for="${id}"`)));
+check("code matches the Python oracle",
+  (() => { const V = [
+    [["codecopy", "0", "0", "32", "0x605b5b615b5b5b", ""], "codecopy|0x39|7|0|0|32||0x605b5b615b5b5b00000000000000000000000000000000000000000000000000|0x605b5b615b5b5b00000000000000000000000000000000000000000000000000|32|0|32|3|3|9"],
+    [["codecopy", "2", "0", "3", "0x605b5b615b5b5b", ""], "codecopy|0x39|7|2|0|3||0x5b615b|0x5b615b|3|0|32|3|3|9"],
+    [["codecopy", "0x2", "0", "3", "0x605b5b615b5b5b", ""], "codecopy|0x39|7|2|0|3||0x5b615b|0x5b615b|3|0|32|3|3|9"],
+    [["codesize", "garbage", "garbage", "garbage", "0x605b5b615b5b5b", ""], "codesize|0x38|7||||7||0x|0|0|0|||2"],
+    [["codesize", "", "", "", "", ""], "codesize|0x38|0||||0||0x|0|0|0|||2"],
+    [["codesize", "", "", "", "0xdeadbeef", "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"], "codesize|0x38|4||||4||0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab|64|64|64|||2"],
+    [["codecopy", "7", "0", "4", "0x605b5b615b5b5b", ""], "codecopy|0x39|7|7|0|4||0x00000000|0x00000000|4|0|32|3|3|9"],
+    [["codecopy", "6", "0", "2", "0x605b5b615b5b5b", ""], "codecopy|0x39|7|6|0|2||0x5b00|0x5b00|2|0|32|3|3|9"],
+    [["codecopy", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "2", "0x605b5b615b5b5b", ""], "codecopy|0x39|7|57896044618658097711785492504343953926634992332820282019728792003956564819968|0|2||0x0000|0x0000|2|0|32|3|3|9"],
+    [["codecopy", "0", "0", "7", "0x605b5b615b5b5b", "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"], "codecopy|0x39|7|0|0|7||0x605b5b615b5b5b|0x605b5b615b5b5bcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd|32|32|32|3|0|6"],
+    [["codecopy", "0", "64", "4", "0xdeadbeef", ""], "codecopy|0x39|4|0|64|4||0xdeadbeef|0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000deadbeef|68|0|96|3|9|15"],
+    [["codecopy", "0", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "0x605b5b615b5b5b", ""], "codecopy|0x39|7|0|57896044618658097711785492504343953926634992332820282019728792003956564819968|0||0x|0x|0|0|0|0|0|3"],
+    [["codecopy", "0", "0", "0", "", ""], "codecopy|0x39|0|0|0|0||0x|0x|0|0|0|0|0|3"],
+    [["codecopy", "0", "0", "1", "", ""], "codecopy|0x39|0|0|0|1||0x00|0x00|1|0|32|3|3|9"],
+    [["codecopy", "0", "1", "2", "0x4240", "0xffff"], "codecopy|0x39|2|0|1|2||0x4240|0xff4240|3|32|32|3|0|6"],
+    [["codecopy", "1", "0", "3", "0xdeadbeef", ""], "codecopy|0x39|4|1|0|3||0xadbeef|0xadbeef|3|0|32|3|3|9"],
+    [["codecopy", "0", "0", "4", "0xdeadbeef", "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"], "codecopy|0x39|4|0|0|4||0xdeadbeef|0xdeadbeefabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab|64|64|64|3|0|6"],
+    [["codecopy", "5", "30", "4", "0x605b5b615b5b5b", ""], "codecopy|0x39|7|5|30|4||0x5b5b0000|0x0000000000000000000000000000000000000000000000000000000000005b5b0000|34|0|64|3|6|12"],
+  ]; return V.every(([inp, exp]) => { const r = app.codeCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.codeBytes, r.offset, r.destOffset, r.copySize, r.result, r.copied, r.memoryAfter, r.memoryAfterBytes, r.msizeBefore, r.msizeAfter, r.wordGas, r.expansionGas, r.totalGas].join("|") === exp; }); })());
+check("code: prefilled page values \u2014 CODECOPY of 32 bytes from offset 0 of the 7-byte code copies 7 real bytes plus 25 zero pad bytes at 9 gas",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const sel = html.match(/id="code-op"[^>]*>([\s\S]*?)<\/select>/);
+    const r = app.codeCalc("codecopy", g("code-offset"), g("code-dest"), g("code-size"), g("code-code"), g("code-memory"));
+    return sel && sel[1].includes('value="codecopy" selected') && r !== null &&
+      r.copied === CODE_CODE + "00".repeat(25) && r.totalGas === "9"; })());
+check("code: CODESIZE pushes the byte length at a flat 2 gas and reads no numeric argument",
+  app.codeCalc("codesize", "garbage", "garbage", "garbage", CODE_CODE, "").result === "7" &&
+  app.codeCalc("codesize", "", "", "", "", "").result === "0" &&
+  app.codeCalc("codesize", "", "", "", CODE_CODE, "").totalGas === "2");
+check("code: the padding contrast \u2014 CODECOPY zero-pads past the end where RETURNDATACOPY halts on the same overrun",
+  app.codeCalc("codecopy", "0", "0", "33", CODE_CODE, "").copied === CODE_CODE + "00".repeat(26) &&
+  app.rdCalc("returndatacopy", "0", "0", "33", CODE_CODE, "").halted === "true" &&
+  app.codeCalc("codecopy", "7", "0", "4", CODE_CODE, "").copied === "0x00000000" &&
+  app.codeCalc("codecopy", "0", "0", "1", "", "").copied === "0x00");
+check("code: copy gas agrees with the hub's copy-gas tool exactly",
+  [["0", "32", ""], ["64", "4", ""], ["0", "32", "0x" + "ab".repeat(64)]].every(([d, s, m]) =>
+    app.codeCalc("codecopy", "0", d, s, s === "4" ? "0xdeadbeef" : CODE_CODE, m).totalGas ===
+    app.copyGasCalc("CODECOPY", d, s, String(m === "" ? 0 : (m.length - 2) / 2)).totalGas));
+check("code: a zero-size copy touches no memory whatever its destination, at the flat 3 alone",
+  (() => { const r = app.codeCalc("codecopy", "0", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", CODE_CODE, "");
+    return r !== null && r.memoryAfter === "0x" && r.totalGas === "3" && r.copied === "0x"; })());
+check("code refuses a bad opcode, a malformed offset, odd or non-hex code or memory, oversize inputs, and a copy ending past 4,096 bytes",
+  app.codeCalc("codecopy2", "0", "0", "0", CODE_CODE, "") === null &&
+  app.codeCalc("codecopy", "-1", "0", "0", CODE_CODE, "") === null &&
+  app.codeCalc("codecopy", "0", "0", "0", "0x0", "") === null &&
+  app.codeCalc("codecopy", "0", "0", "0", "0xzz", "") === null &&
+  app.codeCalc("codecopy", "0", "0", "0", CODE_CODE, "0x0") === null &&
+  app.codeCalc("codesize", "", "", "", "0x" + "00".repeat(4097), "") === null &&
+  app.codeCalc("codecopy", "0", "0", "4097", CODE_CODE, "") === null &&
+  app.codeCalc("codecopy", "0", "4096", "1", CODE_CODE, "") === null &&
+  app.codeCalc("codecopy", "0", "4064", "32", CODE_CODE, "") !== null &&
+  app.codeCalc("codecopy", "0", "0", "0", null, "") === null &&
+  app.codeCalc(null, "0", "0", "0", CODE_CODE, "") === null);
+check("code tool section present in index.html", html.includes("code-btn") && html.includes("Code opcode calculator"));
 
 
 

@@ -1116,6 +1116,23 @@
       <button id="storage-btn" type="button">Apply storage opcode</button>
       <p id="storage-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Transient storage opcode calculator — TLOAD / TSTORE against the slot's state</h3>
+      <p><code>TLOAD</code> (<code>0x5c</code>) and <code>TSTORE</code> (<code>0x5d</code>), both Cancun under <a href="https://eips.ethereum.org/EIPS/eip-1153">EIP-1153</a>, are the EVM's <em>transient</em> storage: one 32-byte word per 256-bit slot in the executing contract's own transient store — a per-contract scratch space that lives only for one transaction and is discarded in full when it ends, so frames can pass state between calls (reentrancy locks are the classic use) without ever touching disk. TLOAD pops a slot key and pushes that slot's <em>current</em> transient word — 0 for a slot not yet written in this transaction — changing nothing. TSTORE pops the key first (it sits on top of the stack) and the value second, and replaces the word; a frame's revert undoes that frame's transient writes, as with persistent storage. Everything SSTORE's metering complicates is absent here, and the absences are the lesson: both opcodes cost a <em>flat 100</em> — the total the hub's transient storage gas tool quotes, cross-checked exactly in the tests — with <em>no cold price</em> (transient slots never enter <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a>'s accessed sets, so a first touch costs the same 100 as every later touch and an access list cannot pre-warm one), <em>no <a href="https://eips.ethereum.org/EIPS/eip-2200">EIP-2200</a> metering</em> (there is no transaction-original word to meter against, so setting, resetting, clearing and rewriting the same value all cost the same 100), and <em>no refund ever</em> (the store is discarded anyway — clearing a transient word earns nothing, where the SSTORE above earns 4,800 for a clear). The family's trap is the <em>absent sentry</em>: TSTORE is exempt from the EIP-2200 stipend guard, so a write runs whenever the frame's gas remaining covers the flat 100 — at 2,300, where the same-priced persistent no-op halts on the sentry, at 150, and at exactly 100 — and halts out of gas only below 100. The prefilled call stores 1,000,000 into an untouched transient slot 0 at 100 gas; set the gas remaining to 2,300 and it still stores, where the persistent tool above halts. Honest scope: a TSTORE inside a static context fails for a non-gas reason (write protection) not modelled here, while TLOAD is allowed there; the store's discard at the transaction's end is a transaction-level event a single opcode application cannot show; and the slot, values and gas remaining are values <em>you</em> supply — this page executes nothing and reads no chain. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="tstorage-op">Opcode</label>
+      <select id="tstorage-op"><option value="tload">TLOAD (0x5c) — push the slot's current transient word</option><option value="tstore" selected>TSTORE (0x5d) — replace the slot's transient word</option></select>
+      <label for="tstorage-slot">Transient slot / key (one 256-bit value, decimal or 0x hex — the word the opcode pops first)</label>
+      <input id="tstorage-slot" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="tstorage-current">Current value (the transient word the slot holds just before this opcode — an untouched slot holds 0; TLOAD pushes exactly this)</label>
+      <input id="tstorage-current" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="tstorage-new">New value (TSTORE only — the word popped second, stored into the slot; not read for TLOAD)</label>
+      <input id="tstorage-new" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="tstorage-gas">Gas remaining before the opcode (TSTORE only — there is NO 2,300 sentry: the write runs at any remainder of 100 or more and halts only below 100; not read for TLOAD)</label>
+      <input id="tstorage-gas" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <button id="tstorage-btn" type="button">Apply transient storage opcode</button>
+      <p id="tstorage-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1504,6 +1521,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=90"></script>
+<script src="app.js?v=91"></script>
 </body>
 </html>

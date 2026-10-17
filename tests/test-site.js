@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=90"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=91"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -5240,6 +5240,90 @@ check("storage refuses an unknown opcode, a malformed slot, current, original, n
   app.storageCalc("sload", null, "", "0", "", "", false) === null &&
   app.storageCalc("sload", "0", "", null, "", "", false) === null);
 check("storage tool section present in index.html", html.includes("storage-btn") && html.includes("Storage opcode calculator"));
+/* TLOAD (0x5c) / TSTORE (0x5d), both Cancun (EIP-1153): TLOAD
+   pushes the transient slot's current word and changes
+   nothing; TSTORE replaces the word. Both cost a flat 100 --
+   no EIP-2929 cold/warm split, no EIP-2200 metering tree, no
+   refund ever -- and TSTORE is exempt from SSTORE's EIP-2200
+   sentry, halting out of gas only below the flat 100. The
+   flat charge is cross-checked exactly below against the
+   hub's transient storage gas tool, and the sentry contrast
+   against the hub's persistent storageCalc exactly. Verified
+   against an independent pure-Python oracle
+   (oracle-tstorage-op.py) anchored in-script on hand values
+   (the prefill at 100, the sentry-exemption writes at 2,300 /
+   150 / exactly 100, the insufficient halts at 99 / 0, the
+   refund-free clear) before generating. */
+check("tstorage controls labelled in index.html",
+  ["tstorage-op", "tstorage-slot", "tstorage-current", "tstorage-new", "tstorage-gas"].every(id => html.includes(`for="${id}"`)));
+check("tstorage matches the Python oracle",
+  (() => { const V = [
+    [["tload", "0", "1000000", "", ""], "tload|0x5c|Cancun|0|0x0000000000000000000000000000000000000000000000000000000000000000|1000000||1000000|1000000|0x00000000000000000000000000000000000000000000000000000000000f4240||100|0||false||load"],
+    [["tload", "1", "0", "", ""], "tload|0x5c|Cancun|1|0x0000000000000000000000000000000000000000000000000000000000000001|0||0|0|0x0000000000000000000000000000000000000000000000000000000000000000||100|0||false||load"],
+    [["tload", "0xff", "0xdeadbeef", "", ""], "tload|0x5c|Cancun|255|0x00000000000000000000000000000000000000000000000000000000000000ff|3735928559||3735928559|3735928559|0x00000000000000000000000000000000000000000000000000000000deadbeef||100|0||false||load"],
+    [["tload", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "", ""], "tload|0x5c|Cancun|115792089237316195423570985008687907853269984665640564039457584007913129639935|0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff|115792089237316195423570985008687907853269984665640564039457584007913129639935||115792089237316195423570985008687907853269984665640564039457584007913129639935|115792089237316195423570985008687907853269984665640564039457584007913129639935|0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff||100|0||false||load"],
+    [["tload", "3", "42", "garbage", "garbage"], "tload|0x5c|Cancun|3|0x0000000000000000000000000000000000000000000000000000000000000003|42||42|42|0x000000000000000000000000000000000000000000000000000000000000002a||100|0||false||load"],
+    [["tstore", "0", "0", "1000000", "100000"], "tstore|0x5d|Cancun|0|0x0000000000000000000000000000000000000000000000000000000000000000|0|1000000||1000000|0x00000000000000000000000000000000000000000000000000000000000f4240||100|0|100000|false||store"],
+    [["tstore", "1", "5", "0", "100000"], "tstore|0x5d|Cancun|1|0x0000000000000000000000000000000000000000000000000000000000000001|5|0||0|0x0000000000000000000000000000000000000000000000000000000000000000||100|0|100000|false||store"],
+    [["tstore", "1", "5", "5", "100000"], "tstore|0x5d|Cancun|1|0x0000000000000000000000000000000000000000000000000000000000000001|5|5||5|0x0000000000000000000000000000000000000000000000000000000000000005||100|0|100000|false||store"],
+    [["tstore", "0", "0", "0", "100000"], "tstore|0x5d|Cancun|0|0x0000000000000000000000000000000000000000000000000000000000000000|0|0||0|0x0000000000000000000000000000000000000000000000000000000000000000||100|0|100000|false||store"],
+    [["tstore", "0x2", "0x9", "0x3", "0x186a0"], "tstore|0x5d|Cancun|2|0x0000000000000000000000000000000000000000000000000000000000000002|9|3||3|0x0000000000000000000000000000000000000000000000000000000000000003||100|0|100000|false||store"],
+    [["tstore", "4", "0", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "100000"], "tstore|0x5d|Cancun|4|0x0000000000000000000000000000000000000000000000000000000000000004|0|115792089237316195423570985008687907853269984665640564039457584007913129639935||115792089237316195423570985008687907853269984665640564039457584007913129639935|0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff||100|0|100000|false||store"],
+    [["tstore", "2", "7", "9", "2300"], "tstore|0x5d|Cancun|2|0x0000000000000000000000000000000000000000000000000000000000000002|7|9||9|0x0000000000000000000000000000000000000000000000000000000000000009||100|0|2300|false||store"],
+    [["tstore", "2", "7", "9", "2301"], "tstore|0x5d|Cancun|2|0x0000000000000000000000000000000000000000000000000000000000000002|7|9||9|0x0000000000000000000000000000000000000000000000000000000000000009||100|0|2301|false||store"],
+    [["tstore", "2", "7", "9", "150"], "tstore|0x5d|Cancun|2|0x0000000000000000000000000000000000000000000000000000000000000002|7|9||9|0x0000000000000000000000000000000000000000000000000000000000000009||100|0|150|false||store"],
+    [["tstore", "2", "7", "9", "100"], "tstore|0x5d|Cancun|2|0x0000000000000000000000000000000000000000000000000000000000000002|7|9||9|0x0000000000000000000000000000000000000000000000000000000000000009||100|0|100|false||store"],
+    [["tstore", "2", "7", "9", "99"], "tstore|0x5d|Cancun|2|0x0000000000000000000000000000000000000000000000000000000000000002|7|9||7|0x0000000000000000000000000000000000000000000000000000000000000007||||99|true|insufficient|halt"],
+    [["tstore", "2", "7", "9", "0"], "tstore|0x5d|Cancun|2|0x0000000000000000000000000000000000000000000000000000000000000002|7|9||7|0x0000000000000000000000000000000000000000000000000000000000000007||||0|true|insufficient|halt"]
+  ]; return V.every(([inp, exp]) => { const r = app.tstorageCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.fork, r.slot, r.slotHex, r.current, r.newValue, r.pushed, r.storageAfter, r.storageAfterHex, r.branch, r.totalGas, r.refundDelta, r.gasBefore, r.halted, r.haltReason, r.outcome].join("|") === exp; }); })());
+check("tstorage: prefilled page values \u2014 storing 1,000,000 into an untouched transient slot 0 costs the flat 100",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const op = /id="tstorage-op"[\s\S]*?<option value="tstore" selected>/.test(html) ? "tstore" : "tload";
+    const r = app.tstorageCalc(op, g("tstorage-slot"), g("tstorage-current"), g("tstorage-new"), g("tstorage-gas"));
+    return r !== null && r.outcome === "store" && r.totalGas === "100" && r.refundDelta === "0" && r.storageAfter === "1000000"; })());
+check("tstorage: the flat 100 agrees with the hub's transient storage gas tool exactly, for both opcodes",
+  (() => { const a = app.tstorageCalc("tload", "7", "424242", "", "");
+    const b = app.tstorageCalc("tstore", "7", "424242", "1", "100000");
+    return a !== null && b !== null && a.totalGas === app.transientGasCalc("TLOAD").totalGas &&
+      b.totalGas === app.transientGasCalc("TSTORE").totalGas && a.totalGas === "100" && b.totalGas === "100"; })());
+check("tstorage: TLOAD pushes the current word and leaves transient storage unchanged; an untouched slot reads as 0",
+  (() => { const a = app.tstorageCalc("tload", "7", "424242", "", "");
+    const b = app.tstorageCalc("tload", "7", "0", "", "");
+    return a !== null && a.pushed === "424242" && a.storageAfter === "424242" && b !== null && b.pushed === "0"; })());
+check("tstorage: the sentry contrast \u2014 the SAME 100-gas write at gas remaining 2,300 halts as an SSTORE (sentry) and stores as a TSTORE, and the TSTORE also stores at 150 and at exactly 100",
+  app.storageCalc("sstore", "1", "5", "5", "5", "2300", false).haltReason === "sentry" &&
+  app.tstorageCalc("tstore", "1", "5", "5", "2300").outcome === "store" &&
+  app.tstorageCalc("tstore", "1", "5", "5", "2300").totalGas === "100" &&
+  app.tstorageCalc("tstore", "1", "5", "9", "150").outcome === "store" &&
+  app.tstorageCalc("tstore", "1", "5", "9", "100").outcome === "store");
+check("tstorage: below the flat 100 the write halts with the single reason insufficient \u2014 at 99 and at 0 \u2014 leaving the word unchanged with no gas figure",
+  (() => { const a = app.tstorageCalc("tstore", "2", "7", "9", "99");
+    const b = app.tstorageCalc("tstore", "2", "7", "9", "0");
+    return a !== null && a.halted === "true" && a.haltReason === "insufficient" && a.storageAfter === "7" && a.totalGas === "" && a.refundDelta === "" &&
+      b !== null && b.haltReason === "insufficient" && b.storageAfter === "7"; })());
+check("tstorage: no value pattern changes the price or earns a refund \u2014 set, reset, clear, same-value rewrite and zero-into-empty all cost 100 with refund 0, where the same SSTORE clear earns 4,800",
+  [["0", "1"], ["5", "9"], ["5", "0"], ["5", "5"], ["0", "0"]].every(([c, n]) =>
+    { const r = app.tstorageCalc("tstore", "3", c, n, "100000");
+      return r !== null && r.totalGas === "100" && r.refundDelta === "0" && r.storageAfter === n; }) &&
+  app.storageCalc("sstore", "3", "5", "5", "0", "100000", false).refundDelta === "4800");
+check("tstorage: TLOAD never reads its new-value or gas fields \u2014 garbage there cannot change its answer, while TSTORE refuses that same garbage in any field it reads",
+  app.tstorageCalc("tload", "0", "42", "garbage", "garbage").pushed === "42" &&
+  app.tstorageCalc("tload", "0", "42", null, null) !== null &&
+  app.tstorageCalc("tstore", "0", "0", "garbage", "100000") === null &&
+  app.tstorageCalc("tstore", "0", "0", "1", "garbage") === null);
+check("tstorage refuses an unknown opcode (persistent-storage names included), a malformed slot, current, new or gas word, a word at or past 2^256, and null inputs",
+  app.tstorageCalc("sstore", "0", "0", "1", "100000") === null &&
+  app.tstorageCalc("sload", "0", "0", "", "") === null &&
+  app.tstorageCalc("tload", "-1", "0", "", "") === null &&
+  app.tstorageCalc("tload", "0", "-1", "", "") === null &&
+  app.tstorageCalc("tstore", "0", "0", "115792089237316195423570985008687907853269984665640564039457584007913129639936", "100000") === null &&
+  app.tstorageCalc("tstore", "0", "0", "1", "-5") === null &&
+  app.tstorageCalc(null, "0", "0", "", "") === null &&
+  app.tstorageCalc("tload", null, "0", "", "") === null &&
+  app.tstorageCalc("tload", "0", null, "", "") === null);
+check("tstorage tool section present in index.html", html.includes("tstorage-btn") && html.includes("Transient storage opcode calculator"));
+
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

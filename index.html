@@ -893,6 +893,21 @@
       <button id="dis-btn" type="button">Disassemble</button>
       <p id="dis-out" class="out out-list" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Memory opcode calculator — MLOAD / MSTORE / MSTORE8</h3>
+      <p>The EVM's memory opcodes, all Frontier: <code>MLOAD</code> (<code>0x51</code>) pushes the 32 big-endian bytes at an offset, <code>MSTORE</code> (<code>0x52</code>) writes a word as 32 big-endian bytes at an offset, and <code>MSTORE8</code> (<code>0x53</code>) writes a single byte. Memory is a byte array that every call frame starts empty and zero-initialised: bytes past its current end read as zero, a write past the end extends it with zeros in the gap, and offsets need not be aligned — a word stored at offset 4 straddles the first two 32-byte slots, which is exactly how packed structures land. Three traps. <code>MSTORE</code> is big-endian: the value's <em>low</em> byte lands at offset + 31, not at the offset, so storing <code>0xdeadbeef</code> at 0 leaves 28 zero bytes first. <code>MSTORE8</code> stores the value <em>mod 256</em> — its least significant byte alone — so storing 511 (<code>0x1ff</code>) stores <code>0xff</code> and discards the higher bytes; an implementation that stores the whole word, or refuses a value above 255, is wrong on both sides. And <code>MSIZE</code> rounds the touched size <em>up</em> to whole 32-byte words: a 6-byte memory has MSIZE 32, and touching a 33rd byte makes it 64. Gas is the flat 3 (the verylow tier) <em>plus</em> the memory-expansion increase for growing from the supplied size's word count to the touched size's, on the cost curve the memory-expansion tool above prices — total(w) = 3w + floor(w² ÷ 512), charged as the increase only — so a touch inside the size already covered costs the flat 3 alone, growing empty memory to 1,024 bytes costs 3 + the same 98 that tool quotes, and <code>MLOAD</code> pays expansion too: reading far past the end is not free. The prefilled call is the endianness case: <code>MSTORE</code> of <code>0xdeadbeef</code> at offset 0 on empty memory produces exactly <code>0x0000…deadbeef</code>, 32 bytes, at 6 gas. Honest scope: the memory is bytes <em>you</em> supply, not execution state this page reads; the supplied memory and the touched end are each capped at 4,096 bytes so the resulting byte string stays displayable — a display cap, stated as such, where a real frame's memory is bounded by gas. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="memop-op">Opcode</label>
+      <select id="memop-op"><option value="mload">MLOAD (0x51) — pushes the 32 big-endian bytes at the offset</option><option value="mstore" selected>MSTORE (0x52) — writes the value as a 32-byte big-endian word at the offset</option><option value="mstore8">MSTORE8 (0x53) — writes the value's low byte (value mod 256) at the offset</option></select>
+      <label for="memop-offset">Offset (one 256-bit value, decimal or 0x hex — need not be 32-aligned)</label>
+      <input id="memop-offset" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="memop-value">Value (one 256-bit value, decimal or 0x hex — for MSTORE the word written, for MSTORE8 only its low byte; ignored for MLOAD, which pops one word only)</label>
+      <input id="memop-value" type="text" inputmode="numeric" spellcheck="false" value="0xdeadbeef">
+      <label for="memop-memory">Memory before (hex bytes, 0x prefix optional, an even number of hex digits, at most 4,096 bytes — empty is empty memory; bytes past the end read as zero)</label>
+      <input id="memop-memory" type="text" spellcheck="false" value="">
+      <button id="memop-btn" type="button">Apply memory opcode</button>
+      <p id="memop-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1281,6 +1296,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=79"></script>
+<script src="app.js?v=80"></script>
 </body>
 </html>

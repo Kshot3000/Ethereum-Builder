@@ -6780,6 +6780,76 @@ function callCalc(opStr, gasAvailStr, gasReqStr, valueStr, callerStr, targetStr,
     ...unchanged, transferred: "false" };
 }
 
+/* SHA3 opcode (0x20, Frontier) — pushes Keccak-256 of a region
+   of the frame's memory the user supplies. Three traps live
+   here. First, the NAME: the opcode's "SHA3" is Ethereum's
+   Keccak-256 (original Keccak padding), NOT NIST SHA3-256 —
+   the two differ on every input ("abc" hashes to 0x4e0365…
+   here, 0x3a985d… under NIST SHA3-256), and libraries that
+   return the NIST digest silently disagree with the chain.
+   Second, the region is MEMORY, which is zero-initialised: a
+   region running past the supplied memory's end reads zeros
+   there (and expands memory, zero-filled, to the region end),
+   so hashing 32 bytes at offset 64 of empty memory pushes
+   keccak256 of 32 zero bytes, 0x290dec…, not a halt — and
+   reading is not free, the expansion to the region end is
+   charged even though nothing is written. Third, a ZERO-size
+   region touches no memory whatever its offset — an offset of
+   2^255 with size 0 pushes keccak256("") = 0xc5d246… and costs
+   the flat 30 alone — because no allocation depends on the
+   offset when nothing is read. Gas is the hub's SHA3 gas
+   tool's price, cross-checked against it exactly in tests:
+   30 flat + 6 per 32-byte word of the region (the size rounds
+   up — 33 bytes pay for 2 words) + the memory-expansion
+   increase on the hub's cost curve. Inputs are refused rather
+   than wrapped: offset and size are single 256-bit words via
+   parseWord256; the memory hex must be even-length; the
+   supplied memory, the size and a non-empty region's end are
+   each capped at 4,096 bytes as stated display caps — the
+   offset itself is NOT capped, since a zero size reads
+   nothing and a non-empty region's end cap bounds it. */
+const SHA3OP_MAX_BYTES = 4096;
+function sha3Calc(offsetStr, sizeStr, memoryStr) {
+  if (typeof memoryStr !== "string") return null;
+  const offset = parseWord256(offsetStr);
+  const size = parseWord256(sizeStr);
+  if (offset === null || size === null) return null;
+  if (size > BigInt(SHA3OP_MAX_BYTES)) return null;
+  let h = memoryStr.trim();
+  if (/^0[xX]/.test(h)) h = h.slice(2);
+  if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+  if (h.length / 2 > SHA3OP_MAX_BYTES) return null;
+  const before = [];
+  for (let i = 0; i < h.length; i += 2) before.push(parseInt(h.slice(i, i + 2), 16));
+  const regionEnd = size === 0n ? 0n : offset + size;
+  if (size > 0n && regionEnd > BigInt(SHA3OP_MAX_BYTES)) return null;
+  const off = Number(offset), sz = Number(size);
+  const region = [];
+  for (let i = 0; i < sz; i++) region.push(off + i < before.length ? before[off + i] : 0);
+  const digestHex = keccak256Bytes(region);
+  const after = before.slice();
+  const endNum = Number(regionEnd);
+  while (after.length < endNum) after.push(0);
+  const wordsBefore = BigInt(Math.ceil(before.length / 32));
+  const wordsAfter = BigInt(Math.ceil(Math.max(before.length, endNum) / 32));
+  const expansion = wordsAfter > wordsBefore ? memTotalCost(wordsAfter) - memTotalCost(wordsBefore) : 0n;
+  const words = (size + 31n) / 32n;
+  const wordGas = 6n * words;
+  const toHex = arr => "0x" + arr.map(b => b.toString(16).padStart(2, "0")).join("");
+  const resultHex = "0x" + digestHex;
+  return {
+    opcode: "sha3", opcodeByte: "0x20",
+    offset: offset.toString(), size: size.toString(),
+    result: BigInt(resultHex).toString(), resultHex,
+    hashedData: toHex(region),
+    memoryBefore: toHex(before), memoryAfter: toHex(after),
+    memoryBeforeBytes: String(before.length), memoryAfterBytes: String(after.length),
+    msizeBefore: (wordsBefore * 32n).toString(), msizeAfter: (wordsAfter * 32n).toString(),
+    baseGas: "30", wordGas: wordGas.toString(), words: words.toString(),
+    expansionGas: expansion.toString(), totalGas: (30n + wordGas + expansion).toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -8688,6 +8758,26 @@ if (typeof document !== "undefined") {
       el.textContent = `${r.opcode.toUpperCase()} (${r.opcodeByte}, ${r.fork}): the child succeeds and the opcode pushes 1. Base cost ${r.baseGas}; forwarded ${r.forwardedGas} plus a ${r.stipend} stipend gives the child ${r.calleeGas}, of which it used ${r.calleeGasUsed} — the unused part returns, so the total gas used is ${r.gasUsed} (gas after: ${r.gasAfter}). ${r.transferred === "true" ? `The value moves: caller ${r.callerAfter}, target ${r.targetAfter}. ` : `Balances are unchanged — caller ${r.callerAfter}, target ${r.targetAfter}. `}The returndata buffer holds ${r.returndataBytes} bytes, copied into the output region up to its size (memory after: ${r.memoryAfterBytes} bytes). ${ctx} ${tail}`;
     });
 
+    /* SHA3 (0x20) */
+    const sha3opBtn = document.getElementById("sha3op-btn");
+    if (sha3opBtn) sha3opBtn.addEventListener("click", () => {
+      const r = sha3Calc(
+        document.getElementById("sha3op-offset").value,
+        document.getElementById("sha3op-size").value,
+        document.getElementById("sha3op-memory").value);
+      const el = document.getElementById("sha3op-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: offset and size must each be one 256-bit word, decimal or 0x hex; memory must be even-length hex of at most 4,096 bytes; the size may be at most 4,096 and a non-empty region must end within 4,096 bytes (a zero size touches no memory, so its offset may be any word).";
+        return;
+      }
+      const tail = "Computed locally from the memory you gave — nothing is executed and no chain is queried.";
+      if (r.size === "0") {
+        el.textContent = `SHA3 (${r.opcodeByte}, Frontier): a zero-size region hashes no bytes whatever its offset, so it pushes ${r.resultHex} — Keccak-256 of empty data. Gas: ${r.totalGas} — the flat 30 alone, with no word gas and no memory expansion; memory is unchanged at ${r.memoryAfterBytes} bytes. This is Ethereum's Keccak-256, not NIST SHA3-256. ${tail}`;
+        return;
+      }
+      el.textContent = `SHA3 (${r.opcodeByte}, Frontier): pushes ${r.resultHex} — Keccak-256 of the ${r.size} byte(s) at offset ${r.offset}, ${r.hashedData} (bytes past the supplied memory read as zero). Gas: ${r.totalGas} — 30 flat + ${r.wordGas} for ${r.words} word(s) + ${r.expansionGas} of memory expansion; memory after is ${r.memoryAfterBytes} bytes (MSIZE ${r.msizeAfter}). This is Ethereum's Keccak-256, not NIST SHA3-256, whose digest of the same bytes would differ. ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -8701,5 +8791,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

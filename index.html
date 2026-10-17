@@ -1189,6 +1189,19 @@
     </div>
 
     <div class="tool">
+      <h3>SHA3 opcode calculator — Keccak-256 of a memory region</h3>
+      <p><code>SHA3</code> (<code>0x20</code>, Frontier) pops an offset and a size and pushes the hash of the memory region they name. Its name is the first trap: the opcode computes Ethereum's <strong>Keccak-256</strong> (original Keccak padding), <em>not</em> NIST SHA3-256 — the two differ on every input, so the bytes <code>abc</code> hash to <code>0x4e0365…</code> here and <code>0x3a985d…</code> under NIST SHA3-256, and any library returning the NIST digest silently disagrees with the chain. The region is memory, which is zero-initialised: bytes past the frame's current end read as zero, and reaching them expands memory (zero-filled) to the region end — so hashing 32 bytes at offset 64 of empty memory pushes Keccak-256 of 32 zero bytes, <code>0x290dec…</code>, never a halt, and the expansion is charged even though the opcode only reads. A zero-size region is the other edge: it touches no memory whatever its offset — an offset of 2<sup>255</sup> with size 0 pushes Keccak-256 of empty data, <code>0xc5d246…</code>, at the flat 30 alone. Gas is the total the hub's SHA3 gas tool quotes, taken from it exactly: 30 flat + 6 per 32-byte word of the region (the size rounds up — 33 bytes pay for 2 words) + the memory-expansion increase. The prefilled region is the three bytes <code>0x616263</code> (<code>abc</code>) at offset 0, pushing exactly <code>0x4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45</code> at 36 gas. Honest scope: the memory is a value <em>you</em> supply — this page executes nothing and reads no chain. Supplied memory, the size and a non-empty region's end are capped at 4,096 bytes as stated display caps; the offset itself is not capped, since a zero size reads nothing. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="sha3op-offset">Offset (bytes into memory the hashed region starts at — the word the opcode pops first; any 256-bit word, decimal or 0x hex)</label>
+      <input id="sha3op-offset" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="sha3op-size">Size (bytes of memory to hash — the word popped second; at most 4,096 as a display cap; 0 hashes empty data and touches no memory)</label>
+      <input id="sha3op-size" type="text" inputmode="numeric" spellcheck="false" value="3">
+      <label for="sha3op-memory">Memory before the opcode (hex bytes, 0x prefix optional, at most 4,096 bytes — bytes past its end read as zero)</label>
+      <input id="sha3op-memory" type="text" spellcheck="false" value="0x616263">
+      <button id="sha3op-btn" type="button">Apply SHA3 opcode</button>
+      <p id="sha3op-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1574,6 +1587,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=92"></script>
+<script src="app.js?v=93"></script>
 </body>
 </html>

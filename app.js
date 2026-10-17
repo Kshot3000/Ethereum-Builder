@@ -4880,6 +4880,70 @@ function bitCalc(opStr, aStr, bStr) {
   };
 }
 
+/* Arithmetic opcodes ADD (0x01), MUL (0x02), SUB (0x03) --
+   the plain arithmetic trio that completes the Frontier
+   arithmetic group alongside EXP, ADDMOD/MULMOD and DIV/
+   SDIV/MOD/SMOD above. Each pops a first, then b, and
+   pushes the result reduced modulo 2^256:
+     ADD pushes (a + b) mod 2^256;
+     MUL pushes (a * b) mod 2^256;
+     SUB pushes (a - b) mod 2^256, a the minuend.
+   The defining rule is the wrap:
+     - no result traps, saturates or signals: MAX + 1
+       pushes 0, 0 - 1 pushes MAX, 2^255 * 2 pushes 0 and
+       2^255 * 3 pushes 2^255. The checked overflow and
+       underflow reverts of Solidity >= 0.8 are a language
+       check inserted around these opcodes, not the
+       opcodes' own behaviour -- in unchecked blocks and
+       raw assembly the wrap is what executes.
+     - SUB is not commutative and its order is a - b with
+       a popped first: 3 - 5 pushes 2^256 - 2, not 2.
+       ADD and MUL are commutative.
+     - there is no signed pair in this family (unlike DIV
+       or the comparisons): addition, multiplication and
+       subtraction modulo 2^256 give the same word under
+       either reading, which is why one opcode each serves
+       both Solidity int and uint arithmetic.
+     - gas is NOT uniform inside the family: ADD and SUB
+       are a flat 3 (the Verylow tier) while MUL is a flat
+       5 (the Low tier) -- quoting 3 for MUL is wrong on
+       every call. No other term applies: the inputs are
+       stack words, nothing touches memory, an account or
+       storage.
+   Both inputs are single 256-bit words YOU supply, in
+   decimal or 0x hex; anything malformed, negative,
+   fractional, or wider than 2^256 - 1 is refused rather
+   than wrapped on input, as is an opcode name other than
+   add / mul / sub. (The RESULT wraps, as the opcode's
+   does; the inputs cannot, because a stack word cannot
+   hold them.) */
+const ARITH_OPCODE_BYTES = { add: "0x01", mul: "0x02", sub: "0x03" };
+const ARITH_GAS = { add: 3n, mul: 5n, sub: 3n };
+function arithCalc(opStr, aStr, bStr) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(ARITH_OPCODE_BYTES, op)) return null;
+  const a = parseWord256(aStr);
+  if (a === null) return null;
+  const b = parseWord256(bStr);
+  if (b === null) return null;
+  const modulus = 1n << 256n;
+  let result;
+  if (op === "add") result = (a + b) % modulus;
+  else if (op === "mul") result = (a * b) % modulus;
+  else { result = (a - b) % modulus; if (result < 0n) result += modulus; }
+  return {
+    opcode: op, opcodeByte: ARITH_OPCODE_BYTES[op],
+    a: a.toString(),
+    b: b.toString(),
+    aHex: "0x" + a.toString(16).padStart(64, "0"),
+    bHex: "0x" + b.toString(16).padStart(64, "0"),
+    result: result.toString(),
+    resultHex: "0x" + result.toString(16).padStart(64, "0"),
+    totalGas: ARITH_GAS[op].toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -6231,6 +6295,23 @@ if (typeof document !== "undefined") {
       el.textContent = `${name} (${r.opcodeByte}): ${r.a} (${r.aHex}) ${sym} ${r.b} (${r.bHex}) pushes ${r.result} (${r.resultHex}) \u2014 the combination is bit by bit on the raw words, so the signed or unsigned reading does not matter, and a and b are interchangeable. Gas: ${r.totalGas} \u2014 a flat charge with no other term. Computed locally from the values you gave \u2014 nothing is executed and no chain is queried.`;
     });
 
+    /* Arithmetic opcodes (ADD / MUL / SUB) */
+    const arithBtn = document.getElementById("arith-btn");
+    if (arithBtn) arithBtn.addEventListener("click", () => {
+      const r = arithCalc(
+        document.getElementById("arith-op").value,
+        document.getElementById("arith-a").value,
+        document.getElementById("arith-b").value);
+      const el = document.getElementById("arith-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter a and b each as one 256-bit word, decimal or 0x hex (0 up to 2^256 \u2212 1).";
+        return;
+      }
+      const name = r.opcode.toUpperCase();
+      const sym = { add: "+", mul: "\u00d7", sub: "\u2212" }[r.opcode];
+      el.textContent = `${name} (${r.opcodeByte}): ${r.a} (${r.aHex}) ${sym} ${r.b} (${r.bHex}) pushes ${r.result} (${r.resultHex}) \u2014 the result is reduced modulo 2^256, so it wraps rather than trapping: the checked reverts of Solidity >= 0.8 are a language check around these opcodes, not the opcodes themselves. Gas: ${r.totalGas} \u2014 a flat charge with no other term${r.opcode === "mul" ? " (MUL is the Low tier at 5, unlike ADD and SUB at 3)" : ""}. Computed locally from the values you gave \u2014 nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -6244,5 +6325,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

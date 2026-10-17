@@ -840,6 +840,19 @@
     </div>
 
     <div class="tool">
+      <h3>Arithmetic opcode calculator — ADD / MUL / SUB</h3>
+      <p>The EVM's plain arithmetic opcodes, all Frontier: <code>ADD</code> (<code>0x01</code>), <code>MUL</code> (<code>0x02</code>) and <code>SUB</code> (<code>0x03</code>). Each pops a first, then b, and pushes the result reduced modulo 2<sup>256</sup> — ADD pushes (a + b) mod 2<sup>256</sup>, MUL pushes (a × b) mod 2<sup>256</sup>, and SUB pushes (a − b) mod 2<sup>256</sup> with a as the minuend. The defining rule is the wrap: no result traps, saturates or signals, so the all-ones word plus 1 pushes 0, 0 − 1 pushes the all-ones word, 2<sup>255</sup> × 2 pushes 0 and 2<sup>255</sup> × 3 pushes 2<sup>255</sup>. The checked overflow and underflow reverts of Solidity ≥ 0.8 are a language check inserted <em>around</em> these opcodes, not the opcodes' own behaviour — in <code>unchecked</code> blocks and raw assembly the wrap is what executes. SUB is not commutative and its order matters — 3 − 5 pushes 2<sup>256</sup> − 2, not 2 — while ADD and MUL are commutative. There is no signed pair in this family (unlike DIV or the comparisons): addition, multiplication and subtraction modulo 2<sup>256</sup> give the same word under either reading, which is why one opcode each serves both Solidity <code>int</code> and <code>uint</code> arithmetic. Gas is <em>not</em> uniform inside the family: ADD and SUB are a flat 3 (the verylow tier) while MUL is a flat 5 (the low tier) — quoting 3 for MUL is wrong on every call. The prefilled call is the underflow wrap: SUB of 0 by 1 pushes exactly the all-ones word, 2<sup>256</sup> − 1. Honest scope: a and b are values <em>you</em> supply, in decimal or 0x hex, not execution state this page reads; anything wider than a 256-bit word is refused rather than wrapped on input, because the stack words the opcodes consume cannot hold it (the <em>result</em> still wraps, as the opcode's does). Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="arith-op">Opcode</label>
+      <select id="arith-op"><option value="add">ADD (0x01) — (a + b) mod 2^256, 3 gas</option><option value="mul">MUL (0x02) — (a × b) mod 2^256, 5 gas</option><option value="sub" selected>SUB (0x03) — (a − b) mod 2^256, a popped first, 3 gas</option></select>
+      <label for="arith-a">Operand a (one 256-bit value, decimal or 0x hex — popped first; for SUB the minuend)</label>
+      <input id="arith-a" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="arith-b">Operand b (one 256-bit value, decimal or 0x hex — popped second; for SUB the subtrahend)</label>
+      <input id="arith-b" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <button id="arith-btn" type="button">Calculate arithmetic result &amp; gas</button>
+      <p id="arith-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1173,6 +1186,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=72"></script>
+<script src="app.js?v=73"></script>
 </body>
 </html>

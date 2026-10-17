@@ -1012,6 +1012,19 @@
       <button id="env-btn" type="button">Apply environment opcode</button>
       <p id="env-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>BLOCKHASH opcode calculator — the hash of one of the 256 most recent complete blocks</h3>
+      <p><code>BLOCKHASH</code> (<code>0x40</code>, Frontier) pops a block number and pushes that block's hash — but only inside a window, and the window rule is the whole semantics: the answer is the block's hash exactly when the target is one of the 256 most recent <em>complete</em> blocks, that is <code>target &lt; current</code> and <code>current − target ≤ 256</code>. The current block itself is excluded — its hash is not yet known to the frame executing in it — and the far edge, exactly 256 back, is <em>included</em>. Every other argument pushes 0: the current block, a future block, or a block 257 or more back. It does not halt, and it pushes 0 even when a hash for that block is among the entries you supply below — supplying data does not extend the window, so the prefilled entries deliberately include block 20999999, 257 back from the prefilled current block, carrying a supplied hash the opcode will never return. Gas is a flat 20 (<code>G_blockhash</code>) — an order above the flat 2 the neighbouring block opcodes in the calculator above (<code>COINBASE</code>, <code>TIMESTAMP</code>, <code>NUMBER</code>, <code>PREVRANDAO</code>, <code>GASLIMIT</code>) pay, and unchanged since Frontier. Two further traps. The entries here are a <em>map</em> keyed by block number — <code>number:hash</code> pairs whose order is irrelevant — not a positional list like <code>BLOBHASH</code>'s (0x49) in the calculator above, where the index alone decides. And since Pectra, <a href="https://eips.ethereum.org/EIPS/eip-2935">EIP-2935</a>'s history contract holds the last 8,191 block hashes in state for direct contract reads — but the EIP states it has no impact on <code>BLOCKHASH</code> resolution, range or cost, so the opcode's window stays 256; confusing the contract's 8,191 with the opcode's 256 is a category error. The prefilled target, block 21000000, sits exactly on the far edge — 256 behind the prefilled current block 21000256 — and pushes exactly the supplied <code>0x0000…deadbeef</code> hash at 20 gas. One honest refusal: an in-window target whose hash is <em>not</em> among the entries is refused rather than answered 0, because the real opcode would push that block's actual hash and this page knows only the hashes it is given. Honest scope: the current block number and every block hash are values <em>you</em> supply — this page executes nothing and reads no chain, so none of this is live chain state. Entries are capped at 256 — one full window — so the list stays displayable, a display cap, stated as such. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="bh-current">Current block number (the block executing — one 256-bit value, decimal or 0x hex)</label>
+      <input id="bh-current" type="text" inputmode="numeric" spellcheck="false" value="21000256">
+      <label for="bh-target">Target block number (the BLOCKHASH argument — one 256-bit value, decimal or 0x hex)</label>
+      <input id="bh-target" type="text" inputmode="numeric" spellcheck="false" value="21000000">
+      <label for="bh-entries">Block hashes you supply (comma-separated number:hash pairs, hash exactly 32 bytes, 0x prefix optional, at most 256 entries, no block number twice; consulted only for an in-window target)</label>
+      <input id="bh-entries" type="text" spellcheck="false" value="20999999:0x2222222222222222222222222222222222222222222222222222222222222222, 21000255:0x1111111111111111111111111111111111111111111111111111111111111111, 21000000:0x00000000000000000000000000000000000000000000000000000000deadbeef">
+      <button id="bh-btn" type="button">Apply BLOCKHASH</button>
+      <p id="bh-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1400,6 +1413,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=84"></script>
+<script src="app.js?v=85"></script>
 </body>
 </html>

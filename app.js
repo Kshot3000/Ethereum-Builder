@@ -5950,6 +5950,76 @@ function envCalc(opStr, addressStr, balanceAddrStr, balanceValueStr, balanceCold
   }
 }
 
+/* BLOCKHASH (0x40, Frontier) — pushes the hash of one of the 256 most
+   recent COMPLETE blocks, from a set of block hashes YOU supply as
+   number:hash entries — this page executes nothing and reads no
+   chain, so the chain history is an input, keyed by block number.
+   The window rule is the whole semantics, and it is checked BEFORE
+   the entries are ever consulted: the answer is the supplied hash
+   exactly when target < current and current - target <= 256 — the
+   current block itself is excluded (its hash is not yet known to the
+   executing frame) and the far edge, exactly 256 back, is INCLUDED.
+   Every other argument pushes 0: the current block, a future block,
+   or a block 257 or more back. It does NOT halt, and it pushes 0
+   even when a hash for that block sits in the supplied entries —
+   supplying data does not extend the window, which is why the
+   entries are parsed lazily, only for an in-window target: an
+   out-of-window answer is 0 whatever the entries contain.
+   Two further traps. The entries are a MAP keyed by block number,
+   not a positional list like BLOBHASH's (0x49) — the order entries
+   are written in is irrelevant, the number before the colon decides.
+   And since Pectra, EIP-2935's history contract holds the last
+   8,191 block hashes in state for direct contract reads — but the
+   EIP states it has no impact on BLOCKHASH resolution, range or
+   cost: the opcode's window stays 256, and confusing the contract's
+   8,191 with the opcode's 256 is a category error.
+   Gas is a flat 20 (G_blockhash) — an order above the flat 2 the
+   neighbouring block opcodes (COINBASE / TIMESTAMP / NUMBER /
+   PREVRANDAO / GASLIMIT) pay, and unchanged since Frontier.
+   An in-window target with NO supplied hash is refused rather than
+   answered 0: the real opcode would push that block's actual hash,
+   and this page knows only the hashes it is given — inventing a 0
+   would teach exactly the wrong lesson. Inputs are refused rather
+   than wrapped: block numbers are single 256-bit words via
+   parseWord256; each entry is number:hash with the hash exactly 32
+   bytes (0x prefix optional); duplicate block numbers are ambiguous
+   and refused; the entry list is capped at 256 entries — one full
+   window — so it stays displayable, a display cap, stated as such. */
+const BLOCKHASH_ENTRY_MAX = 256;
+function blockhashCalc(currentStr, targetStr, entriesStr) {
+  const current = parseWord256(currentStr);
+  const target = parseWord256(targetStr);
+  if (current === null || target === null || typeof entriesStr !== "string") return null;
+  const depth = target <= current ? (current - target).toString() : "";
+  const inWindow = target < current && (current - target) <= 256n;
+  const base = { opcode: "blockhash", opcodeByte: "0x40", fork: "Frontier",
+    current: current.toString(), target: target.toString(), depth,
+    inWindow: inWindow ? "true" : "false", supplied: "",
+    result: "0", resultHex: "0x" + "0".repeat(64), totalGas: "20" };
+  if (!inWindow) return base;
+  const entries = new Map();
+  if (entriesStr.trim() !== "") {
+    const parts = entriesStr.split(",");
+    if (parts.length > BLOCKHASH_ENTRY_MAX) return null;
+    for (const part of parts) {
+      const pieces = part.split(":");
+      if (pieces.length !== 2) return null;
+      const n = parseWord256(pieces[0]);
+      let h = pieces[1].trim();
+      if (/^0[xX]/.test(h)) h = h.slice(2);
+      if (n === null || !/^[0-9a-fA-F]{64}$/.test(h)) return null;
+      const key = n.toString();
+      if (entries.has(key)) return null;
+      entries.set(key, h.toLowerCase());
+    }
+  }
+  const h = entries.get(target.toString());
+  if (h === undefined) return null;
+  const v = BigInt("0x" + h);
+  return { ...base, supplied: "true", result: v.toString(),
+    resultHex: "0x" + v.toString(16).padStart(64, "0") };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -7618,6 +7688,29 @@ if (typeof document !== "undefined") {
       el.textContent = `${NAME} (${r.opcodeByte}, ${r.fork}): pushes ${r.result} (the word ${r.resultHex}) — the value you supplied for this field of the environment. Gas: ${r.totalGas}${r.opcode === "selfbalance" ? " — the flat Low tier, with no EIP-2929 access cost, because the balance read is the executing account's own" : " — the flat Base tier"}. ${tail}`;
     });
 
+    /* BLOCKHASH opcode (0x40) */
+    const bhBtn = document.getElementById("bh-btn");
+    if (bhBtn) bhBtn.addEventListener("click", () => {
+      const r = blockhashCalc(
+        document.getElementById("bh-current").value,
+        document.getElementById("bh-target").value,
+        document.getElementById("bh-entries").value);
+      const el = document.getElementById("bh-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the current and target block numbers are each one 256-bit word, decimal or 0x hex, and the entries are comma-separated number:hash pairs (hash exactly 32 bytes, 0x prefix optional, at most 256 entries, no block number twice). If the target is inside the 256-block window, its hash must be among the entries — supply it, because the real opcode would push that block's actual hash, not 0.";
+        return;
+      }
+      const tail = "Computed locally from the block numbers and hashes you gave — nothing is executed and no chain is queried.";
+      if (r.inWindow === "true") {
+        el.textContent = `BLOCKHASH (${r.opcodeByte}, ${r.fork}): pushes ${r.resultHex} — the hash you supplied for block ${r.target}, which is ${r.depth} block(s) behind the current block ${r.current}, inside the 256-block window (the far edge, exactly 256 back, is included). Gas: 20 — the flat G_blockhash, unchanged since Frontier. ${tail}`;
+        return;
+      }
+      const why = r.depth === "" ? `block ${r.target} is ahead of the current block ${r.current}, and a block that does not exist yet has no hash`
+        : r.depth === "0" ? `block ${r.target} IS the current block, whose hash is not yet known to the executing frame`
+        : `block ${r.target} is ${r.depth} blocks behind the current block ${r.current}, past the 256-block window`;
+      el.textContent = `BLOCKHASH (${r.opcodeByte}, ${r.fork}): pushes 0 — ${why}. An out-of-window argument pushes 0 rather than halting, and it pushes 0 even if a hash for that block is among the entries you supplied: supplying data does not extend the window. Gas: 20 — the flat G_blockhash, unchanged since Frontier. ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -7631,5 +7724,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

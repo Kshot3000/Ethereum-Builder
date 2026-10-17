@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=84"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=85"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -4722,6 +4722,89 @@ check("env tool section present in index.html", html.includes("env-btn") && html
 
 
 
+
+/* BLOCKHASH (0x40, Frontier): pushes the hash of one of the 256 most
+   recent COMPLETE blocks, from block hashes the user supplies as
+   number:hash entries keyed by block number. In window exactly when
+   target < current and current - target <= 256 -- the current block
+   excluded, the far edge at exactly 256 back included; every other
+   argument pushes 0 (never a halt), even when a hash for that block
+   is supplied. Gas a flat 20 (G_blockhash). EIP-2935's 8,191-entry
+   history contract does not extend the opcode's window. An in-window
+   target with no supplied hash is refused, not answered 0; the
+   entries are consulted only in window. Verified against an
+   independent pure-Python transcription (oracle-blockhash.py)
+   anchored in-script on hand values (the prefilled far edge at 256,
+   the supplied-but-unreachable hash at 257, the parent at 1, the
+   genesis edges at current 1 / 256 / 257) before generating. */
+const BH_EDGE = "0x00000000000000000000000000000000000000000000000000000000deadbeef";
+const BH_PARENT = "0x1111111111111111111111111111111111111111111111111111111111111111";
+const BH_ENTRIES = "20999999:0x2222222222222222222222222222222222222222222222222222222222222222, 21000255:" + BH_PARENT + ", 21000000:" + BH_EDGE;
+check("blockhash controls labelled in index.html",
+  ["bh-current", "bh-target", "bh-entries"].every(id => html.includes(`for="${id}"`)));
+check("blockhash matches the Python oracle",
+  (() => { const V = [
+    [["21000256", "21000000", "20999999:0x2222222222222222222222222222222222222222222222222222222222222222, 21000255:0x1111111111111111111111111111111111111111111111111111111111111111, 21000000:0x00000000000000000000000000000000000000000000000000000000deadbeef"], "blockhash|0x40|Frontier|21000256|21000000|256|true|true|3735928559|0x00000000000000000000000000000000000000000000000000000000deadbeef|20"],
+    [["21000256", "21000255", "20999999:0x2222222222222222222222222222222222222222222222222222222222222222, 21000255:0x1111111111111111111111111111111111111111111111111111111111111111, 21000000:0x00000000000000000000000000000000000000000000000000000000deadbeef"], "blockhash|0x40|Frontier|21000256|21000255|1|true|true|7719472615821079694904732333912527190217998977709370935963838933860875309329|0x1111111111111111111111111111111111111111111111111111111111111111|20"],
+    [["21000256", "20999999", "20999999:0x2222222222222222222222222222222222222222222222222222222222222222, 21000255:0x1111111111111111111111111111111111111111111111111111111111111111, 21000000:0x00000000000000000000000000000000000000000000000000000000deadbeef"], "blockhash|0x40|Frontier|21000256|20999999|257|false||0|0x0000000000000000000000000000000000000000000000000000000000000000|20"],
+    [["21000256", "21000256", "20999999:0x2222222222222222222222222222222222222222222222222222222222222222, 21000255:0x1111111111111111111111111111111111111111111111111111111111111111, 21000000:0x00000000000000000000000000000000000000000000000000000000deadbeef"], "blockhash|0x40|Frontier|21000256|21000256|0|false||0|0x0000000000000000000000000000000000000000000000000000000000000000|20"],
+    [["21000256", "21000257", "20999999:0x2222222222222222222222222222222222222222222222222222222222222222, 21000255:0x1111111111111111111111111111111111111111111111111111111111111111, 21000000:0x00000000000000000000000000000000000000000000000000000000deadbeef"], "blockhash|0x40|Frontier|21000256|21000257||false||0|0x0000000000000000000000000000000000000000000000000000000000000000|20"],
+    [["21000256", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "20999999:0x2222222222222222222222222222222222222222222222222222222222222222, 21000255:0x1111111111111111111111111111111111111111111111111111111111111111, 21000000:0x00000000000000000000000000000000000000000000000000000000deadbeef"], "blockhash|0x40|Frontier|21000256|115792089237316195423570985008687907853269984665640564039457584007913129639935||false||0|0x0000000000000000000000000000000000000000000000000000000000000000|20"],
+    [["21000256", "0", "20999999:0x2222222222222222222222222222222222222222222222222222222222222222, 21000255:0x1111111111111111111111111111111111111111111111111111111111111111, 21000000:0x00000000000000000000000000000000000000000000000000000000deadbeef"], "blockhash|0x40|Frontier|21000256|0|21000256|false||0|0x0000000000000000000000000000000000000000000000000000000000000000|20"],
+    [["1", "0", "0:0x00000000000000000000000000000000000000000000000000000000cafef00d"], "blockhash|0x40|Frontier|1|0|1|true|true|3405705229|0x00000000000000000000000000000000000000000000000000000000cafef00d|20"],
+    [["256", "0", "0:0x00000000000000000000000000000000000000000000000000000000cafef00d"], "blockhash|0x40|Frontier|256|0|256|true|true|3405705229|0x00000000000000000000000000000000000000000000000000000000cafef00d|20"],
+    [["257", "0", "0:0x00000000000000000000000000000000000000000000000000000000cafef00d"], "blockhash|0x40|Frontier|257|0|257|false||0|0x0000000000000000000000000000000000000000000000000000000000000000|20"],
+    [["0", "0", ""], "blockhash|0x40|Frontier|0|0|0|false||0|0x0000000000000000000000000000000000000000000000000000000000000000|20"],
+    [["0x1407040", "0x1406f40", "0x1406f40:0x00000000000000000000000000000000000000000000000000000000deadbeef"], "blockhash|0x40|Frontier|21000256|21000000|256|true|true|3735928559|0x00000000000000000000000000000000000000000000000000000000deadbeef|20"],
+    [["21000256", "20999999", "garbage"], "blockhash|0x40|Frontier|21000256|20999999|257|false||0|0x0000000000000000000000000000000000000000000000000000000000000000|20"],
+    [["21000256", "1", ""], "blockhash|0x40|Frontier|21000256|1|21000255|false||0|0x0000000000000000000000000000000000000000000000000000000000000000|20"],
+    [["21000256", "21000255", "21000255:0x1111111111111111111111111111111111111111111111111111111111111111"], "blockhash|0x40|Frontier|21000256|21000255|1|true|true|7719472615821079694904732333912527190217998977709370935963838933860875309329|0x1111111111111111111111111111111111111111111111111111111111111111|20"],
+    [["21000256", "21000000", " 21000255 : 0x1111111111111111111111111111111111111111111111111111111111111111 , 21000000 : 0x00000000000000000000000000000000000000000000000000000000deadbeef "], "blockhash|0x40|Frontier|21000256|21000000|256|true|true|3735928559|0x00000000000000000000000000000000000000000000000000000000deadbeef|20"],
+    [["21000256", "21000253", "21000250:0x0000000000000000000000000000000000000000000000000000000000000000,21000251:0x1111111111111111111111111111111111111111111111111111111111111111,21000252:0x2222222222222222222222222222222222222222222222222222222222222222,21000253:0x3333333333333333333333333333333333333333333333333333333333333333,21000254:0x4444444444444444444444444444444444444444444444444444444444444444,21000255:0x5555555555555555555555555555555555555555555555555555555555555555"], "blockhash|0x40|Frontier|21000256|21000253|3|true|true|23158417847463239084714197001737581570653996933128112807891516801582625927987|0x3333333333333333333333333333333333333333333333333333333333333333|20"],
+    [["21000256", "21000001", "21000001:0x0000000000000000000000000000000000000000000000000000000000000000"], "blockhash|0x40|Frontier|21000256|21000001|255|true|true|0|0x0000000000000000000000000000000000000000000000000000000000000000|20"],
+    [["21000256", "21000256", "21000256:0x00000000000000000000000000000000000000000000000000000000deadbeef"], "blockhash|0x40|Frontier|21000256|21000256|0|false||0|0x0000000000000000000000000000000000000000000000000000000000000000|20"],
+  ]; return V.every(([inp, exp]) => { const r = app.blockhashCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.fork, r.current, r.target, r.depth, r.inWindow, r.supplied, r.result, r.resultHex, r.totalGas].join("|") === exp; }); })());
+check("blockhash: prefilled page values -- the target exactly 256 back pushes the supplied hash at 20 gas",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const r = app.blockhashCalc(g("bh-current"), g("bh-target"), g("bh-entries"));
+    return r !== null && r.resultHex === BH_EDGE && r.depth === "256" && r.inWindow === "true" && r.totalGas === "20"; })());
+check("blockhash: the far edge at exactly 256 back is included and 257 back is out -- even with a hash supplied for it",
+  app.blockhashCalc("21000256", "21000000", BH_ENTRIES).inWindow === "true" &&
+  app.blockhashCalc("21000256", "20999999", BH_ENTRIES).result === "0" &&
+  app.blockhashCalc("21000256", "20999999", BH_ENTRIES).inWindow === "false");
+check("blockhash: the current block and any future block push 0 -- the current block's own supplied entry changes nothing",
+  app.blockhashCalc("21000256", "21000256", "21000256:" + BH_EDGE).result === "0" &&
+  app.blockhashCalc("21000256", "21000257", BH_ENTRIES).result === "0" &&
+  app.blockhashCalc("21000256", "21000256", BH_ENTRIES).depth === "0");
+check("blockhash: EIP-2935's 8,191-entry history contract does not extend the opcode -- a supplied hash 300 back still pushes 0",
+  app.blockhashCalc("21000256", "20999956", "20999956:" + BH_EDGE).result === "0" &&
+  app.blockhashCalc("21000256", "20999956", "20999956:" + BH_EDGE).inWindow === "false");
+check("blockhash: the entries are a map keyed by block number, not a positional list -- reordering them changes nothing",
+  app.blockhashCalc("21000256", "21000000", "21000000:" + BH_EDGE + ", 21000255:" + BH_PARENT).resultHex === BH_EDGE &&
+  app.blockhashCalc("21000256", "21000255", "21000000:" + BH_EDGE + ", 21000255:" + BH_PARENT).resultHex === BH_PARENT);
+check("blockhash: a supplied all-zero hash is an in-window answer, distinguishable from the window's own 0",
+  (() => { const a = app.blockhashCalc("21000256", "21000001", "21000001:0x" + "0".repeat(64));
+    const b = app.blockhashCalc("21000256", "20999999", BH_ENTRIES);
+    return a.result === "0" && a.inWindow === "true" && a.supplied === "true" &&
+      b.result === "0" && b.inWindow === "false" && b.supplied === ""; })());
+check("blockhash: the entries are consulted only in window -- garbage entries cannot change an out-of-window 0, and refuse an in-window answer",
+  app.blockhashCalc("21000256", "20999999", "garbage").result === "0" &&
+  app.blockhashCalc("21000256", "21000100", "garbage") === null &&
+  app.blockhashCalc("21000256", "21000100", BH_ENTRIES) === null);
+check("blockhash refuses a duplicate block number, an over-cap entry list, a short hash, a malformed pair, a word at or past 2^256, and null inputs -- and accepts exactly 256 entries",
+  app.blockhashCalc("21000256", "21000000", "21000000:" + BH_EDGE + ",21000000:" + BH_PARENT) === null &&
+  app.blockhashCalc("21000256", "21000000", Array.from({length: 257}, (_, i) => `${21000000 + i}:0x${"0".repeat(64)}`).join(",")) === null &&
+  app.blockhashCalc("21000256", "21000000", Array.from({length: 256}, (_, i) => `${21000000 + i}:0x${"0".repeat(64)}`).join(",")) !== null &&
+  app.blockhashCalc("21000256", "21000000", "21000000:0x0100") === null &&
+  app.blockhashCalc("21000256", "21000000", "21000000") === null &&
+  app.blockhashCalc("21000256", "21000000", "21000000:" + BH_EDGE + ":extra") === null &&
+  app.blockhashCalc("garbage", "21000000", BH_ENTRIES) === null &&
+  app.blockhashCalc("21000256", "-1", BH_ENTRIES) === null &&
+  app.blockhashCalc("21000256", "115792089237316195423570985008687907853269984665640564039457584007913129639936", BH_ENTRIES) === null &&
+  app.blockhashCalc(null, "21000000", BH_ENTRIES) === null &&
+  app.blockhashCalc("21000256", "21000000", null) === null);
+check("blockhash tool section present in index.html", html.includes("bh-btn") && html.includes("BLOCKHASH opcode calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

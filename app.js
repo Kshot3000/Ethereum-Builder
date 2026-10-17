@@ -4944,6 +4944,76 @@ function arithCalc(opStr, aStr, bStr) {
   };
 }
 
+/* Push opcodes -- PUSH0 (0x5f, EIP-3855) and PUSH1..PUSH32
+   (0x60..0x7f, Frontier). pushCalc(n, imm) computes the word
+   the opcode pushes and its flat charge:
+     - PUSHn reads the n bytes after the opcode byte as a
+       big-endian integer. Those bytes are the HIGH-order
+       bytes of the pushed value.
+     - TRUNCATION (the trap): if the code ends before n bytes
+       remain, the missing bytes are the LOW-order bytes and
+       read as zero -- the byte string is padded on the RIGHT
+       with zeros. So PUSH2 at the end of code carrying only
+       0xff pushes 0xff00 (65280), not 0xff (255); an
+       implementation that pads on the left (the natural
+       "short integer" reading) is wrong on every truncated
+       push, and truncated pushes are exactly what a
+       disassembler or jumpdest scan meets at code end.
+     - PUSH0 has no immediate at all and pushes 0; like the
+       family's unary members above it never reads its
+       immediate input, however malformed.
+     - gas splits inside the family: PUSH0 is 2 (the Base
+       tier, EIP-3855 -- the 1-gas saving over PUSH1 0x00,
+       plus a saved code byte, is the opcode's whole point,
+       live since Shanghai), PUSH1..PUSH32 are a flat 3
+       (Verylow) whatever n or the value.
+     - minimalN: the smallest push that pushes the same
+       value (0 for 0, else the value's byte length) -- a
+       PUSH5 of 0x0000000001 pushes 1, which PUSH1 (or, for
+       0, PUSH0) pushes in fewer bytes; leading zero bytes
+       waste code size, never change the value.
+   The immediate is hex bytes YOU supply (0x prefix optional,
+   "" = no bytes remain); more supplied bytes than n is
+   refused rather than silently cut (the extra bytes would
+   be the next instruction, not part of this push), as are
+   odd-length or non-hex input and an n outside 0..32. */
+function pushCalc(nStr, immStr) {
+  if (typeof nStr !== "string") return null;
+  const ns = nStr.trim();
+  if (!/^\d+$/.test(ns)) return null;
+  const n = Number(ns);
+  if (!Number.isSafeInteger(n) || n < 0 || n > 32) return null;
+  if (n === 0) {
+    return {
+      n: "0", opcodeByte: "0x5f", immHex: "0x",
+      suppliedBytes: "0", paddedBytes: "0",
+      result: "0",
+      resultHex: "0x" + "0".padStart(64, "0"),
+      minimalN: "0", totalGas: "2"
+    };
+  }
+  if (typeof immStr !== "string") return null;
+  let h = immStr.trim();
+  if (/^0[xX]/.test(h)) h = h.slice(2);
+  if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+  const supplied = h.length / 2;
+  if (supplied > n) return null;
+  const paddedHex = h.toLowerCase().padEnd(n * 2, "0");
+  const value = BigInt("0x" + paddedHex);
+  const minimal = value === 0n ? 0 : (value.toString(16).length + 1) >> 1;
+  return {
+    n: String(n),
+    opcodeByte: "0x" + (0x60 + n - 1).toString(16).padStart(2, "0"),
+    immHex: "0x" + h.toLowerCase(),
+    suppliedBytes: String(supplied),
+    paddedBytes: String(n - supplied),
+    result: value.toString(),
+    resultHex: "0x" + value.toString(16).padStart(64, "0"),
+    minimalN: String(minimal),
+    totalGas: "3"
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -6312,6 +6382,31 @@ if (typeof document !== "undefined") {
       el.textContent = `${name} (${r.opcodeByte}): ${r.a} (${r.aHex}) ${sym} ${r.b} (${r.bHex}) pushes ${r.result} (${r.resultHex}) \u2014 the result is reduced modulo 2^256, so it wraps rather than trapping: the checked reverts of Solidity >= 0.8 are a language check around these opcodes, not the opcodes themselves. Gas: ${r.totalGas} \u2014 a flat charge with no other term${r.opcode === "mul" ? " (MUL is the Low tier at 5, unlike ADD and SUB at 3)" : ""}. Computed locally from the values you gave \u2014 nothing is executed and no chain is queried.`;
     });
 
+    /* Push opcodes (PUSH0 / PUSH1-PUSH32) */
+    const pushBtn = document.getElementById("push-btn");
+    if (pushBtn) pushBtn.addEventListener("click", () => {
+      const r = pushCalc(
+        document.getElementById("push-n").value,
+        document.getElementById("push-imm").value);
+      const el = document.getElementById("push-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: pick PUSH0 or PUSH1\u2013PUSH32, and enter the immediate as hex bytes (0x prefix optional, an even number of hex digits, no more bytes than the opcode reads \u2014 for PUSH0 leave it empty, it has no immediate).";
+        return;
+      }
+      const name = "PUSH" + r.n;
+      if (r.n === "0") {
+        el.textContent = `PUSH0 (${r.opcodeByte}): pushes 0 (${r.resultHex}) \u2014 it has no immediate, pops nothing, and costs ${r.totalGas} gas (the Base tier), 1 less than PUSH1 0x00 at 3, plus a saved code byte; that saving is why EIP-3855 added it in Shanghai. Computed locally \u2014 nothing is executed and no chain is queried.`;
+        return;
+      }
+      const pad = r.paddedBytes !== "0"
+        ? ` Only ${r.suppliedBytes} of the ${r.n} immediate bytes remain before the code ends, so the missing ${r.paddedBytes} low-order byte(s) read as zero \u2014 the bytes are padded on the right, which is why the result is not the short-integer reading.`
+        : "";
+      const min = r.minimalN !== r.n
+        ? ` The smallest push of this same value is PUSH${r.minimalN} \u2014 leading or trailing zero bytes cost code size, never change the value.`
+        : "";
+      el.textContent = `${name} (${r.opcodeByte}): immediate ${r.immHex} read big-endian pushes ${r.result} (${r.resultHex}).${pad}${min} Gas: ${r.totalGas} \u2014 a flat charge for every PUSH1\u2013PUSH32, whatever n or the value. Computed locally from the values you gave \u2014 nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -6325,5 +6420,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -5014,6 +5014,108 @@ function pushCalc(nStr, immStr) {
   };
 }
 
+/* Stack opcodes -- POP (0x50), DUP1..DUP16 (0x80..0x8f) and
+   SWAP1..SWAP16 (0x90..0x9f), all Frontier. stackCalc(op, n,
+   stack) applies ONE of them to the stack YOU supply, listed
+   and returned DEEPEST FIRST with the TOP ITEM LAST, and
+   computes the resulting stack:
+     - POP removes the top item; depth falls by 1. It needs
+       depth >= 1.
+     - DUPn pushes a copy of the n-th item counting THE TOP
+       AS 1, so DUP1 copies the top item itself and DUP16 the
+       16th down; the copied item stays where it was and the
+       copy lands on top, so depth grows by exactly 1. It
+       needs depth >= n.
+     - SWAPn exchanges the top item with the (n+1)-th item
+       counting the top as 1, so SWAP1 swaps the top two and
+       SWAP16 reaches the 17th item down; depth is unchanged.
+       It needs depth >= n + 1.
+   The orientation is the trap: DUP and SWAP both count FROM
+   THE TOP, so an implementation that counts from the bottom
+   (the deepest item as 1) duplicates or swaps exactly the
+   wrong word whenever the stack is deeper than the index --
+   DUP3 of [10, 20, 30] (30 on top) copies 10, the deepest,
+   and a bottom-counting implementation copies 30 instead.
+   The same off-by-one family bites SWAP: the n in SWAPn is
+   the DISTANCE below the top, so the partner sits at depth
+   n + 1, and SWAP1 already needs a 2-deep stack.
+   A stack that is too short is a STACK ERROR, not a defined
+   result like DIV by zero or an out-of-range BYTE: in a real
+   execution it is an exceptional halt, the frame's gas is
+   consumed and its state reverts, and NO resulting stack
+   exists. The calculator therefore reports the opcode's flat
+   charge (still quoted, for the record) with underflow true
+   and the unchanged stack, and the page states the halt
+   plainly -- quoting only the 2 gas as the "cost" of an
+   underflowing call would understate a real halt by the
+   frame's whole remaining gas.
+   Gas is a flat 2 for all three families -- the Base tier,
+   one BELOW the Verylow 3 the push family above charges.
+   DUP and SWAP are the only Verylow-looking stack opcodes NOT
+   in Verylow; copying the push family's 3 here overprices
+   every call by half again.
+   The stack is a list of 256-bit words YOU supply, deepest
+   first, separated by commas, whitespace or newlines, each
+   in decimal or 0x hex; an empty field is an empty stack.
+   More than 64 items is refused (a real stack caps at 1024,
+   far beyond what one opcode step needs to show); a DUP that
+   would take a full 1024-deep stack past the limit is the
+   mirror-image stack overflow, likewise an exceptional halt,
+   and is out of scope here because the input cap keeps every
+   supplied stack far below it. Anything malformed, negative,
+   fractional or wider than a word is refused, as is an
+   opcode other than pop / dup / swap or an n outside 1..16
+   for dup / swap (POP takes no n and never reads it). */
+function stackCalc(opStr, nStr, stackStr) {
+  if (typeof opStr !== "string" || typeof stackStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (op !== "pop" && op !== "dup" && op !== "swap") return null;
+  let n = 0;
+  let opcodeByte;
+  if (op === "pop") {
+    opcodeByte = "0x50";
+  } else {
+    if (typeof nStr !== "string") return null;
+    const ns = nStr.trim();
+    if (!/^\d+$/.test(ns)) return null;
+    n = Number(ns);
+    if (!Number.isSafeInteger(n) || n < 1 || n > 16) return null;
+    opcodeByte = "0x" + ((op === "dup" ? 0x80 : 0x90) + n - 1).toString(16).padStart(2, "0");
+  }
+  const tokens = stackStr.split(/[\s,]+/).filter(t => t !== "");
+  if (tokens.length > 64) return null;
+  const before = [];
+  for (const t of tokens) {
+    const w = parseWord256(t);
+    if (w === null) return null;
+    before.push(w);
+  }
+  const depth = before.length;
+  const need = op === "pop" ? 1 : op === "dup" ? n : n + 1;
+  const underflow = depth < need;
+  const after = before.slice();
+  if (!underflow) {
+    if (op === "pop") after.pop();
+    else if (op === "dup") after.push(after[after.length - n]);
+    else {
+      const top = after.length - 1;
+      const tmp = after[top];
+      after[top] = after[top - n];
+      after[top - n] = tmp;
+    }
+  }
+  const dec = arr => arr.map(w => w.toString());
+  const hex = arr => arr.map(w => "0x" + w.toString(16).padStart(64, "0"));
+  return {
+    opcode: op, n: String(n), opcodeByte,
+    before: dec(before), beforeHex: hex(before),
+    after: dec(after), afterHex: hex(after),
+    depthBefore: String(depth), depthAfter: String(after.length),
+    underflow: underflow ? "true" : "false",
+    totalGas: "2"
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -6407,6 +6509,36 @@ if (typeof document !== "undefined") {
       el.textContent = `${name} (${r.opcodeByte}): immediate ${r.immHex} read big-endian pushes ${r.result} (${r.resultHex}).${pad}${min} Gas: ${r.totalGas} \u2014 a flat charge for every PUSH1\u2013PUSH32, whatever n or the value. Computed locally from the values you gave \u2014 nothing is executed and no chain is queried.`;
     });
 
+    /* Stack opcodes (POP / DUP1-DUP16 / SWAP1-SWAP16) */
+    const stackBtn = document.getElementById("stack-btn");
+    if (stackBtn) stackBtn.addEventListener("click", () => {
+      const sel = document.getElementById("stack-op").value;
+      const fam = sel === "pop" ? "pop" : sel.startsWith("dup") ? "dup" : "swap";
+      const n = sel === "pop" ? "0" : sel.replace(fam, "");
+      const r = stackCalc(
+        fam,
+        n,
+        document.getElementById("stack-items").value);
+      const el = document.getElementById("stack-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter the stack as 256-bit words (decimal or 0x hex), deepest first with the top item last, separated by commas or spaces \u2014 at most 64 items; an empty field is an empty stack.";
+        return;
+      }
+      const name = r.opcode === "pop" ? "POP" : r.opcode.toUpperCase() + r.n;
+      const fmtStack = arr => arr.length === 0 ? "(empty)" : "[" + arr.join(", ") + "]";
+      if (r.underflow === "true") {
+        const need = r.opcode === "pop" ? 1 : r.opcode === "dup" ? Number(r.n) : Number(r.n) + 1;
+        el.textContent = `${name} (${r.opcodeByte}) on a stack of depth ${r.depthBefore}: STACK UNDERFLOW \u2014 this opcode needs at least ${need} item(s) on the stack. In a real execution this is an exceptional halt: the frame's remaining gas is consumed and its state reverts, and no resulting stack exists \u2014 the stack is shown unchanged, not because the opcode leaves it so but because execution stops. The opcode's own flat charge is ${r.totalGas} gas (the Base tier), but a halt costs far more than that. Computed locally \u2014 nothing is executed and no chain is queried.`;
+        return;
+      }
+      const effect = r.opcode === "pop"
+        ? `removes the top item ${r.before[r.before.length - 1]}`
+        : r.opcode === "dup"
+          ? `pushes a copy of the item ${r.n} down from the top (${r.after[r.after.length - 1]}); the original stays where it was, so the depth grows by exactly 1`
+          : `exchanges the top item with the one ${r.n} below it \u2014 the two change places, every other item is untouched, and the depth is unchanged`;
+      el.textContent = `${name} (${r.opcodeByte}): stack ${fmtStack(r.before)} \u2192 ${fmtStack(r.after)} \u2014 ${effect}. Gas: ${r.totalGas} \u2014 a flat charge (the Base tier, 1 below the Verylow 3 the push family charges), with no other term. Computed locally from the stack you gave \u2014 nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -6420,5 +6552,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -982,6 +982,31 @@
     </div>
 
     <div class="tool">
+      <h3>EIP-2612 permit digest calculator</h3>
+      <p>The domain separator above binds one real signature scheme: ERC-20 <code>permit</code> (<a href="https://eips.ethereum.org/EIPS/eip-2612">EIP-2612</a>), the gasless approval. Instead of sending an <code>approve</code> transaction, the owner signs the EIP-712 digest <code>keccak256(0x1901 ‖ DOMAIN_SEPARATOR ‖ hashStruct(Permit))</code> off-chain, and anyone can submit that signature to the token's <code>permit(owner, spender, value, deadline, v, r, s)</code>, which sets the allowance when the signer recovers to the owner, the nonce equals the owner's current permit nonce, and the deadline has not passed. The struct is <code>Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)</code> under the published type hash <code>0x6e71edae…</code>, hashed with each field as one ABI word. Two traps. The value is a raw <code>uint256</code> in the token's base units — 1 USDC is <code>1000000</code>, not 1 — and <code>2^256 − 1</code> as the value is the conventional unlimited approval, just as <code>2^256 − 1</code> as the deadline is the conventional no-expiry permit; both are accepted here because both are what real permits carry. And the domain is the <em>token's own</em>: USDC signs under the name “USD Coin” and EIP-712 version “2”, DAI under “Dai Stablecoin” and “1” — a digest computed under another token's name or version belongs to a different separator and recovers to nobody the token accepts. The defaults are USDC on Ethereum mainnet with a 1 USDC approval. Honest scope: this computes the digest only — whether the nonce is the owner's current one and whether the deadline has passed are chain state this page does not read, and a token that never implemented EIP-2612 has no <code>permit</code> to accept the signature at all. Nothing is signed, no key is used or asked for, and no chain is queried.</p>
+      <label for="permit-name">Token name (its EIP-712 domain name)</label>
+      <input id="permit-name" type="text" spellcheck="false" value="USD Coin">
+      <label for="permit-version">Token EIP-712 version</label>
+      <input id="permit-version" type="text" spellcheck="false" value="2">
+      <label for="permit-chain">Chain ID</label>
+      <input id="permit-chain" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <label for="permit-token">Token contract (the domain's verifying contract, 20 bytes)</label>
+      <input id="permit-token" type="text" spellcheck="false" value="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48">
+      <label for="permit-owner">Owner (the signing account, 20 bytes)</label>
+      <input id="permit-owner" type="text" spellcheck="false" value="0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a">
+      <label for="permit-spender">Spender (the account being approved, 20 bytes)</label>
+      <input id="permit-spender" type="text" spellcheck="false" value="0x2222222222222222222222222222222222222222">
+      <label for="permit-value">Value (allowance in the token's base units)</label>
+      <input id="permit-value" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="permit-nonce">Nonce (the owner's current permit nonce)</label>
+      <input id="permit-nonce" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="permit-deadline">Deadline (unix seconds; 2^256 − 1 means no expiry)</label>
+      <input id="permit-deadline" type="text" inputmode="numeric" spellcheck="false" value="1893456000">
+      <button id="permit-btn" type="button">Calculate permit digest</button>
+      <p id="permit-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>EIP-712 typed-data digest calculator (Ether Mail)</h3>
       <p>The domain separator above is only half of an EIP-712 signature. The full digest a wallet signs is <code>keccak256(0x1901 ‖ domainSeparator ‖ hashStruct(message))</code>, where the message struct is hashed field-by-field — strings as their Keccak-256, nested structs recursively as their own <code>hashStruct</code>. This tool computes that whole chain for the specification's own example schema, <code>Mail(Person from, Person to, string contents)</code> with <code>Person(string name, address wallet)</code>, so the defaults below reproduce the published Ether Mail digest from the EIP's example implementation. Honest scope: this is that one fixed schema, not a general typed-data encoder — arbitrary schemas are out of scope rather than guessed at. Contents are hashed exactly as typed (whitespace counts). Computed locally; nothing is signed and no wallet is involved.</p>
       <label for="m712-dname">Domain name</label>
@@ -1229,6 +1254,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=77"></script>
+<script src="app.js?v=78"></script>
 </body>
 </html>

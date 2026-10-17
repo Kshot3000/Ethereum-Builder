@@ -1239,6 +1239,60 @@ function eip712MailDigest(domainName, domainVersion, chainIdStr, verifyingContra
   return { domainSeparator, mailTypeHash: EIP712_MAIL_TYPEHASH, structHash, digest };
 }
 
+/* ---------- EIP-2612 permit digest ----------
+   ERC-20's permit extension (EIP-2612) lets an owner sign an
+   approval off-chain instead of sending an approve transaction:
+   the token's permit(owner, spender, value, deadline) function
+   recovers the signer of the EIP-712 digest
+   keccak256(0x1901 ‖ DOMAIN_SEPARATOR ‖ hashStruct(Permit))
+   and sets the allowance when the signer is the owner, the
+   nonce matches the owner's current permit nonce, and the
+   deadline has not passed. hashStruct(Permit) hashes the
+   PERMIT_TYPEHASH -- keccak256 of the canonical type string,
+   the constant OpenZeppelin's ERC20Permit publishes -- with
+   the five fields as ABI words: addresses left-padded to 32
+   bytes, uint256s big-endian.
+   Two traps, stated on the page. First, the value and the
+   deadline are raw uint256s: the value is in the token's base
+   units (1 USDC is 1000000, not 1), and 2^256 - 1 in either
+   field is the conventional unlimited amount / no-expiry
+   deadline a great many signed permits carry. Second, the
+   digest binds the token's own name and EIP-712 version from
+   ITS domain -- USDC signs under "USD Coin" / "2", DAI under
+   "Dai Stablecoin" / "1" -- so a digest computed with another
+   token's domain belongs to a different separator and the
+   signature recovers to nobody the token accepts.
+   Computes the digest only -- nothing is signed, no key is
+   used or asked for, and no chain is queried (whether the
+   nonce is the owner's current one is chain state). */
+const EIP2612_PERMIT_TYPE = "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)";
+const EIP2612_PERMIT_TYPEHASH = "0x" + keccak256(EIP2612_PERMIT_TYPE);
+function permitDigest(name, version, chainIdStr, token, owner, spender, valueStr, nonceStr, deadlineStr) {
+  const domainSeparator = eip712DomainSeparator(name, version, chainIdStr, token);
+  if (domainSeparator === null) return null;
+  const ownerBytes = parseHexBytes(owner, 20);
+  const spenderBytes = parseHexBytes(spender, 20);
+  if (ownerBytes === null || spenderBytes === null) return null;
+  const fields = [];
+  for (const s of [valueStr, nonceStr, deadlineStr]) {
+    if (typeof s !== "string" || !/^\d+$/.test(s.trim())) return null;
+    const v = BigInt(s.trim());
+    if (v >= (1n << 256n)) return null;
+    fields.push(uint256WordBytes(v));
+  }
+  const structEncoded = [
+    ...parseHexBytes(EIP2612_PERMIT_TYPEHASH, 32),
+    ...new Array(12).fill(0), ...ownerBytes,
+    ...new Array(12).fill(0), ...spenderBytes,
+    ...fields[0], ...fields[1], ...fields[2]
+  ];
+  const structHash = "0x" + keccak256Bytes(structEncoded);
+  const digest = "0x" + keccak256Bytes([
+    0x19, 0x01, ...parseHexBytes(domainSeparator, 32), ...parseHexBytes(structHash, 32)
+  ]);
+  return { domainSeparator, permitTypeHash: EIP2612_PERMIT_TYPEHASH, structHash, digest };
+}
+
 /* ---------- Proxy & namespaced storage slots (ERC-1967 / ERC-7201) ----------
    ERC-1967 proxy slots: bytes32(uint256(keccak256(label)) - 1) for the labels
    eip1967.proxy.implementation / .beacon / .admin (plus .rollback, defined in
@@ -5581,6 +5635,26 @@ if (typeof document !== "undefined") {
         : `Domain separator: ${r} · Domain type hash: ${EIP712_DOMAIN_TYPEHASH}. Computed locally for the canonical four-field EIP712Domain — nothing is signed and no wallet is involved.`;
     });
 
+    /* EIP-2612 permit digest */
+    const permitBtn = document.getElementById("permit-btn");
+    if (permitBtn) permitBtn.addEventListener("click", () => {
+      const r = permitDigest(
+        document.getElementById("permit-name").value,
+        document.getElementById("permit-version").value,
+        document.getElementById("permit-chain").value,
+        document.getElementById("permit-token").value,
+        document.getElementById("permit-owner").value,
+        document.getElementById("permit-spender").value,
+        document.getElementById("permit-value").value,
+        document.getElementById("permit-nonce").value,
+        document.getElementById("permit-deadline").value
+      );
+      const el = document.getElementById("permit-out");
+      el.textContent = r === null
+        ? "Check the inputs: token name and EIP-712 version must be non-empty, chain ID a whole number of 1 or more, token / owner / spender 20-byte addresses (0x + 40 hex), and value, nonce and deadline whole numbers below 2^256."
+        : `Permit digest (what the owner signs): ${r.digest} · Domain separator: ${r.domainSeparator} · Permit struct hash: ${r.structHash} · Permit type hash: ${r.permitTypeHash}. The token's permit() accepts a signature over this digest only while the nonce is the owner's current permit nonce and the deadline has not passed — both are chain state this page does not read. Computed locally — nothing is signed, no key is used or asked for, and no chain is queried.`;
+    });
+
     /* EIP-712 typed-data digest (Ether Mail schema) */
     const mailBtn = document.getElementById("m712-btn");
     if (mailBtn) mailBtn.addEventListener("click", () => {
@@ -6796,5 +6870,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -6279,6 +6279,109 @@ function extcopyCalc(addrStr, offsetStr, destStr, sizeStr, codeStr, memoryStr, c
   };
 }
 
+/* JUMP (0x56) / JUMPI (0x57), both Frontier — the control-flow
+   pair the JUMPDEST analyser and the disassembler above set up.
+   jumpCalc(op, dest, cond, code) applies one jump opcode to the
+   code YOU supply: the destination (and, for JUMPI, the condition)
+   are the words the opcode pops, given directly — this page
+   executes nothing and reads no chain, and the stack the words
+   came from is the caller's, as on the hub's other opcode tools.
+   Stack order for JUMPI matters when the words are produced: the
+   destination sits on TOP of the stack and is popped first, the
+   condition second.
+   The destination is legal only when it is a valid jump
+   destination under the Yellow Paper's own definition — an
+   offset where the next-instruction walk from pc 0 (advance 1 per
+   opcode, except PUSH1..PUSH32 advance 1 + n over their
+   immediate data, and PUSH0 advances 1) lands on a 0x5b byte AS
+   an instruction — the set the hub's JUMPDEST analyser computes,
+   and the tests cross-check this tool's verdict against that
+   analyser exactly on a spread. Every other destination — a
+   non-JUMPDEST instruction, an offset at or past the code's end,
+   or a 0x5b byte sitting inside PUSH immediate data (an impostor
+   the analyser lists as a fake) — is an invalid jump
+   destination: an exceptional halt that consumes the frame's
+   gas, reported here as a halt with no gas figure, in the hub's
+   existing halt shape.
+   JUMPI's trap is WHEN the destination is checked. JUMPI jumps
+   only when its condition is non-zero — any non-zero word, not
+   just 1 — and the destination is validated only on that taken
+   path. With a zero condition execution falls through to the
+   next instruction and the destination is never consulted: a
+   JUMPI to an impostor offset, or past the code's end, with a
+   zero condition is NOT a halt. A model that validates the
+   destination before reading the condition halts frames a real
+   client runs fine. Symmetrically, JUMP is unconditional: it
+   has no condition, and its condition input below is never read
+   (parsed lazily, like the hub's other per-opcode fields).
+   Gas is flat and has no other term: JUMP 8 (the Mid tier),
+   JUMPI 10 (the High tier) — JUMPI pays its 10 on a fall-through
+   too, because the opcode ran; only the invalid-destination halt
+   has no single-opcode figure, since it consumes the frame.
+   Inputs are refused rather than wrapped: the destination and
+   (for JUMPI) the condition are single 256-bit words in decimal
+   or 0x hex via parseWord256; the code hex must be even-length
+   and is capped at 24,576 bytes, the EIP-170 limit on deployed
+   code, matching the analyser above. On a fall-through the next
+   program counter is the instruction after the JUMPI, whose own
+   offset is not an input, so nextPc is reported empty there. */
+const JUMP_OPS = {
+  jump: { byte: "0x56", gas: 8n },
+  jumpi: { byte: "0x57", gas: 10n }
+};
+const JUMP_MAX_BYTES = 24576;
+function jumpCalc(opStr, destStr, condStr, codeStr) {
+  if (typeof opStr !== "string" || typeof codeStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(JUMP_OPS, op)) return null;
+  let h = codeStr.trim();
+  if (/^0[xX]/.test(h)) h = h.slice(2);
+  if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+  if (h.length / 2 > JUMP_MAX_BYTES) return null;
+  const bytes = [];
+  for (let i = 0; i < h.length; i += 2) bytes.push(parseInt(h.slice(i, i + 2), 16));
+  const dest = parseWord256(destStr);
+  if (dest === null) return null;
+  let cond = null;
+  if (op === "jumpi") {
+    cond = parseWord256(condStr);
+    if (cond === null) return null;
+  }
+  const jumpdests = [], fakes = [];
+  let pc = 0;
+  while (pc < bytes.length) {
+    const b = bytes[pc];
+    if (b === 0x5b) {
+      jumpdests.push(pc);
+      pc += 1;
+    } else if (b >= 0x60 && b <= 0x7f) {
+      const width = b - 0x5f;
+      for (let k = 1; k <= width; k++) {
+        if (pc + k < bytes.length && bytes[pc + k] === 0x5b) fakes.push(pc + k);
+      }
+      pc += 1 + width;
+    } else {
+      pc += 1;
+    }
+  }
+  const meta = JUMP_OPS[op];
+  const valid = jumpdests.some(d => BigInt(d) === dest);
+  const fake = fakes.some(f => BigInt(f) === dest);
+  const base = { opcode: op, opcodeByte: meta.byte, fork: "Frontier",
+    codeBytes: String(bytes.length), dest: dest.toString(),
+    condition: op === "jumpi" ? cond.toString() : "",
+    conditionZero: op === "jumpi" ? (cond === 0n ? "true" : "false") : "",
+    destValid: valid ? "true" : "false", destFake: fake ? "true" : "false",
+    validDests: jumpdests.map(String), validCount: String(jumpdests.length) };
+  if (op === "jumpi" && cond === 0n) {
+    return { ...base, outcome: "fallthrough", nextPc: "", halted: "false", totalGas: meta.gas.toString() };
+  }
+  if (valid) {
+    return { ...base, outcome: "jump", nextPc: dest.toString(), halted: "false", totalGas: meta.gas.toString() };
+  }
+  return { ...base, outcome: "halt", nextPc: "", halted: "true", totalGas: "" };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -8054,6 +8157,33 @@ if (typeof document !== "undefined") {
       el.textContent = `EXTCODECOPY (${r.opcodeByte}, ${r.fork}): copies ${r.copySize} byte(s) from offset ${r.offset} of the ${r.codeBytes} byte(s) of code you supplied for ${toChecksumAddress(r.targetAddress)} to memory offset ${r.destOffset} — bytes past the end of that code copy as zero (this copy zero-pads its source; it never halts the way RETURNDATACOPY does, and a target with no code copies only zeros), and a gap in memory is zero-filled. Copied: ${r.copied}. Memory after (${r.memoryAfterBytes} byte(s)): ${r.memoryAfter}. MSIZE is ${r.msizeAfter}. Gas: ${r.totalGas} — there is no flat base: ${r.accessGas} of EIP-2929 account access for a ${cold ? "cold account (its first touch in this transaction; a later touch of the same account would be warm at 100)" : "warm account (already touched in this transaction; a cold first touch would cost 2,600)"} plus ${r.wordGas} for the word(s) copied plus ${r.expansionGas} of memory expansion — the same total the hub's EXTCODECOPY gas tool quotes. The same copy of the executing account's own code via CODECOPY would pay no access cost. ${tail}`;
     });
 
+    /* JUMP (0x56) / JUMPI (0x57) */
+    const jumpBtn = document.getElementById("jump-btn");
+    if (jumpBtn) jumpBtn.addEventListener("click", () => {
+      const r = jumpCalc(
+        document.getElementById("jump-op").value,
+        document.getElementById("jump-dest").value,
+        document.getElementById("jump-cond").value,
+        document.getElementById("jump-code").value);
+      const el = document.getElementById("jump-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the destination (and, for JUMPI, the condition) must each be one 256-bit word, decimal or 0x hex, and the code even-length hex of at most 24,576 bytes (empty is empty code). JUMP has no condition and its condition field is not read.";
+        return;
+      }
+      const tail = "Computed locally from the code you gave — nothing is executed and no chain is queried.";
+      const name = r.opcode === "jumpi" ? "JUMPI" : "JUMP";
+      const dests = r.validDests.length ? r.validDests.join(", ") : "none";
+      if (r.outcome === "fallthrough") {
+        el.textContent = `JUMPI (${r.opcodeByte}, ${r.fork}): the condition is 0, so execution falls through to the next instruction — the destination ${r.dest} is never validated${r.destValid === "true" ? ", even though it happens to be a valid JUMPDEST here" : ", and it is not a valid destination (valid destinations in this code: " + dests + ") — a zero condition makes that harmless"}. Gas: 10 — the flat High tier, paid on a fall-through too because the opcode ran. ${tail}`;
+        return;
+      }
+      if (r.outcome === "jump") {
+        el.textContent = `${name} (${r.opcodeByte}, ${r.fork}): ${r.opcode === "jumpi" ? "the condition " + r.condition + " is non-zero, so the jump is taken, and " : ""}execution continues at pc ${r.nextPc} — a JUMPDEST in the ${r.codeBytes} byte(s) of code you supplied (valid destinations: ${dests}). Gas: ${r.totalGas} — the flat ${r.opcode === "jumpi" ? "High" : "Mid"} tier, with no other term. ${tail}`;
+        return;
+      }
+      el.textContent = `${name} (${r.opcodeByte}, ${r.fork}): destination ${r.dest} is NOT a valid jump destination in the ${r.codeBytes} byte(s) of code you supplied (valid destinations: ${dests})${r.destFake === "true" ? " — the byte stored there is 0x5b, but it sits inside PUSH immediate data, so it is data, not a JUMPDEST" : ""} — an invalid jump destination, an exceptional halt that consumes the frame's gas, so no single-opcode gas figure applies. ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -8067,5 +8197,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

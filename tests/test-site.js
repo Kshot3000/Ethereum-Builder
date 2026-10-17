@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=88"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=89"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -5059,6 +5059,92 @@ check("extcopy refuses a short or non-hex target address, a malformed offset, od
   app.extcopyCalc(EXTCOPY_WETH, "0", "0", "0", null, "", true) === null &&
   app.extcopyCalc(null, "0", "0", "0", "", "", true) === null);
 check("extcopy tool section present in index.html", html.includes("extcopy-btn") && html.includes("EXTCODECOPY opcode calculator"));
+
+
+/* JUMP (0x56) / JUMPI (0x57), both Frontier: the destination is
+   legal only where the next-instruction walk lands on a JUMPDEST
+   as an instruction -- the set the hub's JUMPDEST analyser
+   computes, and the verdict here is cross-checked against that
+   analyser exactly. JUMPI validates its destination ONLY on the
+   taken path: a zero condition falls through and never consults
+   it, so an impostor or out-of-range destination with a zero
+   condition is not a halt. Gas is flat: JUMP 8 (Mid), JUMPI 10
+   (High, paid on a fall-through too); an invalid destination is
+   an exceptional halt with no gas figure. Verified against an
+   independent pure-Python oracle (oracle-jump-op.py) anchored
+   in-script on hand values (the prefilled taken JUMPI at 10, the
+   impostor halt, the zero-condition fallthrough past the same
+   impostor) before generating. */
+check("jump controls labelled in index.html",
+  ["jump-op", "jump-dest", "jump-cond", "jump-code"].every(id => html.includes(`for="${id}"`)));
+check("jump matches the Python oracle",
+  (() => { const V = [
+    [["jumpi", "2", "1", "0x605b5b615b5b5b"], "jumpi|0x57|Frontier|7|2|1|false|true|false|2,6|2|jump|2|false|10"],
+    [["jump", "2", "", "0x605b5b615b5b5b"], "jump|0x56|Frontier|7|2|||true|false|2,6|2|jump|2|false|8"],
+    [["jump", "6", "", "0x605b5b615b5b5b"], "jump|0x56|Frontier|7|6|||true|false|2,6|2|jump|6|false|8"],
+    [["jump", "0x6", "", "0x605b5b615b5b5b"], "jump|0x56|Frontier|7|6|||true|false|2,6|2|jump|6|false|8"],
+    [["jump", "1", "", "0x605b5b615b5b5b"], "jump|0x56|Frontier|7|1|||false|true|2,6|2|halt||true|"],
+    [["jump", "4", "", "0x605b5b615b5b5b"], "jump|0x56|Frontier|7|4|||false|true|2,6|2|halt||true|"],
+    [["jump", "5", "", "0x605b5b615b5b5b"], "jump|0x56|Frontier|7|5|||false|true|2,6|2|halt||true|"],
+    [["jump", "0", "", "0x605b5b615b5b5b"], "jump|0x56|Frontier|7|0|||false|false|2,6|2|halt||true|"],
+    [["jump", "3", "", "0x605b5b615b5b5b"], "jump|0x56|Frontier|7|3|||false|false|2,6|2|halt||true|"],
+    [["jump", "7", "", "0x605b5b615b5b5b"], "jump|0x56|Frontier|7|7|||false|false|2,6|2|halt||true|"],
+    [["jumpi", "1", "0", "0x605b5b615b5b5b"], "jumpi|0x57|Frontier|7|1|0|true|false|true|2,6|2|fallthrough||false|10"],
+    [["jumpi", "1", "1", "0x605b5b615b5b5b"], "jumpi|0x57|Frontier|7|1|1|false|false|true|2,6|2|halt||true|"],
+    [["jumpi", "2", "0", "0x605b5b615b5b5b"], "jumpi|0x57|Frontier|7|2|0|true|true|false|2,6|2|fallthrough||false|10"],
+    [["jumpi", "2", "0x0", "0x605b5b615b5b5b"], "jumpi|0x57|Frontier|7|2|0|true|true|false|2,6|2|fallthrough||false|10"],
+    [["jumpi", "5", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0x605b5b615b5b5b"], "jumpi|0x57|Frontier|7|5|57896044618658097711785492504343953926634992332820282019728792003956564819968|false|false|true|2,6|2|halt||true|"],
+    [["jumpi", "6", "340282366920938463463374607431768211456", "0x605b5b615b5b5b"], "jumpi|0x57|Frontier|7|6|340282366920938463463374607431768211456|false|true|false|2,6|2|jump|6|false|10"],
+    [["jumpi", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "0x605b5b615b5b5b"], "jumpi|0x57|Frontier|7|57896044618658097711785492504343953926634992332820282019728792003956564819968|0|true|false|false|2,6|2|fallthrough||false|10"],
+    [["jump", "0", "", ""], "jump|0x56|Frontier|0|0|||false|false||0|halt||true|"],
+    [["jumpi", "0", "0", ""], "jumpi|0x57|Frontier|0|0|0|true|false|false||0|fallthrough||false|10"],
+    [["jump", "0", "", "0x5b"], "jump|0x56|Frontier|1|0|||true|false|0|1|jump|0|false|8"],
+    [["jump", "1", "", "0x5b"], "jump|0x56|Frontier|1|1|||false|false|0|1|halt||true|"],
+    [["jump", "1", "", "0x615b"], "jump|0x56|Frontier|2|1|||false|true||0|halt||true|"],
+    [["jump", "2", "", "0x60005b"], "jump|0x56|Frontier|3|2|||true|false|2|1|jump|2|false|8"],
+    [["jump", "0", "", "0x60005b"], "jump|0x56|Frontier|3|0|||false|false|2|1|halt||true|"]
+  ]; return V.every(([inp, exp]) => { const r = app.jumpCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.fork, r.codeBytes, r.dest, r.condition, r.conditionZero, r.destValid, r.destFake, r.validDests.join(","), r.validCount, r.outcome, r.nextPc, r.halted, r.totalGas].join("|") === exp; }); })());
+check("jump: prefilled page values \u2014 a JUMPI to 2 with condition 1 in the 7-byte trap code is taken to the real JUMPDEST at 10 gas",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const op = /id="jump-op"[\s\S]*?<option value="jumpi" selected>/.test(html) ? "jumpi" : "jump";
+    const r = app.jumpCalc(op, g("jump-dest"), g("jump-cond"), g("jump-code"));
+    return r !== null && r.outcome === "jump" && r.nextPc === "2" && r.totalGas === "10" && r.destValid === "true"; })());
+check("jump: the destination verdict agrees with the hub's JUMPDEST analyser exactly, on valid, impostor, instruction and out-of-range offsets alike",
+  ["0", "1", "2", "3", "4", "5", "6", "7", "100"].every(d =>
+    app.jumpCalc("jump", d, "", CODE_CODE).destValid === app.jumpdestCalc(CODE_CODE, d).destValid &&
+    app.jumpCalc("jump", d, "", CODE_CODE).destFake === String(app.jumpdestCalc(CODE_CODE, d).fakes.includes(d))));
+check("jump: a zero JUMPI condition falls through without validating the destination \u2014 impostor and out-of-range destinations are not halts, and JUMPI still pays its 10",
+  app.jumpCalc("jumpi", "1", "0", CODE_CODE).outcome === "fallthrough" &&
+  app.jumpCalc("jumpi", "1", "0", CODE_CODE).halted === "false" &&
+  app.jumpCalc("jumpi", "1", "0", CODE_CODE).totalGas === "10" &&
+  app.jumpCalc("jumpi", "999999", "0", CODE_CODE).outcome === "fallthrough" &&
+  app.jumpCalc("jumpi", "2", "0", CODE_CODE).outcome === "fallthrough");
+check("jump: any non-zero condition takes the jump \u2014 2^128 and 2^255 conditions behave exactly like 1, on valid and impostor destinations alike",
+  app.jumpCalc("jumpi", "6", "340282366920938463463374607431768211456", CODE_CODE).outcome === "jump" &&
+  app.jumpCalc("jumpi", "1", "57896044618658097711785492504343953926634992332820282019728792003956564819968", CODE_CODE).outcome === "halt");
+check("jump: gas splits inside the pair \u2014 JUMP is a flat 8 (Mid), JUMPI a flat 10 (High), and a halt reports no gas figure because it consumes the frame",
+  app.jumpCalc("jump", "2", "", CODE_CODE).totalGas === "8" &&
+  app.jumpCalc("jumpi", "2", "1", CODE_CODE).totalGas === "10" &&
+  app.jumpCalc("jump", "1", "", CODE_CODE).totalGas === "" &&
+  app.jumpCalc("jump", "1", "", CODE_CODE).halted === "true");
+check("jump: JUMP never reads its condition \u2014 a garbage condition field cannot change its answer, while JUMPI refuses that same garbage",
+  app.jumpCalc("jump", "2", "garbage", CODE_CODE).outcome === "jump" &&
+  app.jumpCalc("jump", "2", null, CODE_CODE) !== null &&
+  app.jumpCalc("jumpi", "2", "garbage", CODE_CODE) === null);
+check("jump refuses an unknown opcode, a malformed destination or JUMPI condition, odd or non-hex code, code past 24,576 bytes, a destination at or past 2^256, and null inputs \u2014 and accepts exactly 24,576 code bytes",
+  app.jumpCalc("jumpdest", "0", "", CODE_CODE) === null &&
+  app.jumpCalc("jump", "-1", "", CODE_CODE) === null &&
+  app.jumpCalc("jump", "115792089237316195423570985008687907853269984665640564039457584007913129639936", "", CODE_CODE) === null &&
+  app.jumpCalc("jumpi", "0", "-1", CODE_CODE) === null &&
+  app.jumpCalc("jump", "0", "", "0x0") === null &&
+  app.jumpCalc("jump", "0", "", "0xzz") === null &&
+  app.jumpCalc("jump", "0", "", "0x" + "00".repeat(24577)) === null &&
+  app.jumpCalc("jump", "0", "", "0x" + "5b" + "00".repeat(24575)) !== null &&
+  app.jumpCalc(null, "0", "", CODE_CODE) === null &&
+  app.jumpCalc("jump", null, "", CODE_CODE) === null &&
+  app.jumpCalc("jump", "0", "", null) === null);
+check("jump tool section present in index.html", html.includes("jump-btn") && html.includes("Jump opcode calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -1080,6 +1080,21 @@
       <button id="extcopy-btn" type="button">Apply EXTCODECOPY</button>
       <p id="extcopy-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Jump opcode calculator — JUMP / JUMPI against the destination set</h3>
+      <p><code>JUMP</code> (<code>0x56</code>) and <code>JUMPI</code> (<code>0x57</code>), both Frontier, are how EVM code moves: JUMP pops a destination and goes there unconditionally; JUMPI pops the destination <em>first</em> (it sits on top of the stack) and a condition second, and goes there only when the condition is non-zero — any non-zero word, not just 1. The destination is legal only when it is a valid jump destination under the protocol's own rule — an offset where the next-instruction walk from pc 0 lands on a <code>JUMPDEST</code> (<code>0x5b</code>) as an instruction, the set the JUMPDEST analyser on this hub computes. Every other destination — a non-JUMPDEST instruction, an offset at or past the code's end, or a <code>0x5b</code> byte sitting inside <code>PUSH</code> immediate data — is an invalid jump destination: an exceptional halt that consumes the frame's gas. JUMPI carries the family's trap: the destination is validated <em>only</em> on the taken path. With a zero condition execution falls through to the next instruction and the destination is never consulted, so a JUMPI to an impostor offset — or clean past the code's end — with a zero condition is <em>not</em> a halt; a model that validates the destination before reading the condition halts frames a real client runs fine. Gas is flat with no other term: JUMP is 8 (the Mid tier) and JUMPI is 10 (the High tier), and JUMPI pays its 10 on a fall-through too, because the opcode ran — only the invalid-destination halt has no single-opcode figure, since it consumes the frame. The prefilled call makes the taken path visible: a JUMPI to 2 with condition 1 in the analyser's seven-byte trap code lands on the real JUMPDEST at 2, at 10 gas — set the condition to 0 and it falls through instead, and set the destination to 1 with the condition back at 1 and it halts on the impostor byte. Honest scope: the code, destination and condition are values <em>you</em> supply — this page executes nothing and reads no chain, and the stack the words were popped from is yours, as on this hub's other opcode tools. The supplied code is capped at 24,576 bytes, the <a href="https://eips.ethereum.org/EIPS/eip-170">EIP-170</a> limit on deployed code, matching the analyser. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="jump-op">Opcode</label>
+      <select id="jump-op"><option value="jump">JUMP (0x56) — unconditional, 8 gas</option><option value="jumpi" selected>JUMPI (0x57) — jumps only when the condition is non-zero, 10 gas</option></select>
+      <label for="jump-dest">Destination (one 256-bit value, decimal or 0x hex — the byte offset popped first; legal only where the walk lands on a JUMPDEST)</label>
+      <input id="jump-dest" type="text" inputmode="numeric" spellcheck="false" value="2">
+      <label for="jump-cond">Condition (JUMPI only — one 256-bit value, decimal or 0x hex, popped second; zero falls through and the destination is never validated, any non-zero value takes the jump; not read for JUMP)</label>
+      <input id="jump-cond" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <label for="jump-code">Executing code (hex bytes, 0x prefix optional, an even number of hex digits, at most 24,576 bytes — empty is empty code, which has no valid destinations)</label>
+      <input id="jump-code" type="text" spellcheck="false" value="0x605b5b615b5b5b">
+      <button id="jump-btn" type="button">Apply jump opcode</button>
+      <p id="jump-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1468,6 +1483,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=88"></script>
+<script src="app.js?v=89"></script>
 </body>
 </html>

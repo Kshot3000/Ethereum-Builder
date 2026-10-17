@@ -1059,6 +1059,27 @@
       <button id="ext-btn" type="button">Apply external code opcode</button>
       <p id="ext-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>EXTCODECOPY opcode calculator — copying another account's code into memory</h3>
+      <p><code>EXTCODECOPY</code> (<code>0x3c</code>, Frontier) copies a range of <em>another</em> account's code into the executing frame's memory — the copy the code opcode calculator above splits off, because <code>CODECOPY</code> copies the executing account's <em>own</em> code. The copy itself behaves exactly like <code>CODECOPY</code>'s: it <em>zero-pads</em> its source, so bytes past the target code's end read as zero and those zeros are written into memory, a copy starting at or past the end copies only zeros, and it never halts — borrowing <code>RETURNDATACOPY</code>'s out-of-bounds halt here is exactly wrong. A target with no code — an externally owned account, an empty account, a non-existent account — copies only zeros, at the full price below: the account is touched whether or not it holds code. Gas is where this copy differs from every other copy on this hub, and the difference is the lesson: there is <em>no flat base</em>. Since Berlin the total is the target's <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> account access cost — 2,600 cold or 100 warm, the same term the hub's EXTCODECOPY gas calculator quotes — <em>plus</em> 3 per word copied (the size rounded up to whole words) <em>plus</em> the memory-expansion increase for growing the destination, on the cost curve the memory-expansion tool prices. The prefilled copy makes the access cost visible: 32 bytes from offset 0 of the target's supplied 7-byte code copies those 7 bytes followed by 25 zero bytes at <strong>2,606</strong> gas cold (2,600 access + 3 for the word + 3 of expansion) and 106 warm — where the identical copy of the executing account's own code via <code>CODECOPY</code> costs 9. A zero-size copy touches no memory whatever its destination, but still pays the access cost in full — 2,600 cold, 100 warm — because the account is touched even when nothing is copied; <code>CODECOPY</code>'s zero-size copy costs its flat 3 alone. Honest scope: the target address and its code, and the memory before, are values <em>you</em> supply — this page executes nothing and reads no chain, so none of this is live chain state. The supplied code, the supplied memory, the copy size and a non-empty copy's destination end are each capped at 4,096 bytes so the byte strings stay displayable — display caps, stated as such (real deployed code may run to the EIP-170 limit of 24,576 bytes) — while the code offset itself is any 256-bit word, because no allocation depends on it. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="extcopy-addr">Target account address (exactly 40 hex characters, 0x prefix optional — the account whose code is copied; the low 160 bits of the word the opcode pops first)</label>
+      <input id="extcopy-addr" type="text" spellcheck="false" value="0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2">
+      <label for="extcopy-offset">Code offset in the target's code (one 256-bit value, decimal or 0x hex — a BYTE offset; bytes past the target code's end copy as zero)</label>
+      <input id="extcopy-offset" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="extcopy-dest">Memory destination offset (one 256-bit value, decimal or 0x hex)</label>
+      <input id="extcopy-dest" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="extcopy-size">Copy size in bytes (one 256-bit value, decimal or 0x hex — a zero-size copy touches no memory but still pays the target's access cost)</label>
+      <input id="extcopy-size" type="text" inputmode="numeric" spellcheck="false" value="32">
+      <label for="extcopy-code">Target account's code (hex bytes, 0x prefix optional, an even number of hex digits, at most 4,096 bytes — empty is an account with no code, which copies only zeros)</label>
+      <input id="extcopy-code" type="text" spellcheck="false" value="0x605b5b615b5b5b">
+      <label for="extcopy-memory">Memory before (hex bytes, 0x prefix optional, an even number of hex digits, at most 4,096 bytes — empty is empty memory)</label>
+      <input id="extcopy-memory" type="text" spellcheck="false" value="">
+      <label for="extcopy-cold">Target account is cold — its first touch in this transaction (unchecked is warm, already touched; the access cost is charged either way)</label>
+      <input id="extcopy-cold" type="checkbox" checked>
+      <button id="extcopy-btn" type="button">Apply EXTCODECOPY</button>
+      <p id="extcopy-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1447,6 +1468,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=87"></script>
+<script src="app.js?v=88"></script>
 </body>
 </html>

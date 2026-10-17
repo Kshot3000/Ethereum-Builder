@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=87"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=88"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -4974,6 +4974,91 @@ check("extcode refuses an unknown opcode, a short address, odd-length or over-ca
   app.extcodeCalc("extcodesize", null, "", "0", "0", true) === null &&
   app.extcodeCalc(null, "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "", "0", "0", true) === null);
 check("extcode tool section present in index.html", html.includes("ext-btn") && html.includes("External code opcode calculator"));
+
+
+/* EXTCODECOPY (0x3c, Frontier): copies a range of ANOTHER account's
+   code into memory you supply, zero-padding its source past that
+   code's end (never halting, like CODECOPY -- the contrast with
+   RETURNDATACOPY). Gas has NO flat base since Berlin: the target's
+   EIP-2929 account access cost (2,600 cold / 100 warm) plus 3 per
+   word copied plus the memory-expansion increase -- the same total
+   the hub's EXTCODECOPY gas tool quotes. A zero-size copy touches
+   no memory but still pays the access cost in full. Verified
+   against an independent pure-Python bytearray oracle
+   (oracle-extcodecopy-op.py) anchored in-script on hand values
+   (the prefill cold copy at 2,606 and warm at 106, the all-padding
+   copy at offset == length, the zero-size copy at the access cost
+   alone) before generating. */
+const EXTCOPY_WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+check("extcopy controls labelled in index.html",
+  ["extcopy-addr", "extcopy-offset", "extcopy-dest", "extcopy-size", "extcopy-code", "extcopy-memory", "extcopy-cold"].every(id => html.includes(`for="${id}"`)));
+check("extcopy matches the Python oracle",
+  (() => { const V = [
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "32", "0x605b5b615b5b5b", "", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|0|0|32|0x605b5b615b5b5b00000000000000000000000000000000000000000000000000|0x|0x605b5b615b5b5b00000000000000000000000000000000000000000000000000|32|0|32|2600|3|3|2606"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "32", "0x605b5b615b5b5b", "", false], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|0|0|32|0x605b5b615b5b5b00000000000000000000000000000000000000000000000000|0x|0x605b5b615b5b5b00000000000000000000000000000000000000000000000000|32|0|32|100|3|3|106"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "2", "0", "3", "0x605b5b615b5b5b", "", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|2|0|3|0x5b615b|0x|0x5b615b|3|0|32|2600|3|3|2606"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x2", "0", "3", "0x605b5b615b5b5b", "", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|2|0|3|0x5b615b|0x|0x5b615b|3|0|32|2600|3|3|2606"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "7", "0", "4", "0x605b5b615b5b5b", "", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|7|0|4|0x00000000|0x|0x00000000|4|0|32|2600|3|3|2606"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "6", "0", "2", "0x605b5b615b5b5b", "", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|6|0|2|0x5b00|0x|0x5b00|2|0|32|2600|3|3|2606"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "2", "0x605b5b615b5b5b", "", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|57896044618658097711785492504343953926634992332820282019728792003956564819968|0|2|0x0000|0x|0x0000|2|0|32|2600|3|3|2606"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "7", "0x605b5b615b5b5b", "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|0|0|7|0x605b5b615b5b5b|0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd|0x605b5b615b5b5bcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd|32|32|32|2600|3|0|2603"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "64", "4", "0xdeadbeef", "", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|4|0|64|4|0xdeadbeef|0x|0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000deadbeef|68|0|96|2600|3|9|2612"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "0x605b5b615b5b5b", "", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|0|57896044618658097711785492504343953926634992332820282019728792003956564819968|0|0x|0x|0x|0|0|0|2600|0|0|2600"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "0x605b5b615b5b5b", "", false], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|0|57896044618658097711785492504343953926634992332820282019728792003956564819968|0|0x|0x|0x|0|0|0|100|0|0|100"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "0", "", "", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|0|0|0|0|0x|0x|0x|0|0|0|2600|0|0|2600"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "1", "", "", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|0|0|0|1|0x00|0x|0x00|1|0|32|2600|3|3|2606"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "1", "2", "0x4240", "0xffff", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|2|0|1|2|0x4240|0xffff|0xff4240|3|32|32|2600|3|0|2603"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "1", "0", "3", "0xdeadbeef", "", false], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|4|1|0|3|0xadbeef|0x|0xadbeef|3|0|32|100|3|3|106"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "4", "0xdeadbeef", "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|4|0|0|4|0xdeadbeef|0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab|0xdeadbeefabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab|64|64|64|2600|3|0|2603"],
+    [["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "5", "30", "4", "0x605b5b615b5b5b", "", true], "extcodecopy|0x3c|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|5|30|4|0x5b5b0000|0x|0x0000000000000000000000000000000000000000000000000000000000005b5b0000|34|0|64|2600|3|6|2609"],
+    [["0x7e5f4552091a69125d5dfcb7b8c2659029395bdf", "0", "0", "4", "", "", true], "extcodecopy|0x3c|Frontier|0x7e5f4552091a69125d5dfcb7b8c2659029395bdf|0|0|0|4|0x00000000|0x|0x00000000|4|0|32|2600|3|3|2606"]
+  ]; return V.every(([inp, exp]) => { const r = app.extcopyCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.fork, r.targetAddress, r.codeBytes, r.offset, r.destOffset, r.copySize, r.copied, r.memoryBefore, r.memoryAfter, r.memoryAfterBytes, r.msizeBefore, r.msizeAfter, r.accessGas, r.wordGas, r.expansionGas, r.totalGas].join("|") === exp; }); })());
+check("extcopy: prefilled page values \u2014 a cold EXTCODECOPY of 32 bytes from offset 0 of the target's 7-byte code copies 7 real bytes plus 25 zero pad bytes at 2,606 gas",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const r = app.extcopyCalc(g("extcopy-addr"), g("extcopy-offset"), g("extcopy-dest"), g("extcopy-size"), g("extcopy-code"), g("extcopy-memory"),
+      /id="extcopy-cold"[^>]*checked/.test(html));
+    return r !== null && r.targetAddress === EXTCOPY_WETH &&
+      r.copied === "0x605b5b615b5b5b" + "00".repeat(25) && r.totalGas === "2606" && r.accessGas === "2600"; })());
+check("extcopy: no flat base \u2014 cold exceeds warm by exactly 2,500, and the identical CODECOPY of the executing account's own code costs 9, not 2,606",
+  app.extcopyCalc(EXTCOPY_WETH, "0", "0", "32", CODE_CODE, "", true).totalGas === "2606" &&
+  app.extcopyCalc(EXTCOPY_WETH, "0", "0", "32", CODE_CODE, "", false).totalGas === "106" &&
+  app.codeCalc("codecopy", "0", "0", "32", CODE_CODE, "").totalGas === "9");
+check("extcopy: total gas agrees with the hub's EXTCODECOPY gas tool exactly, cold and warm",
+  [[true, "0", "32", ""], [false, "0", "32", ""], [true, "64", "4", ""], [true, "0", "0", ""], [false, "0", "7", "0x" + "cd".repeat(32)], [true, "30", "4", ""]].every(([cold, d, s, m]) =>
+    app.extcopyCalc(EXTCOPY_WETH, "0", d, s, CODE_CODE, m, cold).totalGas ===
+    app.extCodeCopyGasCalc(cold, d, s, String(m === "" ? 0 : (m.length - 2) / 2)).totalGas));
+check("extcopy: a zero-size copy touches no memory whatever its destination, but still pays the access cost in full",
+  (() => { const c = app.extcopyCalc(EXTCOPY_WETH, "0", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", CODE_CODE, "", true);
+    const w = app.extcopyCalc(EXTCOPY_WETH, "0", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", CODE_CODE, "", false);
+    return c !== null && c.memoryAfter === "0x" && c.copied === "0x" && c.totalGas === "2600" &&
+      w !== null && w.totalGas === "100"; })());
+check("extcopy: the padding contrast \u2014 EXTCODECOPY zero-pads past the target code's end where RETURNDATACOPY halts on the same overrun, and a target with no code copies only zeros",
+  app.extcopyCalc(EXTCOPY_WETH, "0", "0", "33", CODE_CODE, "", true).copied === CODE_CODE + "00".repeat(26) &&
+  app.rdCalc("returndatacopy", "0", "0", "33", CODE_CODE, "").halted === "true" &&
+  app.extcopyCalc("0x7e5f4552091a69125d5dfcb7b8c2659029395bdf", "0", "0", "4", "", "", true).copied === "0x00000000");
+check("extcopy: the gas breakdown sums to the total \u2014 access plus word gas plus expansion, with no other term",
+  [[true, "0", "0", "32", ""], [false, "2", "0", "3", ""], [true, "0", "64", "4", ""], [true, "5", "30", "4", ""], [true, "0", "0", "0", ""]].every(([cold, o, d, s, m]) => {
+    const r = app.extcopyCalc(EXTCOPY_WETH, o, d, s, CODE_CODE, m, cold);
+    return r !== null && BigInt(r.accessGas) + BigInt(r.wordGas) + BigInt(r.expansionGas) === BigInt(r.totalGas); }));
+check("extcopy: the target address is case-insensitive and reported lowercase",
+  app.extcopyCalc(EXTCOPY_WETH.toUpperCase().replace("0X", "0x"), "0", "0", "4", CODE_CODE, "", true).targetAddress === EXTCOPY_WETH &&
+  app.extcopyCalc(EXTCOPY_WETH.toUpperCase().replace("0X", "0x"), "0", "0", "4", CODE_CODE, "", true).copied ===
+  app.extcopyCalc(EXTCOPY_WETH, "0", "0", "4", CODE_CODE, "", true).copied);
+check("extcopy refuses a short or non-hex target address, a malformed offset, odd or non-hex code or memory, oversize inputs, a copy ending past 4,096 bytes, a non-boolean warmth, and null inputs",
+  app.extcopyCalc("0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc", "0", "0", "0", "", "", true) === null &&
+  app.extcopyCalc("0xzz2aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "0", "", "", true) === null &&
+  app.extcopyCalc(EXTCOPY_WETH, "-1", "0", "0", "", "", true) === null &&
+  app.extcopyCalc(EXTCOPY_WETH, "0", "0", "0", "0x0", "", true) === null &&
+  app.extcopyCalc(EXTCOPY_WETH, "0", "0", "0", "", "0x0", true) === null &&
+  app.extcopyCalc(EXTCOPY_WETH, "0", "0", "0", "0x" + "00".repeat(4097), "", true) === null &&
+  app.extcopyCalc(EXTCOPY_WETH, "0", "0", "4097", CODE_CODE, "", true) === null &&
+  app.extcopyCalc(EXTCOPY_WETH, "0", "4096", "1", CODE_CODE, "", true) === null &&
+  app.extcopyCalc(EXTCOPY_WETH, "0", "4064", "32", CODE_CODE, "", true) !== null &&
+  app.extcopyCalc(EXTCOPY_WETH, "0", "0", "0", "", "", "yes") === null &&
+  app.extcopyCalc(EXTCOPY_WETH, "0", "0", "0", null, "", true) === null &&
+  app.extcopyCalc(null, "0", "0", "0", "", "", true) === null);
+check("extcopy tool section present in index.html", html.includes("extcopy-btn") && html.includes("EXTCODECOPY opcode calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

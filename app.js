@@ -6179,6 +6179,106 @@ function extcodeCalc(opStr, addrStr, codeStr, balanceStr, nonceStr, cold) {
     result: v.toString(), resultHex: "0x" + hash };
 }
 
+/* EXTCODECOPY (0x3c, Frontier) — copies a range of ANOTHER account's
+   code into the executing frame's memory: the target account (its
+   address and its code), the code offset, the memory destination,
+   the size and the memory before are all inputs YOU supply — this
+   page executes nothing and reads no chain. It is the copy the
+   code opcode calculator above deliberately splits off: CODECOPY
+   copies the executing account's OWN code at a flat base, while
+   this copy reads a different account, and that difference is
+   priced. The copy itself behaves exactly like CODECOPY's: it
+   ZERO-PADS its source, so bytes past the target code's end read
+   as zero and those zeros are written into memory, a copy starting
+   at or past the end copies only zeros, and it never halts —
+   borrowing RETURNDATACOPY's out-of-bounds halt here is exactly
+   wrong. A target with no code — an externally owned account, an
+   empty account, a non-existent account — copies only zeros, at
+   the full price below: the account is touched whether or not it
+   holds code.
+   Gas is where this copy differs from every other copy on the
+   hub, and the difference is the lesson. There is NO flat base:
+   since Berlin the total is the target's EIP-2929 account access
+   cost (2,600 cold, 100 warm — the same term the hub's
+   EXTCODECOPY gas tool quotes, and the tests cross-check the two
+   tools against each other exactly) PLUS 3 per word copied (the
+   size rounded up to whole words) PLUS the memory-expansion
+   increase on the hub's own cost curve for growing the
+   destination. So the hub's prefilled CODECOPY — 32 bytes of the
+   same 7-byte code into fresh memory — costs 9 own-code (flat 3
+   + 3 + 3), while the same copy here costs 2,606 cold and 106
+   warm. A zero-size copy touches no memory whatever its
+   destination, but it still pays the access cost in full — 2,600
+   cold, 100 warm — because the account is touched even when
+   nothing is copied; CODECOPY's zero-size copy, by contrast,
+   costs its flat 3 alone.
+   Inputs are refused rather than wrapped: the target address
+   must be exactly 40 hex characters (0x prefix optional); the
+   offset, destination and size are single 256-bit words in
+   decimal or 0x hex via parseWord256; the target code and the
+   memory hex must be even-length; the warmth is a boolean; and
+   the supplied code, the supplied memory, the copy size and a
+   non-empty copy's destination end are each capped at 4,096
+   bytes so the byte strings stay displayable — display caps,
+   stated as such (real deployed code may run to the EIP-170
+   limit of 24,576 bytes). */
+const EXTCODECOPY_MAX_BYTES = 4096;
+function extcopyCalc(addrStr, offsetStr, destStr, sizeStr, codeStr, memoryStr, cold) {
+  if (typeof cold !== "boolean") return null;
+  if (typeof addrStr !== "string" || typeof codeStr !== "string" || typeof memoryStr !== "string") return null;
+  let addr = addrStr.trim();
+  if (/^0[xX]/.test(addr)) addr = addr.slice(2);
+  if (!/^[0-9a-fA-F]{40}$/.test(addr)) return null;
+  const parseBytes = s => {
+    let h = s.trim();
+    if (/^0[xX]/.test(h)) h = h.slice(2);
+    if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+    if (h.length / 2 > EXTCODECOPY_MAX_BYTES) return null;
+    const arr = [];
+    for (let i = 0; i < h.length; i += 2) arr.push(parseInt(h.slice(i, i + 2), 16));
+    return arr;
+  };
+  const code = parseBytes(codeStr);
+  const before = parseBytes(memoryStr);
+  if (code === null || before === null) return null;
+  const offset = parseWord256(offsetStr);
+  const dest = parseWord256(destStr);
+  const size = parseWord256(sizeStr);
+  if (offset === null || dest === null || size === null) return null;
+  if (size > BigInt(EXTCODECOPY_MAX_BYTES)) return null;
+  if (size > 0n && (dest > BigInt(EXTCODECOPY_MAX_BYTES) || dest + size > BigInt(EXTCODECOPY_MAX_BYTES))) return null;
+  const toHex = arr => "0x" + arr.map(b => b.toString(16).padStart(2, "0")).join("");
+  const sz = Number(size);
+  const copied = [];
+  for (let i = 0; i < sz; i++) {
+    const idx = offset + BigInt(i);
+    copied.push(idx < BigInt(code.length) ? code[Number(idx)] : 0);
+  }
+  const after = before.slice();
+  if (sz > 0) {
+    const d = Number(dest), end = d + sz;
+    while (after.length < end) after.push(0);
+    for (let i = 0; i < sz; i++) after[d + i] = copied[i];
+  }
+  const wordsBefore = BigInt(Math.ceil(before.length / 32));
+  const touchedEnd = size > 0n ? Number(dest) + sz : before.length;
+  const wordsAfter = BigInt(Math.ceil(Math.max(before.length, touchedEnd) / 32));
+  const expansion = wordsAfter > wordsBefore ? memTotalCost(wordsAfter) - memTotalCost(wordsBefore) : 0n;
+  const wordGas = 3n * BigInt(Math.ceil(sz / 32));
+  const access = cold ? 2600n : 100n;
+  return {
+    opcode: "extcodecopy", opcodeByte: "0x3c", fork: "Frontier",
+    targetAddress: "0x" + addr.toLowerCase(), codeBytes: String(code.length),
+    offset: offset.toString(), destOffset: dest.toString(), copySize: size.toString(),
+    copied: toHex(copied),
+    memoryBefore: toHex(before), memoryAfter: toHex(after),
+    memoryBeforeBytes: String(before.length), memoryAfterBytes: String(after.length),
+    msizeBefore: (wordsBefore * 32n).toString(), msizeAfter: (wordsAfter * 32n).toString(),
+    accessGas: access.toString(), wordGas: wordGas.toString(), expansionGas: expansion.toString(),
+    totalGas: (access + wordGas + expansion).toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -7933,6 +8033,27 @@ if (typeof document !== "undefined") {
       el.textContent = `EXTCODEHASH (${r.opcodeByte}, ${r.fork}): pushes ${r.resultHex} — the Keccak-256 of the ${r.codeBytes} byte(s) of code you supplied for ${toChecksumAddress(r.targetAddress)}. ${gasNote} ${tail}`;
     });
 
+    /* EXTCODECOPY opcode (0x3c) */
+    const extcopyBtn = document.getElementById("extcopy-btn");
+    if (extcopyBtn) extcopyBtn.addEventListener("click", () => {
+      const cold = document.getElementById("extcopy-cold").checked;
+      const r = extcopyCalc(
+        document.getElementById("extcopy-addr").value,
+        document.getElementById("extcopy-offset").value,
+        document.getElementById("extcopy-dest").value,
+        document.getElementById("extcopy-size").value,
+        document.getElementById("extcopy-code").value,
+        document.getElementById("extcopy-memory").value,
+        cold);
+      const el = document.getElementById("extcopy-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the target address must be exactly 40 hex characters (0x prefix optional), the code offset, destination and size each one 256-bit word, decimal or 0x hex, and the target's code and the memory before as hex bytes (0x prefix optional, an even number of hex digits, at most 4,096 bytes each; empty is an account with no code). The size and a non-empty copy's destination end must also stay within 4,096 bytes.";
+        return;
+      }
+      const tail = "Computed locally from the account and memory you gave — nothing is executed and no chain is queried.";
+      el.textContent = `EXTCODECOPY (${r.opcodeByte}, ${r.fork}): copies ${r.copySize} byte(s) from offset ${r.offset} of the ${r.codeBytes} byte(s) of code you supplied for ${toChecksumAddress(r.targetAddress)} to memory offset ${r.destOffset} — bytes past the end of that code copy as zero (this copy zero-pads its source; it never halts the way RETURNDATACOPY does, and a target with no code copies only zeros), and a gap in memory is zero-filled. Copied: ${r.copied}. Memory after (${r.memoryAfterBytes} byte(s)): ${r.memoryAfter}. MSIZE is ${r.msizeAfter}. Gas: ${r.totalGas} — there is no flat base: ${r.accessGas} of EIP-2929 account access for a ${cold ? "cold account (its first touch in this transaction; a later touch of the same account would be warm at 100)" : "warm account (already touched in this transaction; a cold first touch would cost 2,600)"} plus ${r.wordGas} for the word(s) copied plus ${r.expansionGas} of memory expansion — the same total the hub's EXTCODECOPY gas tool quotes. The same copy of the executing account's own code via CODECOPY would pay no access cost. ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -7946,5 +8067,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

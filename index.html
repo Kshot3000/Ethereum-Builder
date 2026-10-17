@@ -1215,6 +1215,33 @@ dave</textarea>
     </div>
 
     <div class="tool">
+      <h3>EIP-2612 permit signature verification</h3>
+      <p>The permit digest calculator above computes the hash an ERC-20 owner signs for a gasless approval (<a href="https://eips.ethereum.org/EIPS/eip-2612">EIP-2612</a>); this tool performs the check the token's <code>permit()</code> itself performs when anyone submits that signature: it recomputes the EIP-712 digest <code>keccak256(0x1901 ‖ DOMAIN_SEPARATOR ‖ hashStruct(Permit))</code> for the same token domain and <code>Permit</code> fields and recovers the signer from the 65-byte signature with the ecrecover math above. The allowance is set only when the recovered signer <em>is</em> the owner named in the struct — a signature by any other account, or over any other value, nonce, deadline, chain or token domain, recovers to someone else and is rejected. The defaults are a worked example that verifies end to end: a 1 USDC permit on Ethereum mainnet whose owner is the widely published address of private key 1 (<code>0x7E5F…5Bdf</code>), signed by that key for this example — change any field and the recovered signer changes with it, because every field is inside the hash. (Private key 1 is a public test key that controls nothing of value; never sign a real permit with a published key.) Honest scope: <code>permit()</code> also requires the nonce to be the owner's <em>current</em> permit nonce and the deadline to not have passed — both are chain state this page does not read, so a “recovers to the owner” answer here means the signer check passes, not that a submission would succeed right now. Strict in the same way as the verifiers above: the signature must be exactly 65 bytes and <code>s</code> must be the canonical low-<code>s</code> form, or it is refused rather than half-verified. Verifies a signature only: nothing is signed, no key is used or asked for.</p>
+      <label for="pver-name">Token name (its EIP-712 domain name)</label>
+      <input id="pver-name" type="text" spellcheck="false" value="USD Coin">
+      <label for="pver-version">Token EIP-712 version</label>
+      <input id="pver-version" type="text" spellcheck="false" value="2">
+      <label for="pver-chain">Chain ID</label>
+      <input id="pver-chain" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <label for="pver-token">Token contract (the domain's verifying contract, 20 bytes)</label>
+      <input id="pver-token" type="text" spellcheck="false" value="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48">
+      <label for="pver-owner">Owner (the account that must have signed, 20 bytes)</label>
+      <input id="pver-owner" type="text" spellcheck="false" value="0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf">
+      <label for="pver-spender">Spender (the account being approved, 20 bytes)</label>
+      <input id="pver-spender" type="text" spellcheck="false" value="0x2222222222222222222222222222222222222222">
+      <label for="pver-value">Value (allowance in the token's base units)</label>
+      <input id="pver-value" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="pver-nonce">Nonce (the owner's permit nonce at signing time)</label>
+      <input id="pver-nonce" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="pver-deadline">Deadline (unix seconds; 2^256 − 1 means no expiry)</label>
+      <input id="pver-deadline" type="text" inputmode="numeric" spellcheck="false" value="1893456000">
+      <label for="pver-sig">Signature (65 bytes: r ‖ s ‖ v, 0x hex)</label>
+      <textarea id="pver-sig" rows="3" spellcheck="false">0x1b87c2f4290c85dd24a806ec7e6cc5ac98a2eba5afc42a0a7845a1f9264eac5c3731d865769e910309eee3297ab8e67a2d789a8eb0bb6cc1e8915c28053938fb1c</textarea>
+      <button id="pver-btn" type="button">Verify signature</button>
+      <p id="pver-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Blob gas &amp; blob base fee calculator (EIP-4844 / EIP-7691)</h3>
       <p>The blob transactions the decoder above reads are priced in a second gas market of their own. <a href="https://eips.ethereum.org/EIPS/eip-4844">EIP-4844</a> gives every block an <code>excess_blob_gas</code> header field — a running total of blob gas consumed above the block target — and sets the base fee per blob gas to <code>fake_exponential(1, excess_blob_gas, update_fraction)</code>, a Taylor-series approximation of <code>e<sup>excess / fraction</sup></code> with a 1-wei floor, so the fee rises about 12.5% for each consecutive full Cancun block and falls when blocks run below target. Give this calculator the parent block's excess and blob gas used and it applies the EIP's own update rule (<code>calc_excess_blob_gas</code>) and pricing formula, then totals the blob fee for a transaction carrying your blob count — each blob is 131,072 blob gas, and the blob fee is burned, separate from the execution gas fee. Two schedules are offered because the numbers changed once already: Cancun as EIP-4844 launched it (target 3 blobs, max 6, fraction 3,338,477) and Prague as <a href="https://eips.ethereum.org/EIPS/eip-7691">EIP-7691</a> raised it (target 6 blobs, max 9, fraction 5,007,716 — fuller blocks now move the fee about 8.2%). The defaults are a full Prague parent block (9 blobs), which lifts the excess by exactly the 3 above-target blobs' worth of blob gas while the fee still sits at its floor. Honest scope: this is the protocol's pricing rule applied to values you supply, not live network data — read a real block's <code>excess_blob_gas</code> from your own node or an explorer to price the current fee. Computed locally — nothing is sent and no chain is queried.</p>
       <label for="blob-schedule">Blob schedule</label>
@@ -1254,6 +1281,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=78"></script>
+<script src="app.js?v=79"></script>
 </body>
 </html>

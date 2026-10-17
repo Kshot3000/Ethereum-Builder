@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=78"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=79"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -4251,6 +4251,65 @@ check("permit refuses a bad address, a negative or fractional field, an empty na
   app.permitDigest("", "2", "1", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0x2222222222222222222222222222222222222222", "1", "0", "1") === null &&
   app.permitDigest("USD Coin", "2", "0", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0x2222222222222222222222222222222222222222", "1", "0", "1") === null);
 check("permit tool section present in index.html", html.includes("permit-btn") && html.includes("EIP-2612 permit digest calculator"));
+
+/* EIP-2612 permit signature verification — composes the permit digest and
+   ecrecover. Signatures produced by an independent pure-Python Keccak-256 +
+   secp256k1 oracle (hidden_files/oracle-permit-verify.py; RFC 6979 signing;
+   Keccak anchored on the published values the permit oracle anchors on;
+   address derivation anchored on the published addresses of private key 1
+   and of the private key EIP-155 prints; the signer anchored end-to-end by
+   reproducing this suite's existing EIP-712 key-1 signature over the
+   published Ether Mail digest). NOT produced by this file's own code. */
+const PVER_KEY1 = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf";
+const PVER_KEY155 = "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F";
+const PVER_SIG1 = "0x1b87c2f4290c85dd24a806ec7e6cc5ac98a2eba5afc42a0a7845a1f9264eac5c3731d865769e910309eee3297ab8e67a2d789a8eb0bb6cc1e8915c28053938fb1c";
+const pverArgs = ["USD Coin", "2", "1", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", PVER_KEY1, "0x2222222222222222222222222222222222222222", "1000000", "0", "1893456000"];
+check("permit verify controls labelled in index.html",
+  ["pver-name", "pver-version", "pver-chain", "pver-token", "pver-owner", "pver-spender", "pver-value", "pver-nonce", "pver-deadline", "pver-sig"].every(id => html.includes(`for="${id}"`)));
+check("permit verification matches the Python oracle (digest chain + signer, three signed permits)",
+  (() => { const r = app.verifyPermitSignature(...pverArgs, PVER_SIG1);
+    return r !== null && r.signer === PVER_KEY1 && r.digest === "0xf6afb11f4fa52f2a9e27f2c1d0f44d24b71214e7a7b35dbff1b73b8c2d3bf061" &&
+      r.domainSeparator === "0x06c37168a7db5138defc7866392bb87a741f9b3d104deb5094588ce041cae335" &&
+      r.structHash === "0xfdcfb43e4697926227d21dcb1346056642c949c005d1d22c7b6c3ab3f073f17c"; })() &&
+  (() => { const r = app.verifyPermitSignature("Dai Stablecoin", "1", "1", "0x6B175474E89094C44Da98b954EedeAC495271d0F", PVER_KEY155, "0x2222222222222222222222222222222222222222", "1000000000000000000", "7", "2000000000",
+      "0xff6eca350405b22524e856856963b2c5862ee13e727e5ff7cdfd5da16ce6ebae76911584229d8076348e022a1cde1e1e85f7019707fe8d4e79999e15f7e026081c");
+    return r !== null && r.signer === PVER_KEY155 && r.digest === "0xcab88dd1e359d403c1dc9e96238908b61b4370ae0e29669481d9d26920b36a33"; })() &&
+  (() => { const r = app.verifyPermitSignature("USD Coin", "2", "8453", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", PVER_KEY1, "0x2222222222222222222222222222222222222222", "2500000", "3", "1893456000",
+      "0xb67feebaec5e3c12faa74066bb67314e04819eb9c679a0f2ac8805bcabc3d3954f183558431bbca9923118a00ea19fb8b5c09fbdbb4bb45ca0080eef7e42b0c01b");
+    return r !== null && r.signer === PVER_KEY1 && r.digest === "0xd323ac862468fcbd97173055e82393d9c2fe64d8456601818cc090402d6ae93d"; })());
+check("permit verification: prefilled page values verify to the owner",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const sigM = html.match(/id="pver-sig"[^>]*>([^<]*)<\/textarea>/);
+    const r = app.verifyPermitSignature(g("pver-name"), g("pver-version"), g("pver-chain"), g("pver-token"),
+      g("pver-owner"), g("pver-spender"), g("pver-value"), g("pver-nonce"), g("pver-deadline"), sigM && sigM[1].trim());
+    return r !== null && r.signer === PVER_KEY1 && r.signer === app.toChecksumAddress(g("pver-owner")) &&
+      r.digest === "0xf6afb11f4fa52f2a9e27f2c1d0f44d24b71214e7a7b35dbff1b73b8c2d3bf061"; })());
+check("permit verification accepts v in 0/1 form as well as 27/28",
+  app.verifyPermitSignature(...pverArgs, PVER_SIG1.slice(0, -2) + "01")?.signer === PVER_KEY1);
+check("permit signature by a different key recovers to that key, not the owner (the token would reject it)",
+  (() => { const r = app.verifyPermitSignature(...pverArgs,
+      "0xdc197fb3bc3ed039d5424bf9edeab7b2c4efdf09a43e4cd68925280ac299149d01d6df15b080ffbd514e452d2b610fe64c3f113d8f9b6b8ac530e6cb2e0907c81b");
+    return r !== null && r.signer === PVER_KEY155 && r.signer !== PVER_KEY1 && r.digest === "0xf6afb11f4fa52f2a9e27f2c1d0f44d24b71214e7a7b35dbff1b73b8c2d3bf061"; })());
+check("permit signature over a tampered permit recovers a different signer, not the owner",
+  (() => { const r = app.verifyPermitSignature(...pverArgs.slice(0, 6), "1000001", "0", "1893456000", PVER_SIG1);
+    return r !== null && r.signer !== PVER_KEY1; })() &&
+  (() => { const r = app.verifyPermitSignature("USD Coin", "2", "8453", ...pverArgs.slice(3), PVER_SIG1);
+    return r !== null && r.signer !== PVER_KEY1; })());
+check("permit verification rejects malformed signatures and the malleable high-s twin",
+  app.verifyPermitSignature(...pverArgs, "0x1234") === null &&
+  app.verifyPermitSignature(...pverArgs, PVER_SIG1.slice(0, -2)) === null &&
+  app.verifyPermitSignature(...pverArgs, PVER_SIG1 + "00") === null &&
+  app.verifyPermitSignature(...pverArgs, PVER_SIG1.slice(0, -2) + "1d") === null &&
+  app.verifyPermitSignature(...pverArgs, "0x" + "00".repeat(32) + PVER_SIG1.slice(66)) === null &&
+  (() => { const n = BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
+      const sTwin = (n - BigInt("0x" + PVER_SIG1.slice(66, 130))).toString(16).padStart(64, "0");
+      return app.verifyPermitSignature(...pverArgs, PVER_SIG1.slice(0, 66) + sTwin + "1b") === null; })() &&
+  app.verifyPermitSignature(...pverArgs, null) === null);
+check("permit verification rejects bad permit fields (bad token, chain ID 0, fractional value)",
+  app.verifyPermitSignature("USD Coin", "2", "1", "0xA0b8", PVER_KEY1, "0x2222222222222222222222222222222222222222", "1", "0", "1", PVER_SIG1) === null &&
+  app.verifyPermitSignature("USD Coin", "2", "0", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", PVER_KEY1, "0x2222222222222222222222222222222222222222", "1", "0", "1", PVER_SIG1) === null &&
+  app.verifyPermitSignature("USD Coin", "2", "1", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", PVER_KEY1, "0x2222222222222222222222222222222222222222", "1.5", "0", "1", PVER_SIG1) === null);
+check("permit verify tool section present in index.html", html.includes("pver-btn") && html.includes("EIP-2612 permit signature verification"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -2335,6 +2335,42 @@ function verify712MailSignature(domainName, domainVersion, chainIdStr, verifying
   return { digest: mail.digest, domainSeparator: mail.domainSeparator, structHash: mail.structHash, signer };
 }
 
+/* ---------- EIP-2612 permit signature verification ----------
+   The permit digest calculator above computes the hash an owner
+   signs for a gasless ERC-20 approval; this tool performs the
+   check the token's permit() itself performs on the signature
+   that comes back: recompute the EIP-712 digest
+   keccak256(0x1901 ‖ DOMAIN_SEPARATOR ‖ hashStruct(Permit)) for
+   the same token domain and Permit fields and recover the signer
+   with the ecrecover math above. permit() sets the allowance
+   only when that signer IS the owner named in the struct (the
+   other two checks — the nonce being the owner's current permit
+   nonce and the deadline not having passed — are chain state
+   this page does not read). Strict in the same way as the
+   verifiers above: the signature must be exactly 65 bytes and
+   s must be the canonical low-s form, or it is refused rather
+   than half-verified. Verified in the tests against signatures
+   produced by an independent pure-Python Keccak-256 + secp256k1
+   oracle (RFC 6979 signing; its Keccak anchored on the published
+   values the permit oracle anchors on, its address derivation
+   anchored on the published addresses of private key 1 and of
+   the private key EIP-155 prints, and its signer anchored
+   end-to-end by reproducing the hub's existing EIP-712 key-1
+   test signature over the published Ether Mail digest).
+   It verifies a signature locally; it never asks for a key and
+   signs nothing. */
+function verifyPermitSignature(name, version, chainIdStr, token, owner, spender, valueStr, nonceStr, deadlineStr, signature) {
+  const permit = permitDigest(name, version, chainIdStr, token, owner, spender, valueStr, nonceStr, deadlineStr);
+  if (permit === null || typeof signature !== "string") return null;
+  const sigBytes = parseHexBytes(signature, 65);
+  if (sigBytes === null) return null;
+  const r = "0x" + bytesToHex(sigBytes.slice(0, 32));
+  const s = "0x" + bytesToHex(sigBytes.slice(32, 64));
+  const signer = recoverAddress(permit.digest, String(sigBytes[64]), r, s);
+  if (signer === null) return null;
+  return { digest: permit.digest, domainSeparator: permit.domainSeparator, structHash: permit.structHash, signer };
+}
+
 /* ---------- EIP-7702 authorization digest ----------
    Each authorization tuple in a set code transaction is signed
    on its own, over a digest that is NOT the transaction's
@@ -5845,6 +5881,35 @@ if (typeof document !== "undefined") {
       el.textContent = msg;
     });
 
+    /* EIP-2612 permit signature verification */
+    const pverBtn = document.getElementById("pver-btn");
+    if (pverBtn) pverBtn.addEventListener("click", () => {
+      const el = document.getElementById("pver-out");
+      const ownerRaw = document.getElementById("pver-owner").value;
+      const r = verifyPermitSignature(
+        document.getElementById("pver-name").value,
+        document.getElementById("pver-version").value,
+        document.getElementById("pver-chain").value,
+        document.getElementById("pver-token").value,
+        ownerRaw,
+        document.getElementById("pver-spender").value,
+        document.getElementById("pver-value").value,
+        document.getElementById("pver-nonce").value,
+        document.getElementById("pver-deadline").value,
+        document.getElementById("pver-sig").value
+      );
+      if (r === null) {
+        el.textContent = "That does not verify — check the token domain and Permit fields are exactly what was signed (token name and EIP-712 version non-empty, chain ID a whole number of 1 or more, token / owner / spender 20-byte addresses, value, nonce and deadline whole numbers below 2^256) and the signature is the complete 65-byte hex value a wallet returns (0x + 130 hex characters: r, s, then v), with s in the lower half of the curve order.";
+        return;
+      }
+      let msg = `Signer: ${r.signer} · Permit digest signed: ${r.digest} · Domain separator: ${r.domainSeparator} · hashStruct(Permit): ${r.structHash}.`;
+      const exp = inspectAddress(ownerRaw);
+      if (exp.checksum === r.signer) msg += ` ✓ Recovers to the owner — the signer check in the token's permit() passes for this signature${exp.checksumValid === false ? " (but the owner address's own checksum is wrong — compare with care)" : ""}.`;
+      else msg += ` ✗ Does NOT recover to the owner ${exp.checksum} — the token's permit() would reject this signature: it was made by a different account, or over different permit fields or a different token domain.`;
+      msg += " The token also requires the nonce to be the owner's current permit nonce and the deadline to not have passed — both are chain state this page does not read. Verified locally — no key involved, nothing signed, and no chain queried.";
+      el.textContent = msg;
+    });
+
     /* Transaction sender recovery */
     const txsBtn = document.getElementById("txs-btn");
     if (txsBtn) txsBtn.addEventListener("click", () => {
@@ -6870,5 +6935,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

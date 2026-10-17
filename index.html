@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ethereum Builder — build and fix code on Ethereum and its Layer 2s</title>
 <meta name="description" content="Ethereum Builder by @kshot9000: an independent builder hub for Ethereum L1 and its Layer 2s — Base, Unichain, and Robinhood Chain — with exact, browser-local developer tools.">
-<link rel="stylesheet" href="styles.css?v=2">
+<link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
 <header class="hero">
@@ -884,6 +884,15 @@
       <button id="jd-btn" type="button">Analyse jump destinations</button>
       <p id="jd-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Linear disassembler — PUSH-aware bytecode listing</h3>
+      <p>The sibling of the analyser above: where it computes the destination <em>set</em>, this lists every instruction in the bytecode you supply, one line per instruction, walking from pc 0 with the same next-instruction rule — one byte on for every opcode except <code>PUSH1</code>–<code>PUSH32</code> (<code>0x60</code>–<code>0x7f</code>), whose immediate bytes are data and produce <em>no line of their own</em>. That is the step a naive byte-per-line decoder gets wrong: it would print the <code>0x5b</code> inside a <code>PUSH1 0x5b</code> as a JUMPDEST instruction and desynchronise every offset after it. Two honest-shape rules are stated on the listing itself. A linear sweep is <em>not</em> an execution trace: it does not follow control flow, so instructions after a <code>STOP</code>, <code>RETURN</code> or <code>JUMP</code> are listed whether or not any execution reaches them, in address order rather than visit order. And a byte with no assigned opcode is listed as <code>UNASSIGNED</code> with its byte shown — executing one is an invalid-instruction exceptional halt, but it is not the assigned <code>INVALID</code> opcode (<code>0xfe</code>), and naming it INVALID would misname both. Names follow the opcode assignment as carried through Cancun and Prague, plus <code>CLZ</code> (<code>0x1e</code>, EIP-7939) which the hub already prices; <code>0x44</code> is listed by its current name <code>PREVRANDAO</code> (it was DIFFICULTY before the Merge). A push at the very end of the code whose immediates run out is listed with the bytes present, marked truncated, and valued with the missing low-order bytes read as zero — the right-padding rule the push calculator above establishes, so a truncated <code>PUSH2</code> carrying only <code>0xff</code> pushes 65280. The prefilled code is the analyser's trap in seven bytes: it disassembles to exactly four lines — <code>PUSH1 0x5b</code>, <code>JUMPDEST</code>, <code>PUSH2 0x5b5b</code>, <code>JUMPDEST</code> — and of its five <code>0x5b</code> bytes only the two at offsets 2 and 6 appear as instructions. Honest scope: names only — no gas, stack or memory effect is computed; the bytecode is code <em>you</em> supply, at most 24,576 bytes (the EIP-170 limit on deployed code), not a contract this page reads from any chain. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="dis-code">Bytecode (hex, 0x prefix optional — empty is empty code)</label>
+      <input id="dis-code" type="text" spellcheck="false" value="0x605b5b615b5b5b">
+      <button id="dis-btn" type="button">Disassemble</button>
+      <p id="dis-out" class="out out-list" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1220,6 +1229,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=76"></script>
+<script src="app.js?v=77"></script>
 </body>
 </html>

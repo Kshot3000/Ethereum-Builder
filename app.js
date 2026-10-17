@@ -5208,6 +5208,113 @@ function jumpdestCalc(codeStr, destStr) {
   };
 }
 
+/* Linear disassembly -- the EVM opcode assignment (Yellow
+   Paper appendix H as carried through Cancun/Prague, plus
+   CLZ 0x1e from EIP-7939, which the hub already prices).
+   disasmCalc(code) lists one line per instruction the same
+   next-instruction walk the JUMPDEST analyser uses lands on:
+   advance 1 byte per instruction except PUSH1..PUSH32
+   (0x60..0x7f), whose 1 + n bytes are opcode plus immediate
+   data -- the data bytes produce NO line of their own, so
+   the prefilled 0x605b5b615b5b5b (seven bytes, five of them
+   0x5b) disassembles to exactly four lines and only the two
+   boundary 0x5b bytes appear as JUMPDEST.
+   Two honest-shape rules. First, a linear sweep is NOT an
+   execution trace: it does not follow control flow, so
+   instructions after a STOP, RETURN or JUMP are still
+   listed -- they are instructions in the code whether or
+   not any execution reaches them, and code a JUMP skips to
+   is listed in address order, not visit order. Second,
+   bytes with no assigned opcode are listed as UNASSIGNED
+   with their byte shown -- executing one is an invalid-
+   instruction exceptional halt, but it is not the assigned
+   INVALID opcode (0xfe), and conflating the two would
+   misname both.
+   A truncated PUSHn lists the immediate bytes present and
+   its pushed value pads the missing LOW-order bytes with
+   zero (right-padding -- the push calculator's rule), so
+   a truncated PUSH2 carrying only 0xff is listed as
+   pushing 65280. PUSH0 has no immediate and no value
+   suffix. Code is hex YOU supply, capped at 24,576 bytes
+   (EIP-170) like the analyser above; odd-length or non-hex
+   input is refused. Names only -- no gas, stack or memory
+   effect is computed, and nothing is executed. */
+const DISASM_NAMES = {
+  0x00: "STOP", 0x01: "ADD", 0x02: "MUL", 0x03: "SUB", 0x04: "DIV",
+  0x05: "SDIV", 0x06: "MOD", 0x07: "SMOD", 0x08: "ADDMOD",
+  0x09: "MULMOD", 0x0a: "EXP", 0x0b: "SIGNEXTEND",
+  0x10: "LT", 0x11: "GT", 0x12: "SLT", 0x13: "SGT", 0x14: "EQ",
+  0x15: "ISZERO", 0x16: "AND", 0x17: "OR", 0x18: "XOR", 0x19: "NOT",
+  0x1a: "BYTE", 0x1b: "SHL", 0x1c: "SHR", 0x1d: "SAR", 0x1e: "CLZ",
+  0x20: "SHA3",
+  0x30: "ADDRESS", 0x31: "BALANCE", 0x32: "ORIGIN", 0x33: "CALLER",
+  0x34: "CALLVALUE", 0x35: "CALLDATALOAD", 0x36: "CALLDATASIZE",
+  0x37: "CALLDATACOPY", 0x38: "CODESIZE", 0x39: "CODECOPY",
+  0x3a: "GASPRICE", 0x3b: "EXTCODESIZE", 0x3c: "EXTCODECOPY",
+  0x3d: "RETURNDATASIZE", 0x3e: "RETURNDATACOPY", 0x3f: "EXTCODEHASH",
+  0x40: "BLOCKHASH", 0x41: "COINBASE", 0x42: "TIMESTAMP",
+  0x43: "NUMBER", 0x44: "PREVRANDAO", 0x45: "GASLIMIT",
+  0x46: "CHAINID", 0x47: "SELFBALANCE", 0x48: "BASEFEE",
+  0x49: "BLOBHASH", 0x4a: "BLOBBASEFEE",
+  0x50: "POP", 0x51: "MLOAD", 0x52: "MSTORE", 0x53: "MSTORE8",
+  0x54: "SLOAD", 0x55: "SSTORE", 0x56: "JUMP", 0x57: "JUMPI",
+  0x58: "PC", 0x59: "MSIZE", 0x5a: "GAS", 0x5b: "JUMPDEST",
+  0x5c: "TLOAD", 0x5d: "TSTORE", 0x5e: "MCOPY", 0x5f: "PUSH0",
+  0xa0: "LOG0", 0xa1: "LOG1", 0xa2: "LOG2", 0xa3: "LOG3", 0xa4: "LOG4",
+  0xf0: "CREATE", 0xf1: "CALL", 0xf2: "CALLCODE", 0xf3: "RETURN",
+  0xf4: "DELEGATECALL", 0xf5: "CREATE2", 0xfa: "STATICCALL",
+  0xfd: "REVERT", 0xfe: "INVALID", 0xff: "SELFDESTRUCT"
+};
+for (let n = 1; n <= 32; n++) DISASM_NAMES[0x5f + n] = "PUSH" + n;
+for (let n = 1; n <= 16; n++) { DISASM_NAMES[0x7f + n] = "DUP" + n; DISASM_NAMES[0x8f + n] = "SWAP" + n; }
+function disasmCalc(codeStr) {
+  if (typeof codeStr !== "string") return null;
+  let h = codeStr.trim();
+  if (/^0[xX]/.test(h)) h = h.slice(2);
+  if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+  if (h.length / 2 > JUMPDEST_MAX_BYTES) return null;
+  const bytes = [];
+  for (let i = 0; i < h.length; i += 2) bytes.push(parseInt(h.slice(i, i + 2), 16));
+  const listing = [];
+  let pc = 0, truncated = false, unassigned = 0, jumpdests = 0;
+  while (pc < bytes.length) {
+    const op = bytes[pc];
+    if (op >= 0x60 && op <= 0x7f) {
+      const width = op - 0x5f;
+      const present = bytes.slice(pc + 1, pc + 1 + width);
+      const immHex = present.map(b => b.toString(16).padStart(2, "0")).join("");
+      let value = 0n;
+      for (const b of present) value = value * 256n + BigInt(b);
+      value = value * (256n ** BigInt(width - present.length));
+      if (present.length < width) {
+        truncated = true;
+        listing.push(`${pc}: PUSH${width} 0x${immHex} [truncated: ${present.length} of ${width} immediate bytes present; missing low-order bytes read as zero] (= ${value.toString()})`);
+      } else {
+        listing.push(`${pc}: PUSH${width} 0x${immHex} (= ${value.toString()})`);
+      }
+      pc += 1 + width;
+    } else {
+      const name = DISASM_NAMES[op];
+      if (name === undefined) {
+        unassigned++;
+        listing.push(`${pc}: UNASSIGNED (0x${op.toString(16).padStart(2, "0")})`);
+      } else {
+        if (op === 0x5b) jumpdests++;
+        listing.push(`${pc}: ${name}`);
+      }
+      pc += 1;
+    }
+  }
+  return {
+    codeBytes: String(bytes.length),
+    instructions: String(listing.length),
+    listing,
+    jumpdestCount: String(jumpdests),
+    unassignedCount: String(unassigned),
+    truncatedPush: truncated ? "true" : "false"
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -6655,6 +6762,27 @@ if (typeof document !== "undefined") {
       el.textContent = `Code: ${r.codeBytes} byte(s), ${r.instructions} instruction(s) on the walk from pc 0. Valid jump destinations (${r.jumpdestCount}): ${fmt(r.jumpdests)}. Bytes that are 0x5b but sit inside PUSH data and are NOT destinations (${r.fakeCount}): ${fmt(r.fakes)}.${trunc}${verdict} JUMPDEST itself costs 1 gas when execution reaches it. Computed locally from the code you gave — nothing is executed and no chain is queried.`;
     });
 
+    /* Linear disassembler */
+    const disBtn = document.getElementById("dis-btn");
+    if (disBtn) disBtn.addEventListener("click", () => {
+      const r = disasmCalc(document.getElementById("dis-code").value);
+      const el = document.getElementById("dis-out");
+      if (r === null) {
+        el.textContent = "Check the input: enter the bytecode as hex (0x prefix optional, an even number of hex digits, at most 24,576 bytes — the EIP-170 deployed-code limit; empty is empty code).";
+        return;
+      }
+      const trunc = r.truncatedPush === "true"
+        ? " The code ends inside a PUSH, whose listing line shows the bytes present and the value the push would read."
+        : "";
+      const un = r.unassignedCount !== "0"
+        ? ` ${r.unassignedCount} byte(s) have no assigned opcode and are listed as UNASSIGNED — executing one is an invalid-instruction halt, distinct from the assigned INVALID opcode (0xfe).`
+        : "";
+      el.textContent = (r.listing.length === 0
+        ? "Empty code: no instructions."
+        : r.listing.join("\n")) +
+        `\n— ${r.codeBytes} byte(s), ${r.instructions} instruction(s) on the linear walk from pc 0, ${r.jumpdestCount} of them JUMPDESTs.${trunc}${un} This is a linear sweep, not an execution trace: instructions after a STOP, RETURN or JUMP are listed whether or not any execution reaches them. Computed locally from the code you gave — nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -6668,5 +6796,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -927,6 +927,25 @@
       <button id="cdat-btn" type="button">Apply calldata opcode</button>
       <p id="cdat-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Returndata opcode calculator — RETURNDATASIZE / RETURNDATACOPY</h3>
+      <p>The last call's output, both Byzantium (<a href="https://eips.ethereum.org/EIPS/eip-211">EIP-211</a>): <code>RETURNDATASIZE</code> (<code>0x3d</code>) pushes the length of the return data buffer — the bytes the most recent <code>CALL</code>-family opcode returned, or reverted with — and <code>RETURNDATACOPY</code> (<code>0x3e</code>) copies a range of it into memory. Before any call the buffer is empty, so the size pushes 0. The one trap is the copy's bounds rule: this is the <em>one</em> copy that does <em>not</em> zero-pad its source. Where <code>CALLDATACOPY</code> and <code>CODECOPY</code> read past their source as zeros, a <code>RETURNDATACOPY</code> whose offset + size runs past the buffer's end — an offset + size that overflows the word counts too, exactly as go-ethereum's <code>opReturnDataCopy</code> checks it — <em>halts exceptionally</em>: the frame's remaining gas is consumed, nothing is copied, and memory is unchanged. The check is unconditional, so an exact fit succeeds — offset + size equal to the length, including a zero-size copy at offset equal to the length — while a zero-size copy one byte further halts; it does not quietly touch nothing the way the other copies' zero-size cases do. Gas splits inside the family: <code>RETURNDATASIZE</code> is a flat 2 (the base tier), and an in-bounds copy pays the flat 3 <em>plus</em> 3 per word copied (the size rounded up to whole words) <em>plus</em> the memory-expansion increase for growing the destination, on the cost curve the memory-expansion tool prices — the same total the hub's copy-gas tool quotes for <code>RETURNDATACOPY</code>; a halted copy has no finite gas figure, because the halt consumes the frame. The prefilled copy is the common shape: <code>RETURNDATACOPY</code> of the full 32-byte buffer a call returned — one word holding 1000000 — to memory offset 0 copies exactly that word at 9 gas. Honest scope: the return data and memory are bytes <em>you</em> supply, not a call this page makes or reads; the supplied return data, the supplied memory and a non-empty in-bounds copy's destination end are each capped at 4,096 bytes so the byte strings stay displayable — display caps, stated as such — while the offsets themselves are any 256-bit word, because no allocation depends on them. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="rdat-op">Opcode</label>
+      <select id="rdat-op"><option value="returndatasize">RETURNDATASIZE (0x3d) — pushes the return data length in bytes</option><option value="returndatacopy" selected>RETURNDATACOPY (0x3e) — copies return data bytes into memory; halts if the range runs past the end</option></select>
+      <label for="rdat-offset">Return data offset (one 256-bit value, decimal or 0x hex — a BYTE offset; ignored for RETURNDATASIZE)</label>
+      <input id="rdat-offset" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="rdat-dest">Memory destination offset (one 256-bit value, decimal or 0x hex — RETURNDATACOPY only, ignored otherwise)</label>
+      <input id="rdat-dest" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="rdat-size">Copy size in bytes (one 256-bit value, decimal or 0x hex — RETURNDATACOPY only, ignored otherwise)</label>
+      <input id="rdat-size" type="text" inputmode="numeric" spellcheck="false" value="32">
+      <label for="rdat-data">Return data (hex bytes, 0x prefix optional, an even number of hex digits, at most 4,096 bytes — empty is the buffer before any call; a copy past its end halts, it is never zero-padded)</label>
+      <input id="rdat-data" type="text" spellcheck="false" value="0x00000000000000000000000000000000000000000000000000000000000f4240">
+      <label for="rdat-memory">Memory before (hex bytes, 0x prefix optional, an even number of hex digits, at most 4,096 bytes — empty is empty memory; only an in-bounds RETURNDATACOPY changes it)</label>
+      <input id="rdat-memory" type="text" spellcheck="false" value="">
+      <button id="rdat-btn" type="button">Apply returndata opcode</button>
+      <p id="rdat-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1315,6 +1334,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=81"></script>
+<script src="app.js?v=82"></script>
 </body>
 </html>

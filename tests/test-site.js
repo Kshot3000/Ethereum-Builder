@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=81"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=82"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -4469,6 +4469,87 @@ check("calldata refuses a bad opcode, a malformed offset, odd or non-hex calldat
   app.cdCalc("calldataload", "0", "", "", null, "") === null &&
   app.cdCalc(null, "0", "", "", CDAT_CD, "") === null);
 check("calldata tool section present in index.html", html.includes("cdat-btn") && html.includes("Calldata opcode calculator"));
+/* RETURNDATASIZE / RETURNDATACOPY — expected values from the
+   independent pure-Python oracle (oracle-returndata-op.py),
+   that keeps return data and memory as plain bytearrays:
+   SIZE pushes the byte length; COPY copies exact bytes in
+   bounds and HALTS (no padding, memory unchanged, no gas
+   figure) when offset + size runs past the end, overflow
+   included. Anchored in-script on hand values (the full
+   32-byte word copy at 9 gas, the 0f4240 slice at offset 29,
+   the exact-fit zero-size copy succeeding while one byte
+   further halts, the gap-filled copy at destination 64)
+   before generating. */
+const RDAT_RD = "0x00000000000000000000000000000000000000000000000000000000000f4240";
+check("returndata controls labelled in index.html",
+  ["rdat-op", "rdat-offset", "rdat-dest", "rdat-size", "rdat-data", "rdat-memory"].every(id => html.includes(`for="${id}"`)));
+check("returndata matches the Python oracle",
+  (() => { const V = [
+    [["returndatacopy", "0", "0", "32", "0x00000000000000000000000000000000000000000000000000000000000f4240", ""], "returndatacopy|0x3e|32|0|0|32||0x00000000000000000000000000000000000000000000000000000000000f4240|0x00000000000000000000000000000000000000000000000000000000000f4240|32|0|32|3|3|9|false"],
+    [["returndatacopy", "29", "0", "3", "0x00000000000000000000000000000000000000000000000000000000000f4240", ""], "returndatacopy|0x3e|32|29|0|3||0x0f4240|0x0f4240|3|0|32|3|3|9|false"],
+    [["returndatacopy", "0x1d", "0", "3", "0x00000000000000000000000000000000000000000000000000000000000f4240", ""], "returndatacopy|0x3e|32|29|0|3||0x0f4240|0x0f4240|3|0|32|3|3|9|false"],
+    [["returndatasize", "garbage", "garbage", "garbage", "0x00000000000000000000000000000000000000000000000000000000000f4240", ""], "returndatasize|0x3d|32||||32||0x|0|0|0|||2|false"],
+    [["returndatasize", "", "", "", "", ""], "returndatasize|0x3d|0||||0||0x|0|0|0|||2|false"],
+    [["returndatasize", "", "", "", "0xdeadbeef", "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"], "returndatasize|0x3d|4||||4||0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab|64|64|64|||2|false"],
+    [["returndatacopy", "32", "0", "0", "0x00000000000000000000000000000000000000000000000000000000000f4240", ""], "returndatacopy|0x3e|32|32|0|0||0x|0x|0|0|0|0|0|3|false"],
+    [["returndatacopy", "33", "0", "0", "0x00000000000000000000000000000000000000000000000000000000000f4240", ""], "returndatacopy|0x3e|32|33|0|0|||0x|0|0|0||||true"],
+    [["returndatacopy", "32", "0", "1", "0x00000000000000000000000000000000000000000000000000000000000f4240", ""], "returndatacopy|0x3e|32|32|0|1|||0x|0|0|0||||true"],
+    [["returndatacopy", "0", "0", "33", "0x00000000000000000000000000000000000000000000000000000000000f4240", ""], "returndatacopy|0x3e|32|0|0|33|||0x|0|0|0||||true"],
+    [["returndatacopy", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0", "2", "0x00000000000000000000000000000000000000000000000000000000000f4240", ""], "returndatacopy|0x3e|32|115792089237316195423570985008687907853269984665640564039457584007913129639935|0|2|||0x|0|0|0||||true"],
+    [["returndatacopy", "31", "0", "1", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"], "returndatacopy|0x3e|32|31|0|1||0x40|0x40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd|32|32|32|3|0|6|false"],
+    [["returndatacopy", "32", "0", "1", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"], "returndatacopy|0x3e|32|32|0|1|||0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd|32|32|32||||true"],
+    [["returndatacopy", "0", "64", "4", "0xdeadbeef", ""], "returndatacopy|0x3e|4|0|64|4||0xdeadbeef|0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000deadbeef|68|0|96|3|9|15|false"],
+    [["returndatacopy", "0", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "0x00000000000000000000000000000000000000000000000000000000000f4240", ""], "returndatacopy|0x3e|32|0|57896044618658097711785492504343953926634992332820282019728792003956564819968|0||0x|0x|0|0|0|0|0|3|false"],
+    [["returndatacopy", "0", "0", "0", "", ""], "returndatacopy|0x3e|0|0|0|0||0x|0x|0|0|0|0|0|3|false"],
+    [["returndatacopy", "0", "0", "1", "", ""], "returndatacopy|0x3e|0|0|0|1|||0x|0|0|0||||true"],
+    [["returndatacopy", "0", "1", "2", "0x4240", "0xffff"], "returndatacopy|0x3e|2|0|1|2||0x4240|0xff4240|3|32|32|3|0|6|false"],
+    [["returndatacopy", "1", "0", "3", "0xdeadbeef", ""], "returndatacopy|0x3e|4|1|0|3||0xadbeef|0xadbeef|3|0|32|3|3|9|false"],
+    [["returndatacopy", "0", "0", "4", "0xdeadbeef", "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"], "returndatacopy|0x3e|4|0|0|4||0xdeadbeef|0xdeadbeefabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab|64|64|64|3|0|6|false"]
+  ]; return V.every(([inp, exp]) => { const r = app.rdCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.returndataBytes, r.offset, r.destOffset, r.copySize, r.result, r.copied, r.memoryAfter, r.memoryAfterBytes, r.msizeBefore, r.msizeAfter, r.wordGas, r.expansionGas, r.totalGas, r.halted].join("|") === exp; }); })());
+check("returndata: prefilled page values \u2014 RETURNDATACOPY of the full 32-byte buffer copies the 1000000 word at 9 gas",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const sel = html.match(/id="rdat-op"[^>]*>([\s\S]*?)<\/select>/);
+    const r = app.rdCalc("returndatacopy", g("rdat-offset"), g("rdat-dest"), g("rdat-size"), g("rdat-data"), g("rdat-memory"));
+    return sel && sel[1].includes('value="returndatacopy" selected') && r !== null &&
+      r.copied === RDAT_RD && r.halted === "false" && r.totalGas === "9"; })());
+check("returndata: RETURNDATASIZE pushes the byte length at a flat 2 gas and reads no numeric argument",
+  app.rdCalc("returndatasize", "garbage", "garbage", "garbage", RDAT_RD, "").result === "32" &&
+  app.rdCalc("returndatasize", "", "", "", "", "").result === "0" &&
+  app.rdCalc("returndatasize", "", "", "", RDAT_RD, "").totalGas === "2");
+check("returndata: an out-of-bounds copy HALTS \u2014 no padding, memory unchanged, no gas figure",
+  (() => { const m = "0x" + "cd".repeat(32);
+    const r = app.rdCalc("returndatacopy", "32", "0", "1", RDAT_RD, m);
+    return r !== null && r.halted === "true" && r.copied === "" && r.memoryAfter === m && r.totalGas === ""; })() &&
+  app.rdCalc("returndatacopy", "0", "0", "33", RDAT_RD, "").halted === "true" &&
+  app.rdCalc("returndatacopy", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0", "2", RDAT_RD, "").halted === "true");
+check("returndata: the bounds check is unconditional \u2014 an exact-fit zero-size copy succeeds, one byte further halts",
+  app.rdCalc("returndatacopy", "32", "0", "0", RDAT_RD, "").halted === "false" &&
+  app.rdCalc("returndatacopy", "33", "0", "0", RDAT_RD, "").halted === "true");
+check("returndata: the padding contrast \u2014 CALLDATACOPY zero-pads the same overrun that RETURNDATACOPY halts on",
+  app.cdCalc("calldatacopy", "0", "0", "33", RDAT_RD, "").copied === RDAT_RD + "00" &&
+  app.rdCalc("returndatacopy", "0", "0", "33", RDAT_RD, "").halted === "true" &&
+  app.rdCalc("returndatacopy", "0", "0", "1", "", "").halted === "true");
+check("returndata: in-bounds copy gas agrees with the hub's copy-gas tool exactly",
+  [["0", "32", ""], ["64", "4", ""], ["0", "32", "0x" + "ab".repeat(64)]].every(([d, s, m]) =>
+    app.rdCalc("returndatacopy", "0", d, s, s === "4" ? "0xdeadbeef" : RDAT_RD, m).totalGas ===
+    app.copyGasCalc("RETURNDATACOPY", d, s, String(m === "" ? 0 : (m.length - 2) / 2)).totalGas));
+check("returndata: a zero-size in-bounds copy touches no memory whatever its destination, at the flat 3 alone",
+  (() => { const r = app.rdCalc("returndatacopy", "0", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", RDAT_RD, "");
+    return r !== null && r.halted === "false" && r.memoryAfter === "0x" && r.totalGas === "3" && r.copied === "0x"; })());
+check("returndata refuses a bad opcode, a malformed offset, odd or non-hex return data or memory, oversize inputs, and an in-bounds copy ending past 4,096 bytes",
+  app.rdCalc("returndatacopy2", "0", "0", "0", RDAT_RD, "") === null &&
+  app.rdCalc("returndatacopy", "-1", "0", "0", RDAT_RD, "") === null &&
+  app.rdCalc("returndatacopy", "0", "0", "0", "0x0", "") === null &&
+  app.rdCalc("returndatacopy", "0", "0", "0", "0xzz", "") === null &&
+  app.rdCalc("returndatacopy", "0", "0", "0", RDAT_RD, "0x0") === null &&
+  app.rdCalc("returndatasize", "", "", "", "0x" + "00".repeat(4097), "") === null &&
+  app.rdCalc("returndatacopy", "0", "4096", "1", RDAT_RD, "") === null &&
+  app.rdCalc("returndatacopy", "0", "4064", "32", RDAT_RD, "") !== null &&
+  app.rdCalc("returndatacopy", "0", "0", "0", null, "") === null &&
+  app.rdCalc(null, "0", "0", "0", RDAT_RD, "") === null);
+check("returndata tool section present in index.html", html.includes("rdat-btn") && html.includes("Returndata opcode calculator"));
+
 
 
 console.log(`\n${total - failures}/${total} checks passed`);

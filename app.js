@@ -5621,6 +5621,114 @@ function cdCalc(opStr, offsetStr, destStr, sizeStr, calldataStr, memoryStr) {
   };
 }
 
+/* Returndata opcodes RETURNDATASIZE (0x3d) / RETURNDATACOPY
+   (0x3e), both Byzantium (EIP-211) — what the frame's return
+   data buffer, the bytes the most recent CALL-family opcode
+   returned (or reverted with), yields. Before any call the
+   buffer is empty. The family's one trap is the copy's bounds
+   rule: RETURNDATACOPY is the ONE copy that does NOT zero-pad
+   its source — if offset + size runs past the buffer's end
+   (offset + size overflowing the word counts too, exactly as
+   go-ethereum's opReturnDataCopy checks end = offset + size
+   against the buffer length), the opcode HALTS exceptionally:
+   the frame's remaining gas is consumed, nothing is copied
+   and memory is unchanged, which this calculator reports as
+   halted with no gas figure rather than inventing one. The
+   check is unconditional — an exact fit (offset + size equal
+   to the length, including a zero-size copy at offset equal
+   to the length) succeeds, and a zero-size copy one byte
+   further HALTS, it does not quietly touch nothing the way
+   the other copies' zero-size cases do. Borrowing the
+   zero-padding of CALLDATACOPY / CODECOPY here is exactly
+   the bug Solidity's generated returndata checks exist to
+   avoid. Gas: SIZE is a flat 2 (the Base tier), and a copy
+   that stays in bounds pays the flat 3 plus 3 per word copied
+   (the size rounded up to whole words) plus the
+   memory-expansion increase on the hub's own cost curve for
+   growing the destination — the same total the hub's
+   copy-gas tool quotes for RETURNDATACOPY. Inputs are
+   refused rather than wrapped: the offset, destination and
+   size are single 256-bit words in decimal or 0x hex via
+   parseWord256 (for SIZE none of the three is read); the
+   return data and memory hex must be even-length; and the
+   supplied return data, the supplied memory and a non-empty
+   in-bounds copy's destination end are each capped at 4,096
+   bytes so the byte strings stay displayable — display caps,
+   stated as such. An out-of-bounds copy is reported halted
+   before any destination cap is consulted, because no memory
+   is materialised for it. */
+const RDAT_MAX_BYTES = 4096;
+const RDAT_BYTES = { returndatasize: "0x3d", returndatacopy: "0x3e" };
+function rdCalc(opStr, offsetStr, destStr, sizeStr, returndataStr, memoryStr) {
+  if (typeof opStr !== "string" || typeof returndataStr !== "string" || typeof memoryStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(RDAT_BYTES, op)) return null;
+  const parseBytes = s => {
+    let h = s.trim();
+    if (/^0[xX]/.test(h)) h = h.slice(2);
+    if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+    if (h.length / 2 > RDAT_MAX_BYTES) return null;
+    const arr = [];
+    for (let i = 0; i < h.length; i += 2) arr.push(parseInt(h.slice(i, i + 2), 16));
+    return arr;
+  };
+  const rd = parseBytes(returndataStr);
+  const before = parseBytes(memoryStr);
+  if (rd === null || before === null) return null;
+  const toHex = arr => "0x" + arr.map(b => b.toString(16).padStart(2, "0")).join("");
+  const wordHex = v => v === null ? "" : "0x" + v.toString(16).padStart(64, "0");
+  const wordsBefore = BigInt(Math.ceil(before.length / 32));
+  if (op === "returndatasize") {
+    const result = BigInt(rd.length);
+    return {
+      opcode: op, opcodeByte: RDAT_BYTES[op],
+      returndataBytes: String(rd.length),
+      offset: "", destOffset: "", copySize: "",
+      result: result.toString(), resultHex: wordHex(result),
+      copied: "",
+      memoryBefore: toHex(before), memoryAfter: toHex(before),
+      memoryBeforeBytes: String(before.length), memoryAfterBytes: String(before.length),
+      msizeBefore: (wordsBefore * 32n).toString(), msizeAfter: (wordsBefore * 32n).toString(),
+      wordGas: "", expansionGas: "", totalGas: "2", halted: "false"
+    };
+  }
+  const offset = parseWord256(offsetStr);
+  const dest = parseWord256(destStr);
+  const size = parseWord256(sizeStr);
+  if (offset === null || dest === null || size === null) return null;
+  const base = {
+    opcode: op, opcodeByte: RDAT_BYTES[op],
+    returndataBytes: String(rd.length),
+    offset: offset.toString(), destOffset: dest.toString(), copySize: size.toString(),
+    result: "", resultHex: "",
+    memoryBefore: toHex(before),
+    memoryBeforeBytes: String(before.length),
+    msizeBefore: (wordsBefore * 32n).toString()
+  };
+  if (offset + size > BigInt(rd.length)) {
+    return { ...base, copied: "", memoryAfter: toHex(before),
+      memoryAfterBytes: String(before.length), msizeAfter: (wordsBefore * 32n).toString(),
+      wordGas: "", expansionGas: "", totalGas: "", halted: "true" };
+  }
+  if (size > 0n && (dest > BigInt(RDAT_MAX_BYTES) || dest + size > BigInt(RDAT_MAX_BYTES))) return null;
+  const sz = Number(size), off = Number(offset);
+  const copied = rd.slice(off, off + sz);
+  const after = before.slice();
+  if (sz > 0) {
+    const d = Number(dest), end = d + sz;
+    while (after.length < end) after.push(0);
+    for (let i = 0; i < sz; i++) after[d + i] = copied[i];
+  }
+  const touchedEnd = size > 0n ? Number(dest) + sz : before.length;
+  const wordsAfter = BigInt(Math.ceil(Math.max(before.length, touchedEnd) / 32));
+  const expansion = wordsAfter > wordsBefore ? memTotalCost(wordsAfter) - memTotalCost(wordsBefore) : 0n;
+  const wordGas = 3n * BigInt(Math.ceil(sz / 32));
+  return { ...base, copied: toHex(copied), memoryAfter: toHex(after),
+    memoryAfterBytes: String(after.length), msizeAfter: (wordsAfter * 32n).toString(),
+    wordGas: wordGas.toString(), expansionGas: expansion.toString(),
+    totalGas: (3n + wordGas + expansion).toString(), halted: "false" };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -7192,6 +7300,32 @@ if (typeof document !== "undefined") {
       el.textContent = `CALLDATACOPY (${r.opcodeByte}): copies ${r.copySize} byte(s) from calldata offset ${r.offset} to memory offset ${r.destOffset} — bytes past the end of the ${r.calldataBytes}-byte calldata copy as zero, and a gap in memory is zero-filled. Copied: ${r.copied}. Memory after (${r.memoryAfterBytes} byte(s)): ${r.memoryAfter}. MSIZE is ${r.msizeAfter}. Gas: ${r.totalGas} — the flat 3 plus ${r.wordGas} for the word(s) copied plus ${r.expansionGas} of memory expansion. Computed locally from the calldata and memory you gave — nothing is executed and no chain is queried.`;
     });
 
+    /* Returndata opcodes (RETURNDATASIZE / RETURNDATACOPY) */
+    const rdatBtn = document.getElementById("rdat-btn");
+    if (rdatBtn) rdatBtn.addEventListener("click", () => {
+      const r = rdCalc(
+        document.getElementById("rdat-op").value,
+        document.getElementById("rdat-offset").value,
+        document.getElementById("rdat-dest").value,
+        document.getElementById("rdat-size").value,
+        document.getElementById("rdat-data").value,
+        document.getElementById("rdat-memory").value);
+      const el = document.getElementById("rdat-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter the offset and (for RETURNDATACOPY) the destination and size each as one 256-bit word, decimal or 0x hex, and the return data and the memory before as hex bytes (0x prefix optional, an even number of hex digits, at most 4,096 bytes each; empty is an empty return data buffer). For an in-bounds RETURNDATACOPY the destination end must also stay within 4,096 bytes.";
+        return;
+      }
+      if (r.opcode === "returndatasize") {
+        el.textContent = `RETURNDATASIZE (${r.opcodeByte}): pushes ${r.result} — the length in bytes of the return data you supplied (the buffer the most recent call left; empty before any call). Gas: 2 — the flat Base tier. No memory is touched (memory unchanged at ${r.memoryAfterBytes} byte(s)). Computed locally from the return data you gave — nothing is executed and no chain is queried.`;
+        return;
+      }
+      if (r.halted === "true") {
+        el.textContent = `RETURNDATACOPY (${r.opcodeByte}): copying ${r.copySize} byte(s) from return data offset ${r.offset} runs past the end of the ${r.returndataBytes}-byte return data — an exceptional halt. Unlike CALLDATACOPY and CODECOPY this copy does NOT zero-pad its source: the frame's remaining gas is consumed, nothing is copied, and memory is unchanged (${r.memoryAfterBytes} byte(s)): ${r.memoryAfter}. Computed locally from the return data you gave — nothing is executed and no chain is queried.`;
+        return;
+      }
+      el.textContent = `RETURNDATACOPY (${r.opcodeByte}): copies ${r.copySize} byte(s) from return data offset ${r.offset} to memory offset ${r.destOffset} — the range is inside the ${r.returndataBytes}-byte return data, so every byte copied is a real returned byte (this copy never zero-pads), and a gap in memory is zero-filled. Copied: ${r.copied}. Memory after (${r.memoryAfterBytes} byte(s)): ${r.memoryAfter}. MSIZE is ${r.msizeAfter}. Gas: ${r.totalGas} — the flat 3 plus ${r.wordGas} for the word(s) copied plus ${r.expansionGas} of memory expansion. Computed locally from the return data and memory you gave — nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -7205,5 +7339,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -6580,6 +6580,206 @@ function tstorageCalc(opStr, slotStr, currentStr, newStr, gasStr) {
     halted: "false", haltReason: "", outcome: "store" };
 }
 
+/* Call opcode calculator -- CALL (0xf1) / CALLCODE (0xf2),
+   Frontier; DELEGATECALL (0xf4), Homestead (EIP-7);
+   STATICCALL (0xfa), Byzantium (EIP-214) -- the semantics
+   sibling of the hub's two CALL-family GAS tools, whose base
+   cost, forwarding cap, stipend and callee gas this function
+   takes from callGasCalc / otherCallGasCalc exactly (tests
+   cross-check the fields): EIP-2929 access 2,600 cold / 100
+   warm, +9,000 when CALL or CALLCODE carries value, +25,000
+   more when a value-carrying CALL funds an empty target, and
+   memory expansion for the input and output regions together.
+   The child frame's execution is the one thing not modelled:
+   its outcome is a value you SUPPLY -- whether it has code at
+   all, whether it succeeds, reverts or halts, how much of its
+   allowance it uses, and what it returns -- and this function
+   applies everything around that execution. If the frame's
+   gas is below the base cost the CALLER halts exceptionally
+   (no word pushed, no gas figure, in the hub's halt shape).
+   Three failures are SOFT instead -- the opcode pushes 0,
+   forwards nothing, and only the base cost is gone, checked
+   in the client's order: the depth is at the 1,024 limit; a
+   value-carrying CALL or CALLCODE inside a static frame; the
+   caller's balance is below the value. A target with no code
+   succeeds immediately at that point (a CALL's value still
+   moves; the outcome, gas-used and return-data fields are
+   never read on that path), forwarding nothing net. That is
+   also the only path the 25,000 new-account charge can ever
+   coincide with: an empty account has no code by definition,
+   so an input claiming both an empty target and target code
+   is refused as inconsistent. An
+   executed child that succeeds or reverts returns its unused
+   allowance -- INCLUDING any unused stipend, which the caller
+   never paid, so a value call whose child uses nothing nets
+   the caller 2,300 less than its base cost. REVERT still sets
+   the returndata buffer to the child's full return and still
+   copies min(return length, output size) bytes into the
+   output region, but rolls the value transfer back; a child
+   that halts exceptionally consumes its whole allowance
+   (forwarded plus stipend), sets an EMPTY returndata buffer
+   and copies nothing, and its gas-used and return-data fields
+   are never read. The contexts are the family's other trap:
+   CALL runs the target's code at the target with sender =
+   caller and the call's value; CALLCODE runs the target's
+   code AT the caller (sender = caller, the value credited to
+   the caller's own account, so no balance ever moves, no
+   new-account charge can apply, and the balance check is
+   against the caller's own balance); DELEGATECALL runs the
+   target's code at the caller keeping the INHERITED sender
+   and value -- its own value field does not exist and is
+   never read -- and is allowed inside a static frame;
+   STATICCALL runs the target's code at the target with the
+   value forced to 0 in a static frame, so its value field is
+   never read either. A self-call (caller = target) nets to
+   zero. Honest scope: the callee's own execution, storage and
+   logs are not modelled; precompiles are treated as the
+   no-code accounts they appear to be; warmth, emptiness,
+   balances, depth and the static flag are user-supplied
+   values, not execution state or live chain data. Memory,
+   return data and any non-empty input/output region end are
+   capped at 4,096 bytes as stated display caps; all words are
+   single 256-bit values refused rather than wrapped. */
+const CALLOP_BYTES = { call: "0xf1", callcode: "0xf2", delegatecall: "0xf4", staticcall: "0xfa" };
+const CALLOP_FORKS = { call: "Frontier", callcode: "Frontier", delegatecall: "Homestead", staticcall: "Byzantium" };
+const CALLOP_MAX_BYTES = 4096;
+function callCalc(opStr, gasAvailStr, gasReqStr, valueStr, callerStr, targetStr, senderStr, callValueStr,
+    callerBalStr, targetBalStr, depthStr, outcomeStr, calleeGasUsedStr, retDataStr,
+    memoryStr, inOffStr, inSizeStr, outOffStr, outSizeStr, cold, targetEmpty, targetHasCode, inStatic) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(CALLOP_BYTES, op)) return null;
+  if (typeof cold !== "boolean" || typeof targetEmpty !== "boolean" ||
+      typeof targetHasCode !== "boolean" || typeof inStatic !== "boolean") return null;
+  if (typeof memoryStr !== "string") return null;
+  const parseAddr = s => {
+    if (typeof s !== "string") return null;
+    let h = s.trim();
+    if (/^0[xX]/.test(h)) h = h.slice(2);
+    if (!/^[0-9a-fA-F]{40}$/.test(h)) return null;
+    return "0x" + h.toLowerCase();
+  };
+  const parseBytes = s => {
+    let h = s.trim();
+    if (/^0[xX]/.test(h)) h = h.slice(2);
+    if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+    if (h.length / 2 > CALLOP_MAX_BYTES) return null;
+    const arr = [];
+    for (let i = 0; i < h.length; i += 2) arr.push(parseInt(h.slice(i, i + 2), 16));
+    return arr;
+  };
+  const gasAvail = sstoreParseWord(gasAvailStr);
+  const gasReq = sstoreParseWord(gasReqStr);
+  const caller = parseAddr(callerStr);
+  const target = parseAddr(targetStr);
+  const callerBal = sstoreParseWord(callerBalStr);
+  const targetBal = sstoreParseWord(targetBalStr);
+  const depth = sstoreParseWord(depthStr);
+  const memory = parseBytes(memoryStr);
+  const inOff = sstoreParseWord(inOffStr), inSize = sstoreParseWord(inSizeStr);
+  const outOff = sstoreParseWord(outOffStr), outSize = sstoreParseWord(outSizeStr);
+  if (gasAvail === null || gasReq === null || callerBal === null || targetBal === null ||
+      depth === null || inOff === null || inSize === null || outOff === null || outSize === null ||
+      caller === null || target === null || memory === null) return null;
+  if (inSize > 0n && inOff + inSize > BigInt(CALLOP_MAX_BYTES)) return null;
+  if (outSize > 0n && outOff + outSize > BigInt(CALLOP_MAX_BYTES)) return null;
+  let effValue = 0n, sender = null, callValue = 0n;
+  if (op === "call" || op === "callcode") {
+    effValue = sstoreParseWord(valueStr);
+    if (effValue === null) return null;
+  } else if (op === "delegatecall") {
+    sender = parseAddr(senderStr);
+    callValue = sstoreParseWord(callValueStr);
+    if (sender === null || callValue === null) return null;
+  }
+  if (op === "call" && targetEmpty && (targetBal !== 0n || targetHasCode)) return null;
+  const inOffG = inSize === 0n ? "0" : inOff.toString();
+  const outOffG = outSize === 0n ? "0" : outOff.toString();
+  const curMem = String(memory.length);
+  const g = op === "call"
+    ? callGasCalc(gasAvail.toString(), gasReq.toString(), effValue.toString(), cold, targetEmpty,
+        curMem, inOffG, inSize.toString(), outOffG, outSize.toString())
+    : otherCallGasCalc(op.toUpperCase(), gasAvail.toString(), gasReq.toString(),
+        op === "callcode" ? effValue.toString() : "0", cold,
+        curMem, inOffG, inSize.toString(), outOffG, outSize.toString());
+  if (g === null) return null;
+  const base = BigInt(g.baseGas);
+  let childAddress, childSender, childValue;
+  if (op === "call") { childAddress = target; childSender = caller; childValue = effValue; }
+  else if (op === "callcode") { childAddress = caller; childSender = caller; childValue = effValue; }
+  else if (op === "delegatecall") { childAddress = caller; childSender = sender; childValue = callValue; }
+  else { childAddress = target; childSender = caller; childValue = 0n; }
+  const head = { opcode: op, opcodeByte: CALLOP_BYTES[op], fork: CALLOP_FORKS[op],
+    childAddress, childSender, childValue: childValue.toString(),
+    childStatic: (inStatic || op === "staticcall") ? "true" : "false" };
+  const toHex = arr => "0x" + arr.map(b => b.toString(16).padStart(2, "0")).join("");
+  const newMem = Number(BigInt(g.newMemBytes));
+  const expanded = memory.slice();
+  while (expanded.length < newMem) expanded.push(0);
+  const unchanged = { callerAfter: callerBal.toString(), targetAfter: targetBal.toString() };
+  const moved = op === "call" && effValue > 0n;
+  const movedBals = caller === target ? unchanged
+    : { callerAfter: (callerBal - effValue).toString(), targetAfter: (targetBal + effValue).toString() };
+  if (g.outOfGas) {
+    return { ...head, pushed: "", outcome: "halt", failReason: "",
+      baseGas: g.baseGas, forwardedGas: "0", stipend: "0", calleeGas: "0",
+      calleeGasUsed: "", gasUsed: "", gasAfter: "", ...unchanged, transferred: "false",
+      returndata: "0x", returndataBytes: "0",
+      memoryAfter: toHex(memory), memoryAfterBytes: String(memory.length), halted: "true" };
+  }
+  const forwarded = BigInt(g.forwardedGas);
+  let fail = "";
+  if (depth >= 1024n) fail = "depth";
+  else if (inStatic && effValue > 0n) fail = "static";
+  else if ((op === "call" || op === "callcode") && callerBal < effValue) fail = "balance";
+  if (fail) {
+    return { ...head, pushed: "0", outcome: "failed", failReason: fail,
+      baseGas: g.baseGas, forwardedGas: "0", stipend: "0", calleeGas: "0",
+      calleeGasUsed: "0", gasUsed: base.toString(), gasAfter: (gasAvail - base).toString(),
+      ...unchanged, transferred: "false", returndata: "0x", returndataBytes: "0",
+      memoryAfter: toHex(expanded), memoryAfterBytes: String(expanded.length), halted: "false" };
+  }
+  if (!targetHasCode) {
+    return { ...head, pushed: "1", outcome: "empty", failReason: "",
+      baseGas: g.baseGas, forwardedGas: g.forwardedGas, stipend: g.stipend, calleeGas: g.calleeGas,
+      calleeGasUsed: "0", gasUsed: base.toString(), gasAfter: (gasAvail - base).toString(),
+      ...(moved ? movedBals : unchanged), transferred: moved ? "true" : "false",
+      returndata: "0x", returndataBytes: "0",
+      memoryAfter: toHex(expanded), memoryAfterBytes: String(expanded.length), halted: "false" };
+  }
+  if (typeof outcomeStr !== "string") return null;
+  const outcome = outcomeStr.trim().toLowerCase();
+  if (!["success", "revert", "halt"].includes(outcome)) return null;
+  if (outcome === "halt") {
+    return { ...head, pushed: "0", outcome: "callee-halt", failReason: "",
+      baseGas: g.baseGas, forwardedGas: g.forwardedGas, stipend: g.stipend, calleeGas: g.calleeGas,
+      calleeGasUsed: g.calleeGas, gasUsed: (base + forwarded).toString(),
+      gasAfter: (gasAvail - base - forwarded).toString(),
+      ...unchanged, transferred: "false", returndata: "0x", returndataBytes: "0",
+      memoryAfter: toHex(expanded), memoryAfterBytes: String(expanded.length), halted: "false" };
+  }
+  const used = sstoreParseWord(calleeGasUsedStr);
+  if (used === null || used > BigInt(g.calleeGas)) return null;
+  if (typeof retDataStr !== "string") return null;
+  const retdata = parseBytes(retDataStr);
+  if (retdata === null) return null;
+  const gasAfter = gasAvail - base - forwarded + (BigInt(g.calleeGas) - used);
+  const after = expanded.slice();
+  const nCopy = Math.min(retdata.length, Number(outSize));
+  for (let i = 0; i < nCopy; i++) after[Number(outOff) + i] = retdata[i];
+  const done = { baseGas: g.baseGas, forwardedGas: g.forwardedGas, stipend: g.stipend,
+    calleeGas: g.calleeGas, calleeGasUsed: used.toString(),
+    gasUsed: (gasAvail - gasAfter).toString(), gasAfter: gasAfter.toString(),
+    returndata: toHex(retdata), returndataBytes: String(retdata.length),
+    memoryAfter: toHex(after), memoryAfterBytes: String(after.length), halted: "false" };
+  if (outcome === "success") {
+    return { ...head, pushed: "1", outcome: "success", failReason: "", ...done,
+      ...(moved ? movedBals : unchanged), transferred: moved ? "true" : "false" };
+  }
+  return { ...head, pushed: "0", outcome: "revert", failReason: "", ...done,
+    ...unchanged, transferred: "false" };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -8441,6 +8641,53 @@ if (typeof document !== "undefined") {
       el.textContent = `TSTORE (${r.opcodeByte}, ${r.fork}): slot ${r.slot} goes from its current transient word ${r.current} to ${r.storageAfter} (${r.storageAfterHex}). Gas: ${r.totalGas} — the flat EIP-1153 charge whatever the values: no cold surcharge, no EIP-2200 metering, and no sentry, so this write runs at gas remaining ${r.gasBefore} even at or below 2,300 where an SSTORE would halt. Refund: 0 — transient storage never earns one (an SSTORE clear earns 4,800). The same total the hub's transient storage gas tool quotes. The whole transient store is discarded when the transaction ends. ${tail}`;
     });
 
+    /* CALL (0xf1) / CALLCODE (0xf2) / DELEGATECALL (0xf4) / STATICCALL (0xfa) */
+    const callopBtn = document.getElementById("callop-btn");
+    if (callopBtn) callopBtn.addEventListener("click", () => {
+      const gv = id => document.getElementById(id).value;
+      const gb = id => document.getElementById(id).checked;
+      const r = callCalc(
+        gv("callop-op"), gv("callop-gasavail"), gv("callop-gasreq"), gv("callop-value"),
+        gv("callop-caller"), gv("callop-target"), gv("callop-sender"), gv("callop-callvalue"),
+        gv("callop-callerbal"), gv("callop-targetbal"), gv("callop-depth"), gv("callop-outcome"),
+        gv("callop-gasused"), gv("callop-retdata"), gv("callop-memory"),
+        gv("callop-inoff"), gv("callop-insize"), gv("callop-outoff"), gv("callop-outsize"),
+        gb("callop-cold"), gb("callop-targetempty"), gb("callop-hascode"), gb("callop-static"));
+      const el = document.getElementById("callop-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: addresses must be 0x followed by 40 hex characters; gas, value, balances, depth, offsets and sizes must each be one 256-bit word, decimal or 0x hex; memory and return data even-length hex of at most 4,096 bytes, and a non-empty region must end within 4,096 bytes; the child may not use more gas than its allowance. For CALL the target cannot be both empty and coded, nor empty with a balance. Fields an opcode never reads (the value for DELEGATECALL / STATICCALL, the inherited sender and value for the others) cannot fail the check.";
+        return;
+      }
+      const tail = "Computed locally from the state you gave — nothing is executed and no chain is queried.";
+      const ctx = `The child frame runs at ${r.childAddress} with sender ${r.childSender}, value ${r.childValue}${r.childStatic === "true" ? ", in a static frame" : ""}.`;
+      if (r.halted === "true") {
+        el.textContent = `${r.opcode.toUpperCase()} (${r.opcodeByte}, ${r.fork}): the frame's gas remaining is below this call's own cost of ${r.baseGas} (the total the hub's CALL-family gas tools quote for these values), so the opcode halts the calling frame exceptionally — no success word is pushed, no gas figure applies, and nothing moves. ${tail}`;
+        return;
+      }
+      if (r.outcome === "failed") {
+        const why = r.failReason === "depth"
+          ? "the call depth is at the 1,024 limit, so no child frame may be created"
+          : r.failReason === "static"
+            ? "the calling frame is static and this call carries value, which a static frame may not move"
+            : "the caller's balance is below the value this call carries";
+        el.textContent = `${r.opcode.toUpperCase()} (${r.opcodeByte}, ${r.fork}): the call fails softly — ${why} — so the opcode pushes 0, forwards nothing, and only the base cost ${r.baseGas} is consumed (gas after: ${r.gasAfter}). Balances are unchanged and the returndata buffer is empty; memory still expands for the two regions. ${ctx} ${tail}`;
+        return;
+      }
+      if (r.outcome === "empty") {
+        el.textContent = `${r.opcode.toUpperCase()} (${r.opcodeByte}, ${r.fork}): the target has no code, so the call succeeds immediately and pushes 1 — nothing executes and none of the forwarded gas is used, so the total gas used is the base cost ${r.baseGas} alone (gas after: ${r.gasAfter}). ${r.transferred === "true" ? `The value still moves: caller ${r.callerAfter}, target ${r.targetAfter}. ` : "No value moves. "}The returndata buffer is empty. ${ctx} ${tail}`;
+        return;
+      }
+      if (r.outcome === "callee-halt") {
+        el.textContent = `${r.opcode.toUpperCase()} (${r.opcodeByte}, ${r.fork}): the child halts exceptionally, consuming its whole allowance of ${r.calleeGas} (${r.forwardedGas} forwarded plus a ${r.stipend} stipend), so the opcode pushes 0. Total gas used: ${r.gasUsed} (gas after: ${r.gasAfter}). The returndata buffer is left empty and nothing is copied into the output region; balances are unchanged — caller ${r.callerAfter}, target ${r.targetAfter}. ${ctx} ${tail}`;
+        return;
+      }
+      if (r.outcome === "revert") {
+        el.textContent = `${r.opcode.toUpperCase()} (${r.opcodeByte}, ${r.fork}): the child reverts, so the opcode pushes 0 — but the child's unused gas returns (it used ${r.calleeGasUsed} of ${r.calleeGas}), the returndata buffer holds its full ${r.returndataBytes}-byte return, and the first bytes of it are still copied into the output region (memory after: ${r.memoryAfterBytes} bytes). The state changes roll back, so balances are unchanged — caller ${r.callerAfter}, target ${r.targetAfter}. Total gas used: ${r.gasUsed} (gas after: ${r.gasAfter}). ${ctx} ${tail}`;
+        return;
+      }
+      el.textContent = `${r.opcode.toUpperCase()} (${r.opcodeByte}, ${r.fork}): the child succeeds and the opcode pushes 1. Base cost ${r.baseGas}; forwarded ${r.forwardedGas} plus a ${r.stipend} stipend gives the child ${r.calleeGas}, of which it used ${r.calleeGasUsed} — the unused part returns, so the total gas used is ${r.gasUsed} (gas after: ${r.gasAfter}). ${r.transferred === "true" ? `The value moves: caller ${r.callerAfter}, target ${r.targetAfter}. ` : `Balances are unchanged — caller ${r.callerAfter}, target ${r.targetAfter}. `}The returndata buffer holds ${r.returndataBytes} bytes, copied into the output region up to its size (memory after: ${r.memoryAfterBytes} bytes). ${ctx} ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -8454,5 +8701,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

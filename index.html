@@ -1133,6 +1133,59 @@
       <button id="tstorage-btn" type="button">Apply transient storage opcode</button>
       <p id="tstorage-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Call opcode calculator — CALL / CALLCODE / DELEGATECALL / STATICCALL into a child frame</h3>
+      <p><code>CALL</code> (<code>0xf1</code>) and <code>CALLCODE</code> (<code>0xf2</code>), both Frontier, <code>DELEGATECALL</code> (<code>0xf4</code>, Homestead, <a href="https://eips.ethereum.org/EIPS/eip-7">EIP-7</a>) and <code>STATICCALL</code> (<code>0xfa</code>, Byzantium, <a href="https://eips.ethereum.org/EIPS/eip-214">EIP-214</a>) are how one frame runs another account's code. The opcode first pays its own cost — the totals the hub's two CALL-family gas tools quote, taken from them exactly: <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> access (2,600 cold / 100 warm), 9,000 when CALL or CALLCODE carries value, 25,000 more when a value-carrying CALL funds an empty target, and memory expansion for the input and output regions together — then forwards at most <a href="https://eips.ethereum.org/EIPS/eip-150">EIP-150</a>'s all-but-one-64th of what remains, plus a 2,300 stipend when value moves. The child's execution itself is the one thing not modelled: whether the target has code, and if so whether it succeeds, reverts or halts, how much of its allowance it uses and what it returns, are values <em>you</em> supply — this calculator applies everything around that execution. Three failures are <em>soft</em>: the opcode pushes 0, forwards nothing and only the base cost is gone — the depth is at the 1,024 limit, a value-carrying CALL or CALLCODE sits inside a static frame, or the caller's balance is below the value. A target with no code succeeds immediately (a CALL's value still moves) — which is also the only outcome the 25,000 new-account charge can coincide with, since an empty account has no code by definition. A child that succeeds or reverts returns its unused allowance <em>including any unused stipend</em>, so a value call whose child uses nothing nets the caller 2,300 less than its base cost; a REVERT still sets the returndata buffer to the child's full return and still copies the first output-size bytes of it into memory, but rolls the value transfer back, while a child that halts exceptionally consumes its whole allowance, leaves the returndata buffer <em>empty</em> and copies nothing. The contexts differ per opcode and are the family's other trap: CALL runs the target's code at the target with the caller as sender; CALLCODE runs the target's code <em>at the caller</em>, the value credited to the caller's own account, so no balance ever moves; DELEGATECALL runs the target's code at the caller keeping the <em>inherited</em> sender and value — it has no value argument of its own — and is allowed inside a static frame; STATICCALL runs the target's code at the target with the value forced to 0 in a static frame. The prefilled call sends 1,000,000 wei from a 2,000,000 balance to a cold contract that succeeds using 20,000 of its 52,300 allowance: base cost 11,603, total gas used 29,303, both balances at 1,000,000 afterwards, and the returned word copied into memory at offset 32. Honest scope: the callee's own execution, storage and logs are not modelled; precompiles are treated as the no-code accounts they appear to be; and the addresses, balances, warmth, depth, static flag and child outcome are values <em>you</em> supply — this page executes nothing and reads no chain. Memory, return data and any non-empty region end are capped at 4,096 bytes as stated display caps. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="callop-op">Opcode</label>
+      <select id="callop-op"><option value="call" selected>CALL (0xf1) — run the target's code at the target</option><option value="callcode">CALLCODE (0xf2) — run the target's code at the caller</option><option value="delegatecall">DELEGATECALL (0xf4) — run the target's code at the caller, inherited sender and value</option><option value="staticcall">STATICCALL (0xfa) — run the target's code at the target, value 0, static frame</option></select>
+      <label for="callop-gasavail">Gas remaining in the calling frame before the opcode</label>
+      <input id="callop-gasavail" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <label for="callop-gasreq">Gas requested for the child (the opcode's gas argument — the 63/64 cap may forward less)</label>
+      <input id="callop-gasreq" type="text" inputmode="numeric" spellcheck="false" value="50000">
+      <label for="callop-value">Value in wei (CALL / CALLCODE only — the call's value argument; DELEGATECALL and STATICCALL have none and never read this)</label>
+      <input id="callop-value" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="callop-caller">Caller address (the executing contract — the child's sender for CALL, CALLCODE and STATICCALL)</label>
+      <input id="callop-caller" type="text" spellcheck="false" value="0x1111111111111111111111111111111111111111">
+      <label for="callop-target">Target address (the account whose code runs)</label>
+      <input id="callop-target" type="text" spellcheck="false" value="0x2222222222222222222222222222222222222222">
+      <label for="callop-sender">Inherited sender (DELEGATECALL only — the sender the child frame sees; never read for the other opcodes)</label>
+      <input id="callop-sender" type="text" spellcheck="false" value="">
+      <label for="callop-callvalue">Inherited value in wei (DELEGATECALL only — the value the child frame sees; never read for the other opcodes)</label>
+      <input id="callop-callvalue" type="text" inputmode="numeric" spellcheck="false" value="">
+      <label for="callop-callerbal">Caller balance in wei (checked against the value for CALL / CALLCODE)</label>
+      <input id="callop-callerbal" type="text" inputmode="numeric" spellcheck="false" value="2000000">
+      <label for="callop-targetbal">Target balance in wei (before the call)</label>
+      <input id="callop-targetbal" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="callop-depth">Call depth of the executing frame (at 1,024 the child call fails softly)</label>
+      <input id="callop-depth" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <label for="callop-outcome">Child outcome (only when the target has code and the call runs — a halting child consumes its whole allowance and its gas-used and return-data fields below are never read)</label>
+      <select id="callop-outcome"><option value="success" selected>Success — returns with the return data below</option><option value="revert">Revert — returns the return data below, state rolled back</option><option value="halt">Exceptional halt — out of gas or an invalid operation inside the child</option></select>
+      <label for="callop-gasused">Gas the child uses (of its forwarded-plus-stipend allowance; success and revert only)</label>
+      <input id="callop-gasused" type="text" inputmode="numeric" spellcheck="false" value="20000">
+      <label for="callop-retdata">Data the child returns (hex bytes, 0x prefix optional, at most 4,096 bytes; success and revert only — becomes the returndata buffer in full)</label>
+      <input id="callop-retdata" type="text" spellcheck="false" value="0x00000000000000000000000000000000000000000000000000000000001e8480">
+      <label for="callop-memory">Caller's memory before the call (hex bytes, 0x prefix optional, at most 4,096 bytes — the input region is read from it)</label>
+      <input id="callop-memory" type="text" spellcheck="false" value="0x00000000000000000000000000000000000000000000000000000000000f4240">
+      <label for="callop-inoff">Input offset (bytes into the caller's memory the child's calldata starts at)</label>
+      <input id="callop-inoff" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="callop-insize">Input size (bytes of calldata for the child; a zero size touches no memory whatever the offset)</label>
+      <input id="callop-insize" type="text" inputmode="numeric" spellcheck="false" value="32">
+      <label for="callop-outoff">Output offset (bytes into the caller's memory the child's return is copied to)</label>
+      <input id="callop-outoff" type="text" inputmode="numeric" spellcheck="false" value="32">
+      <label for="callop-outsize">Output size (at most this many bytes of the return are copied; the returndata buffer keeps the full return)</label>
+      <input id="callop-outsize" type="text" inputmode="numeric" spellcheck="false" value="32">
+      <label for="callop-cold">Target is cold — its first access in this transaction (unchecked is warm; a cold access costs 2,600 instead of 100)</label>
+      <input id="callop-cold" type="checkbox" checked>
+      <label for="callop-targetempty">Target account is empty (CALL only — nonce 0, balance 0 and no code; a value transfer to it adds the 25,000 new-account charge)</label>
+      <input id="callop-targetempty" type="checkbox">
+      <label for="callop-hascode">Target has code (unchecked, the call succeeds immediately without executing anything — the outcome fields are never read)</label>
+      <input id="callop-hascode" type="checkbox" checked>
+      <label for="callop-static">Calling frame is static (a value-carrying CALL or CALLCODE then fails softly; DELEGATECALL is unaffected)</label>
+      <input id="callop-static" type="checkbox">
+      <button id="callop-btn" type="button">Apply call opcode</button>
+      <p id="callop-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1521,6 +1574,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=91"></script>
+<script src="app.js?v=92"></script>
 </body>
 </html>

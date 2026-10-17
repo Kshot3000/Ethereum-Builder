@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=91"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=92"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -5323,6 +5323,144 @@ check("tstorage refuses an unknown opcode (persistent-storage names included), a
   app.tstorageCalc("tload", null, "0", "", "") === null &&
   app.tstorageCalc("tload", "0", null, "", "") === null);
 check("tstorage tool section present in index.html", html.includes("tstorage-btn") && html.includes("Transient storage opcode calculator"));
+/* CALL (0xf1) / CALLCODE (0xf2) / DELEGATECALL (0xf4) /
+   STATICCALL (0xfa): the opcode pays its own cost first (the
+   hub's CALL-family gas tools' totals, cross-checked exactly
+   below), forwards at most the EIP-150 63/64 cap plus a 2,300
+   stipend when value moves, and applies the child outcome the
+   user supplies. Three failures are soft (depth at 1,024, a
+   value call inside a static frame, balance below the value):
+   push 0, forward nothing, base cost only. A code-less target
+   succeeds immediately -- the only path the 25,000 new-account
+   charge can coincide with. Success and revert return unused
+   gas (stipend included); revert still sets the returndata
+   buffer and copies the output region but rolls the transfer
+   back; a child halt consumes the whole allowance, empties
+   the buffer and copies nothing. Verified against an
+   independent pure-Python oracle (oracle-call-op.py) anchored
+   in-script on hand values (the prefill base 11,603 and
+   gasUsed 29,303, the stipend gift at 6,800, the depth failure
+   at the base alone, the callee halt at exactly the base cost,
+   the empty-account value call at 36,603) before generating. */
+check("callop controls labelled in index.html",
+  ["callop-op", "callop-gasavail", "callop-gasreq", "callop-value", "callop-caller", "callop-target", "callop-sender", "callop-callvalue", "callop-callerbal", "callop-targetbal", "callop-depth", "callop-outcome", "callop-gasused", "callop-retdata", "callop-memory", "callop-inoff", "callop-insize", "callop-outoff", "callop-outsize", "callop-cold", "callop-targetempty", "callop-hascode", "callop-static"].every(id => html.includes(`for="${id}"`)));
+check("callop matches the Python oracle",
+  (() => { const V = [
+    [["call", "100000", "50000", "1000000", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "garbage", "garbage", "2000000", "0", "1", "success", "20000", "0x00000000000000000000000000000000000000000000000000000000001e8480", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0", "32", "32", "32", true, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|1000000|false|1|success||11603|50000|2300|52300|20000|29303|70697|1000000|1000000|true|0x00000000000000000000000000000000000000000000000000000000001e8480|32|0x00000000000000000000000000000000000000000000000000000000000f424000000000000000000000000000000000000000000000000000000000001e8480|64|false"],
+    [["call", "100000", "50000", "1000000", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "garbage", "garbage", "2000000", "0", "1", "revert", "20000", "0x00000000000000000000000000000000000000000000000000000000002dc6c0", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0", "32", "32", "32", true, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|1000000|false|0|revert||11603|50000|2300|52300|20000|29303|70697|2000000|0|false|0x00000000000000000000000000000000000000000000000000000000002dc6c0|32|0x00000000000000000000000000000000000000000000000000000000000f424000000000000000000000000000000000000000000000000000000000002dc6c0|64|false"],
+    [["call", "100000", "50000", "1000000", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "garbage", "garbage", "2000000", "0", "1", "halt", "garbage", "garbage", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0", "32", "32", "32", true, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|1000000|false|0|callee-halt||11603|50000|2300|52300|52300|61603|38397|2000000|0|false|0x|0|0x00000000000000000000000000000000000000000000000000000000000f42400000000000000000000000000000000000000000000000000000000000000000|64|false"],
+    [["call", "100000", "50000", "1000000", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "garbage", "garbage", "2000000", "0", "1024", "success", "20000", "0x00000000000000000000000000000000000000000000000000000000001e8480", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0", "32", "32", "32", true, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|1000000|false|0|failed|depth|11603|0|0|0|0|11603|88397|2000000|0|false|0x|0|0x00000000000000000000000000000000000000000000000000000000000f42400000000000000000000000000000000000000000000000000000000000000000|64|false"],
+    [["call", "100000", "50000", "1000000", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "garbage", "garbage", "999999", "0", "1", "success", "20000", "0x00000000000000000000000000000000000000000000000000000000001e8480", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0", "32", "32", "32", true, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|1000000|false|0|failed|balance|11603|0|0|0|0|11603|88397|999999|0|false|0x|0|0x00000000000000000000000000000000000000000000000000000000000f42400000000000000000000000000000000000000000000000000000000000000000|64|false"],
+    [["call", "100000", "50000", "1000000", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "garbage", "garbage", "2000000", "0", "1", "success", "20000", "0x00000000000000000000000000000000000000000000000000000000001e8480", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0", "32", "32", "32", true, false, true, true], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|1000000|true|0|failed|static|11603|0|0|0|0|11603|88397|2000000|0|false|0x|0|0x00000000000000000000000000000000000000000000000000000000000f42400000000000000000000000000000000000000000000000000000000000000000|64|false"],
+    [["call", "100000", "50000", "1000000", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "garbage", "garbage", "2000000", "0", "1", "garbage", "garbage", "garbage", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0", "32", "32", "32", true, true, false, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|1000000|false|1|empty||36603|50000|2300|52300|0|36603|63397|1000000|1000000|true|0x|0|0x00000000000000000000000000000000000000000000000000000000000f42400000000000000000000000000000000000000000000000000000000000000000|64|false"],
+    [["call", "11602", "50000", "1000000", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "garbage", "garbage", "2000000", "0", "1", "success", "20000", "0x00000000000000000000000000000000000000000000000000000000001e8480", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0", "32", "32", "32", true, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|1000000|false||halt||11603|0|0|0||||2000000|0|false|0x|0|0x00000000000000000000000000000000000000000000000000000000000f4240|32|true"],
+    [["call", "20000", "0", "5", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "100", "7", "1", "success", "0", "0x", "0x", "0", "0", "0", "0", false, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|5|false|1|success||9100|0|2300|2300|0|6800|13200|95|12|true|0x|0|0x|0|false"],
+    [["call", "100000", "999999999", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "success", "1000", "0x", "0x", "0", "0", "0", "0", false, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|0|false|1|success||100|98340|0|98340|1000|1100|98900|0|0|false|0x|0|0x|0|false"],
+    [["callcode", "50000", "8000", "500", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "10000", "999", "2", "success", "3000", "0x", "0x", "0", "0", "0", "0", true, false, true, false], "callcode|0xf2|Frontier|0x1111111111111111111111111111111111111111|0x1111111111111111111111111111111111111111|500|false|1|success||11600|8000|2300|10300|3000|12300|37700|10000|999|false|0x|0|0x|0|false"],
+    [["callcode", "50000", "8000", "500", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "499", "999", "2", "success", "3000", "0x", "0x", "0", "0", "0", "0", true, false, true, false], "callcode|0xf2|Frontier|0x1111111111111111111111111111111111111111|0x1111111111111111111111111111111111111111|500|false|0|failed|balance|11600|0|0|0|0|11600|38400|499|999|false|0x|0|0x|0|false"],
+    [["delegatecall", "50000", "10000", "garbage", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "0x3333333333333333333333333333333333333333", "777", "5000000", "123", "1", "success", "4000", "0x", "0x", "0", "0", "0", "0", false, false, true, false], "delegatecall|0xf4|Homestead|0x1111111111111111111111111111111111111111|0x3333333333333333333333333333333333333333|777|false|1|success||100|10000|0|10000|4000|4100|45900|5000000|123|false|0x|0|0x|0|false"],
+    [["delegatecall", "50000", "10000", "garbage", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "0x3333333333333333333333333333333333333333", "777", "5000000", "123", "1", "success", "4000", "0x", "0x", "0", "0", "0", "0", false, false, true, true], "delegatecall|0xf4|Homestead|0x1111111111111111111111111111111111111111|0x3333333333333333333333333333333333333333|777|true|1|success||100|10000|0|10000|4000|4100|45900|5000000|123|false|0x|0|0x|0|false"],
+    [["staticcall", "30000", "5000", "garbage", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "success", "1000", "0xdeadbeef", "0x", "0", "0", "0", "32", true, false, true, false], "staticcall|0xfa|Byzantium|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|0|true|1|success||2603|5000|0|5000|1000|3603|26397|0|0|false|0xdeadbeef|4|0xdeadbeef00000000000000000000000000000000000000000000000000000000|32|false"],
+    [["staticcall", "10000", "1000", "garbage", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "revert", "500", "0xdeadbeef", "0x", "0", "0", "0", "2", false, false, true, false], "staticcall|0xfa|Byzantium|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|0|true|0|revert||103|1000|0|1000|500|603|9397|0|0|false|0xdeadbeef|4|0xdead|2|false"],
+    [["call", "50000", "10000", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "success", "0", "0x", "0xa9059cbb", "0", "4", "0", "0", false, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|0|false|1|success||100|10000|0|10000|0|100|49900|0|0|false|0x|0|0xa9059cbb|4|false"],
+    [["call", "100000", "0", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "0", "1", "success", "0", "0x", "0x", "0", "0", "0", "0", false, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|115792089237316195423570985008687907853269984665640564039457584007913129639935|false|1|success||9100|0|2300|2300|0|6800|93200|0|115792089237316195423570985008687907853269984665640564039457584007913129639935|true|0x|0|0x|0|false"],
+    [["call", "10000", "5000", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "garbage", "garbage", "garbage", "0x", "0", "0", "0", "0", true, true, false, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|0|false|1|empty||2600|5000|0|5000|0|2600|7400|0|0|false|0x|0|0x|0|false"],
+    [["callcode", "50000", "8000", "500", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "10000", "999", "2", "success", "3000", "0x", "0x", "0", "0", "0", "0", true, false, true, true], "callcode|0xf2|Frontier|0x1111111111111111111111111111111111111111|0x1111111111111111111111111111111111111111|500|true|0|failed|static|11600|0|0|0|0|11600|38400|10000|999|false|0x|0|0x|0|false"],
+    [["call", "20000", "4000", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "success", "4000", "0x00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000000000000000000000000000000", "0", "0", "0", "32", false, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|0|false|1|success||100|4000|0|4000|4000|4100|15900|0|0|false|0x00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002|64|0x0000000000000000000000000000000000000000000000000000000000000001|32|false"],
+    [["call", "11603", "50000", "1000000", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "2000000", "0", "1", "halt", "garbage", "garbage", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0", "32", "32", "32", true, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|1000000|false|0|callee-halt||11603|0|2300|2300|2300|11603|0|2000000|0|false|0x|0|0x00000000000000000000000000000000000000000000000000000000000f42400000000000000000000000000000000000000000000000000000000000000000|64|false"],
+    [["call", "11603", "50000", "1000000", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "2000000", "0", "1", "success", "0", "0x", "0x00000000000000000000000000000000000000000000000000000000000f4240", "0", "32", "32", "32", true, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|1000000|false|1|success||11603|0|2300|2300|0|9303|2300|1000000|1000000|true|0x|0|0x00000000000000000000000000000000000000000000000000000000000f42400000000000000000000000000000000000000000000000000000000000000000|64|false"],
+    [["delegatecall", "50000", "10000", "garbage", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "0x3333333333333333333333333333333333333333", "777", "5000000", "123", "2000", "success", "4000", "0x", "0x", "0", "0", "0", "0", false, false, true, false], "delegatecall|0xf4|Homestead|0x1111111111111111111111111111111111111111|0x3333333333333333333333333333333333333333|777|false|0|failed|depth|100|0|0|0|0|100|49900|5000000|123|false|0x|0|0x|0|false"],
+    [["call", "50000", "10000", "100", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "1000", "50", "3", "success", "2500", "0x", "0x", "0", "0", "0", "0", false, false, true, false], "call|0xf1|Frontier|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|100|false|1|success||9100|10000|2300|12300|2500|9300|40700|900|150|true|0x|0|0x|0|false"],
+    [["staticcall", "30000", "5000", "garbage", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "halt", "garbage", "garbage", "0x", "0", "0", "0", "32", true, false, true, false], "staticcall|0xfa|Byzantium|0x2222222222222222222222222222222222222222|0x1111111111111111111111111111111111111111|0|true|0|callee-halt||2603|5000|0|5000|5000|7603|22397|0|0|false|0x|0|0x0000000000000000000000000000000000000000000000000000000000000000|32|false"]
+  ]; return V.every(([inp, exp]) => { const r = app.callCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.fork, r.childAddress, r.childSender, r.childValue, r.childStatic, r.pushed, r.outcome, r.failReason, r.baseGas, r.forwardedGas, r.stipend, r.calleeGas, r.calleeGasUsed, r.gasUsed, r.gasAfter, r.callerAfter, r.targetAfter, r.transferred, r.returndata, r.returndataBytes, r.memoryAfter, r.memoryAfterBytes, r.halted].join("|") === exp; }); })());
+check("callop: prefilled page values \u2014 a cold value call to a contract that succeeds using 20,000 of 52,300 costs 29,303 in total and settles both balances at 1,000,000",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const gb = id => new RegExp(`id="${id}"[^>]*checked`).test(html);
+    const op = /id="callop-op"[\s\S]*?<option value="call" selected>/.test(html) ? "call" : "x";
+    const oc = /id="callop-outcome"[\s\S]*?<option value="success" selected>/.test(html) ? "success" : "x";
+    const r = app.callCalc(op, g("callop-gasavail"), g("callop-gasreq"), g("callop-value"),
+      g("callop-caller"), g("callop-target"), g("callop-sender"), g("callop-callvalue"),
+      g("callop-callerbal"), g("callop-targetbal"), g("callop-depth"), oc,
+      g("callop-gasused"), g("callop-retdata"), g("callop-memory"),
+      g("callop-inoff"), g("callop-insize"), g("callop-outoff"), g("callop-outsize"),
+      gb("callop-cold"), gb("callop-targetempty"), gb("callop-hascode"), gb("callop-static"));
+    return r !== null && r.outcome === "success" && r.pushed === "1" && r.baseGas === "11603" &&
+      r.calleeGas === "52300" && r.gasUsed === "29303" && r.gasAfter === "70697" &&
+      r.callerAfter === "1000000" && r.targetAfter === "1000000" && r.memoryAfterBytes === "64"; })());
+check("callop: the base cost, forwarded gas, stipend and callee gas agree with the hub's CALL-family gas tools exactly, for CALL and for DELEGATECALL",
+  (() => { const a = app.callCalc("call", "100000", "50000", "1000000",
+      "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "",
+      "2000000", "0", "1", "success", "20000", "0x", "0x" + "00".repeat(31) + "01", "0", "32", "32", "32", true, false, true, false);
+    const ga = app.callGasCalc("100000", "50000", "1000000", true, false, "32", "0", "32", "32", "32");
+    const b = app.callCalc("delegatecall", "50000", "10000", "garbage",
+      "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222",
+      "0x3333333333333333333333333333333333333333", "777",
+      "5000000", "123", "1", "success", "4000", "0x", "0x", "0", "0", "0", "0", false, false, true, false);
+    const gb2 = app.otherCallGasCalc("DELEGATECALL", "50000", "10000", "0", false, "0", "0", "0", "0", "0");
+    return a !== null && ga !== null && a.baseGas === ga.baseGas && a.forwardedGas === ga.forwardedGas &&
+      a.stipend === ga.stipend && a.calleeGas === ga.calleeGas &&
+      b !== null && gb2 !== null && b.baseGas === gb2.baseGas && b.forwardedGas === gb2.forwardedGas &&
+      b.stipend === gb2.stipend && b.calleeGas === gb2.calleeGas; })());
+check("callop: the soft-failure trio \u2014 the SAME prefilled call fails on depth, on the static frame and on balance, each time pushing 0, forwarding nothing and consuming the 11,603 base alone",
+  (() => { const P = ["call", "100000", "50000", "1000000",
+      "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "",
+      "2000000", "0", "1", "success", "20000", "0x", "0x" + "00".repeat(28) + "000f4240", "0", "32", "32", "32", true, false, true, false];
+    const d = P.slice(); d[10] = "1024";
+    const s = P.slice(); s[22] = true;
+    const b = P.slice(); b[8] = "999999";
+    const rd = app.callCalc(...d), rs = app.callCalc(...s), rb = app.callCalc(...b);
+    return [rd, rs, rb].every(r => r !== null && r.outcome === "failed" && r.pushed === "0" &&
+      r.forwardedGas === "0" && r.gasUsed === "11603" && r.gasAfter === "88397") &&
+      rd.failReason === "depth" && rs.failReason === "static" && rb.failReason === "balance" &&
+      rd.callerAfter === "2000000" && rs.callerAfter === "2000000" && rb.callerAfter === "999999"; })());
+check("callop: revert vs halt on identical inputs \u2014 the revert returns its unused gas, keeps the full returndata and copies the output region while rolling the transfer back; the halt consumes everything, empties the buffer and copies nothing",
+  (() => { const P = ["call", "100000", "50000", "1000000",
+      "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "",
+      "2000000", "0", "1", "revert", "20000",
+      "0x" + "00".repeat(28) + "002dc6c0", "0x" + "00".repeat(28) + "000f4240", "0", "32", "32", "32", true, false, true, false];
+    const rv = app.callCalc(...P);
+    const h = P.slice(); h[11] = "halt"; h[12] = "garbage"; h[13] = "garbage";
+    const rh = app.callCalc(...h);
+    return rv !== null && rv.pushed === "0" && rv.gasAfter === "70697" && rv.returndataBytes === "32" &&
+      rv.callerAfter === "2000000" && rv.targetAfter === "0" && rv.transferred === "false" &&
+      rv.memoryAfter.endsWith("002dc6c0") &&
+      rh !== null && rh.outcome === "callee-halt" && rh.calleeGasUsed === "52300" &&
+      rh.gasUsed === "61603" && rh.gasAfter === "38397" && rh.returndata === "0x" &&
+      rh.memoryAfter.endsWith("00000000"); })());
+check("callop: the stipend gift \u2014 a warm value call whose child uses none of its 2,300 stipend nets the caller 6,800, less than the 9,100 base",
+  (() => { const r = app.callCalc("call", "20000", "0", "5",
+      "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "",
+      "100", "7", "1", "success", "0", "0x", "0x", "0", "0", "0", "0", false, false, true, false);
+    return r !== null && r.baseGas === "9100" && r.gasUsed === "6800" && r.gasAfter === "13200" &&
+      r.callerAfter === "95" && r.targetAfter === "12"; })());
+check("callop: the four contexts \u2014 CALL at the target with the caller as sender, CALLCODE at the caller moving no balance, DELEGATECALL at the caller with the inherited sender and value, STATICCALL at the target with value 0 in a static frame",
+  (() => { const A1 = "0x1111111111111111111111111111111111111111", A2 = "0x2222222222222222222222222222222222222222", A3 = "0x3333333333333333333333333333333333333333";
+    const c = app.callCalc("callcode", "50000", "8000", "500", A1, A2, "", "", "10000", "999", "2", "success", "3000", "0x", "0x", "0", "0", "0", "0", true, false, true, false);
+    const d = app.callCalc("delegatecall", "50000", "10000", "garbage", A1, A2, A3, "777", "5000000", "123", "1", "success", "4000", "0x", "0x", "0", "0", "0", "0", false, false, true, false);
+    const s = app.callCalc("staticcall", "30000", "5000", "garbage", A1, A2, "", "", "0", "0", "1", "success", "1000", "0xdeadbeef", "0x", "0", "0", "0", "32", true, false, true, false);
+    return c !== null && c.childAddress === A1 && c.childSender === A1 && c.childValue === "500" &&
+      c.callerAfter === "10000" && c.targetAfter === "999" && c.transferred === "false" &&
+      d !== null && d.childAddress === A1 && d.childSender === A3 && d.childValue === "777" &&
+      s !== null && s.childAddress === A2 && s.childSender === A1 && s.childValue === "0" && s.childStatic === "true"; })());
+check("callop: fields an opcode never reads cannot change its answer \u2014 the value for DELEGATECALL / STATICCALL, the inherited pair for the others, and the outcome trio for an empty target or a halting child all accept garbage",
+  app.callCalc("delegatecall", "50000", "10000", "garbage", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "0x3333333333333333333333333333333333333333", "777", "5000000", "123", "1", "success", "4000", "0x", "0x", "0", "0", "0", "0", false, false, true, false) !== null &&
+  app.callCalc("call", "10000", "5000", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "garbage", "garbage", "0", "0", "1", "garbage", "garbage", "garbage", "0x", "0", "0", "0", "0", true, true, false, false) !== null &&
+  app.callCalc("call", "100000", "50000", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "halt", "garbage", "garbage", "0x", "0", "0", "0", "0", false, false, true, false) !== null);
+check("callop refuses an unknown opcode, a short address, a value at 2^256, a child using more than its allowance, odd-length return data, a region ending past 4,096 bytes, an empty target with a balance or with code, a non-boolean flag, garbage depth and null inputs",
+  app.callCalc("call2", "100000", "1", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "success", "0", "0x", "0x", "0", "0", "0", "0", false, false, true, false) === null &&
+  app.callCalc("call", "100000", "1", "0", "0x111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "success", "0", "0x", "0x", "0", "0", "0", "0", false, false, true, false) === null &&
+  app.callCalc("call", "100000", "1", "115792089237316195423570985008687907853269984665640564039457584007913129639936", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "success", "0", "0x", "0x", "0", "0", "0", "0", false, false, true, false) === null &&
+  app.callCalc("call", "100000", "50000", "1000000", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "2000000", "0", "1", "success", "52301", "0x", "0x", "0", "32", "32", "32", true, false, true, false) === null &&
+  app.callCalc("call", "100000", "50000", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "success", "0", "0xabc", "0x", "0", "0", "0", "0", false, false, true, false) === null &&
+  app.callCalc("call", "100000", "50000", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "success", "0", "0x", "0x", "4090", "32", "0", "0", false, false, true, false) === null &&
+  app.callCalc("call", "100000", "50000", "1", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "10", "5", "1", "success", "0", "0x", "0x", "0", "0", "0", "0", false, true, false, false) === null &&
+  app.callCalc("call", "100000", "50000", "1", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "10", "0", "1", "success", "0", "0x", "0x", "0", "0", "0", "0", false, true, true, false) === null &&
+  app.callCalc("call", "100000", "50000", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "success", "0", "0x", "0x", "0", "0", "0", "0", "yes", false, true, false) === null &&
+  app.callCalc("call", "100000", "50000", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "garbage", "success", "0", "0x", "0x", "0", "0", "0", "0", false, false, true, false) === null &&
+  app.callCalc(null, "100000", "1", "0", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", "", "", "0", "0", "1", "success", "0", "0x", "0x", "0", "0", "0", "0", false, false, true, false) === null);
+check("callop tool section present in index.html", html.includes("callop-btn") && html.includes("Call opcode calculator"));
+
 
 
 console.log(`\n${total - failures}/${total} checks passed`);

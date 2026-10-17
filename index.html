@@ -965,6 +965,53 @@
       <button id="code-btn" type="button">Apply code opcode</button>
       <p id="code-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Environment opcode calculator — ADDRESS / BALANCE / ORIGIN / CALLER / CALLVALUE / GASPRICE / COINBASE / TIMESTAMP / NUMBER / PREVRANDAO / GASLIMIT / CHAINID / SELFBALANCE / BASEFEE / BLOBHASH / BLOBBASEFEE</h3>
+      <p>Sixteen opcodes that each push one fact about the environment of the currently executing call frame — the executing account (<code>ADDRESS</code>, <code>0x30</code>), another account's balance (<code>BALANCE</code>, <code>0x31</code>), the transaction signer (<code>ORIGIN</code>, <code>0x32</code>), this frame's immediate caller (<code>CALLER</code>, <code>0x33</code>), the ether the call carries (<code>CALLVALUE</code>, <code>0x34</code>), the transaction's gas price (<code>GASPRICE</code>, <code>0x3a</code>), the block's fee recipient (<code>COINBASE</code>, <code>0x41</code>), its timestamp in <em>seconds</em> (<code>TIMESTAMP</code>, <code>0x42</code>) and number (<code>NUMBER</code>, <code>0x43</code>), its randomness (<code>PREVRANDAO</code>, <code>0x44</code>) and gas limit (<code>GASLIMIT</code>, <code>0x45</code>), the chain ID (<code>CHAINID</code>, <code>0x46</code>, <a href="https://eips.ethereum.org/EIPS/eip-1344">EIP-1344</a>), the executing account's own balance (<code>SELFBALANCE</code>, <code>0x47</code>, <a href="https://eips.ethereum.org/EIPS/eip-1884">EIP-1884</a>), the block's base fee (<code>BASEFEE</code>, <code>0x48</code>, <a href="https://eips.ethereum.org/EIPS/eip-3198">EIP-3198</a>), one of the transaction's blob versioned hashes (<code>BLOBHASH</code>, <code>0x49</code>, <a href="https://eips.ethereum.org/EIPS/eip-4844">EIP-4844</a>) and the blob base fee (<code>BLOBBASEFEE</code>, <code>0x4a</code>, <a href="https://eips.ethereum.org/EIPS/eip-7516">EIP-7516</a>). Gas is where the family splits, and the split is the lesson: most members pay the flat base tier of 2, but <code>SELFBALANCE</code> pays 5 (the low tier) and <code>BLOBHASH</code> 3 — and <code>BALANCE</code> has no flat price at all since Berlin, because it reads <em>another</em> account's state: it pays the <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> account access cost for its target, 2,600 cold or 100 warm, the same total the hub's account-access gas tool quotes, while <code>SELFBALANCE</code> reads the executing account's <em>own</em> balance and never pays an access cost; an empty or nonexistent target still pays the cold 2,600, because the access is charged for the touch, not for what is found. Three value traps. <code>PREVRANDAO</code>'s byte <code>0x44</code> was <code>DIFFICULTY</code> until the Merge — <a href="https://eips.ethereum.org/EIPS/eip-4399">EIP-4399</a> repurposed the same opcode to push the beacon chain's randomness, so reading it as a difficulty is a category error, not a stale number. <code>TIMESTAMP</code> is in seconds, not the milliseconds JavaScript's <code>Date</code> deals in — comparing the two is off by a factor of 1,000. And <code>BLOBHASH</code> reads the <em>transaction's</em> list of blob versioned hashes, pushing 0 when the index is past the list's end — it does <em>not</em> halt, the opposite failure mode from <code>RETURNDATACOPY</code> — and the list is empty in any transaction that carries no blobs. <code>ORIGIN</code> and <code>CALLER</code> are both “the sender”, at different depths: origin pushes the transaction's signer in every frame, caller the immediate caller of <em>this</em> frame, so the two agree only in the outermost frame and diverge in every nested call. The prefilled opcode makes the access cost visible: a cold <code>BALANCE</code> of the supplied target — the USDC contract's address carrying a supplied balance of 1000000, 1 USDC in its base units — pushes exactly 1000000 at 2,600 gas. Honest scope: every field of the environment is a value <em>you</em> supply — this page executes nothing and reads no chain, so the block, transaction and account facts are yours, not live chain state; each opcode reads only its own field(s) and the rest are not consulted. The blob hash list is capped at 32 entries so it stays displayable — a display cap, stated as such. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="env-op">Opcode</label>
+      <select id="env-op"><option value="address">ADDRESS (0x30) — pushes the executing account's address</option><option value="balance" selected>BALANCE (0x31) — pushes another account's balance; pays that account's EIP-2929 access cost</option><option value="origin">ORIGIN (0x32) — pushes the transaction signer's address, the same in every frame</option><option value="caller">CALLER (0x33) — pushes this frame's immediate caller</option><option value="callvalue">CALLVALUE (0x34) — pushes the ether, in wei, this call carries</option><option value="gasprice">GASPRICE (0x3a) — pushes the transaction's gas price in wei</option><option value="coinbase">COINBASE (0x41) — pushes the block's fee recipient address</option><option value="timestamp">TIMESTAMP (0x42) — pushes the block timestamp in SECONDS</option><option value="number">NUMBER (0x43) — pushes the block number</option><option value="prevrandao">PREVRANDAO (0x44) — pushes the beacon randomness; this byte was DIFFICULTY before the Merge</option><option value="gaslimit">GASLIMIT (0x45) — pushes the block gas limit</option><option value="chainid">CHAINID (0x46) — pushes the chain ID (EIP-1344)</option><option value="selfbalance">SELFBALANCE (0x47) — pushes the executing account's own balance at a flat 5, no access cost</option><option value="basefee">BASEFEE (0x48) — pushes the block's base fee in wei (EIP-3198)</option><option value="blobhash">BLOBHASH (0x49) — pushes the transaction's blob versioned hash at an index, or 0 past the end (EIP-4844)</option><option value="blobbasefee">BLOBBASEFEE (0x4a) — pushes the blob base fee in wei (EIP-7516)</option></select>
+      <label for="env-address">Executing account address (ADDRESS only — exactly 40 hex characters, 0x prefix optional)</label>
+      <input id="env-address" type="text" spellcheck="false" value="0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2">
+      <label for="env-baladdr">Balance target address (BALANCE only — exactly 40 hex characters, 0x prefix optional)</label>
+      <input id="env-baladdr" type="text" spellcheck="false" value="0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48">
+      <label for="env-balvalue">Balance target's balance in wei (BALANCE only — one 256-bit value, decimal or 0x hex)</label>
+      <input id="env-balvalue" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="env-balcold">Balance target is cold — its first touch in this transaction (BALANCE only; unchecked is warm, already touched)</label>
+      <input id="env-balcold" type="checkbox" checked>
+      <label for="env-selfbal">Executing account's own balance in wei (SELFBALANCE only — one 256-bit value, decimal or 0x hex)</label>
+      <input id="env-selfbal" type="text" inputmode="numeric" spellcheck="false" value="1000000000000000000">
+      <label for="env-caller">Caller address (CALLER only — this frame's immediate caller; exactly 40 hex characters, 0x prefix optional)</label>
+      <input id="env-caller" type="text" spellcheck="false" value="0x7e5f4552091a69125d5dfcb7b8c2659029395bdf">
+      <label for="env-callvalue">Call value in wei (CALLVALUE only — one 256-bit value, decimal or 0x hex)</label>
+      <input id="env-callvalue" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="env-origin">Origin address (ORIGIN only — the transaction signer; exactly 40 hex characters, 0x prefix optional)</label>
+      <input id="env-origin" type="text" spellcheck="false" value="0x7e5f4552091a69125d5dfcb7b8c2659029395bdf">
+      <label for="env-gasprice">Gas price in wei (GASPRICE only — one 256-bit value, decimal or 0x hex)</label>
+      <input id="env-gasprice" type="text" inputmode="numeric" spellcheck="false" value="20000000000">
+      <label for="env-coinbase">Coinbase address (COINBASE only — the block's fee recipient; exactly 40 hex characters, 0x prefix optional)</label>
+      <input id="env-coinbase" type="text" spellcheck="false" value="0x1111111111111111111111111111111111111111">
+      <label for="env-timestamp">Block timestamp in SECONDS (TIMESTAMP only — one 256-bit value, decimal or 0x hex; not milliseconds)</label>
+      <input id="env-timestamp" type="text" inputmode="numeric" spellcheck="false" value="1893456000">
+      <label for="env-number">Block number (NUMBER only — one 256-bit value, decimal or 0x hex)</label>
+      <input id="env-number" type="text" inputmode="numeric" spellcheck="false" value="21000000">
+      <label for="env-prevrandao">PrevRandao (PREVRANDAO only — one 256-bit value, decimal or 0x hex; the beacon randomness, not a difficulty)</label>
+      <input id="env-prevrandao" type="text" spellcheck="false" value="0x00000000000000000000000000000000000000000000000000000000deadbeef">
+      <label for="env-gaslimit">Block gas limit (GASLIMIT only — one 256-bit value, decimal or 0x hex)</label>
+      <input id="env-gaslimit" type="text" inputmode="numeric" spellcheck="false" value="30000000">
+      <label for="env-chainid">Chain ID (CHAINID only — one 256-bit value, decimal or 0x hex; 1 is Ethereum mainnet, 8453 is Base)</label>
+      <input id="env-chainid" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <label for="env-basefee">Block base fee in wei (BASEFEE only — one 256-bit value, decimal or 0x hex)</label>
+      <input id="env-basefee" type="text" inputmode="numeric" spellcheck="false" value="10000000000">
+      <label for="env-blobbasefee">Blob base fee in wei (BLOBBASEFEE only — one 256-bit value, decimal or 0x hex)</label>
+      <input id="env-blobbasefee" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <label for="env-blobindex">Blob index (BLOBHASH only — one 256-bit value, decimal or 0x hex; an index past the list's end pushes 0, it does not halt)</label>
+      <input id="env-blobindex" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="env-blobhashes">Blob versioned hashes (BLOBHASH only — comma-separated 32-byte hashes, 0x prefix optional per entry, at most 32 entries; empty is a transaction with no blobs)</label>
+      <input id="env-blobhashes" type="text" spellcheck="false" value="0x01000000000000000000000000000000000000000000000000000000deadbeef">
+      <button id="env-btn" type="button">Apply environment opcode</button>
+      <p id="env-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1353,6 +1400,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=83"></script>
+<script src="app.js?v=84"></script>
 </body>
 </html>

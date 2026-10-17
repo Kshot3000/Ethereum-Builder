@@ -5829,6 +5829,127 @@ function codeCalc(opStr, offsetStr, destStr, sizeStr, codeStr, memoryStr) {
   };
 }
 
+/* Environment opcodes — ADDRESS (0x30), BALANCE (0x31), ORIGIN (0x32),
+   CALLER (0x33), CALLVALUE (0x34), GASPRICE (0x3a), COINBASE (0x41),
+   TIMESTAMP (0x42), NUMBER (0x43), PREVRANDAO (0x44), GASLIMIT (0x45),
+   CHAINID (0x46), SELFBALANCE (0x47), BASEFEE (0x48), BLOBHASH (0x49)
+   and BLOBBASEFEE (0x4a): each pushes one fact about the environment of
+   the currently executing call frame, taken here from an environment
+   YOU supply — this page executes nothing and reads no chain, so every
+   field is an input, and each opcode reads only its own field(s); the
+   rest are not consulted, exactly as the real opcode touches only its
+   own piece of the frame.
+   Gas is where the family splits, and the split is the lesson. Most
+   members pay the flat Base tier 2. Two do not: SELFBALANCE pays 5
+   (the Low tier — EIP-1884 set the price when it introduced the
+   opcode in Istanbul, deliberately still cheaper than any BALANCE),
+   and BLOBHASH pays 3 (Verylow). BALANCE has no flat price at all
+   since Berlin: it pays the EIP-2929 account access cost for its
+   target — 2,600 cold, 100 warm, the same total the hub's
+   account-access gas tool quotes — because it reads ANOTHER
+   account's state, while SELFBALANCE reads the executing account's
+   own balance and never pays an access cost. An empty or
+   nonexistent target still pays the cold 2,600: the access is
+   charged for the touch, not for what is found.
+   Three value traps. PREVRANDAO's byte 0x44 was DIFFICULTY until the
+   Merge: EIP-4399 (Paris) repurposed the same opcode to push the
+   beacon chain's randomness, so reading it as a difficulty is a
+   category error, not a stale number. TIMESTAMP is in SECONDS (Unix
+   time), not the milliseconds JavaScript's Date deals in — code that
+   compares the two is off by a factor of 1,000. And BLOBHASH reads
+   the TRANSACTION's list of blob versioned hashes (EIP-4844),
+   pushing 0 when the index is past the list's end — it does NOT
+   halt, the opposite failure mode from RETURNDATACOPY — and the
+   list is empty in any transaction that carries no blobs.
+   ORIGIN and CALLER are both "the sender", at different depths:
+   ORIGIN pushes the transaction's signer in every frame, while
+   CALLER pushes the immediate caller of THIS frame, so the two
+   agree only in the outermost frame and diverge in nested calls.
+   Inputs are refused rather than wrapped: addresses must be
+   exactly 40 hex characters (0x prefix optional) and are pushed as
+   the 160-bit word; value fields are single 256-bit words in
+   decimal or 0x hex via parseWord256; BALANCE's warmth is a
+   boolean, as in the hub's gas tools; the blob hash list is
+   comma-separated 32-byte hashes (0x prefix optional per entry, an
+   empty list allowed), capped at 32 entries so the list stays
+   displayable — a display cap, stated as such. */
+const ENV_BLOB_MAX = 32;
+const ENV_OPS = {
+  address:     { byte: "0x30", fork: "Frontier", gas: 2n },
+  balance:     { byte: "0x31", fork: "Frontier; its gas is the EIP-2929 account access cost since Berlin", gas: null },
+  origin:      { byte: "0x32", fork: "Frontier", gas: 2n },
+  caller:      { byte: "0x33", fork: "Frontier", gas: 2n },
+  callvalue:   { byte: "0x34", fork: "Frontier", gas: 2n },
+  gasprice:    { byte: "0x3a", fork: "Frontier", gas: 2n },
+  coinbase:    { byte: "0x41", fork: "Frontier", gas: 2n },
+  timestamp:   { byte: "0x42", fork: "Frontier", gas: 2n },
+  number:      { byte: "0x43", fork: "Frontier", gas: 2n },
+  prevrandao:  { byte: "0x44", fork: "Paris (EIP-4399); this byte was DIFFICULTY before the Merge", gas: 2n },
+  gaslimit:    { byte: "0x45", fork: "Frontier", gas: 2n },
+  chainid:     { byte: "0x46", fork: "Istanbul (EIP-1344)", gas: 2n },
+  selfbalance: { byte: "0x47", fork: "Istanbul (EIP-1884)", gas: 5n },
+  basefee:     { byte: "0x48", fork: "London (EIP-3198)", gas: 2n },
+  blobhash:    { byte: "0x49", fork: "Cancun (EIP-4844)", gas: 3n },
+  blobbasefee: { byte: "0x4a", fork: "Cancun (EIP-7516)", gas: 2n }
+};
+function envCalc(opStr, addressStr, balanceAddrStr, balanceValueStr, balanceCold, selfBalanceStr, callerStr, callValueStr, originStr, gasPriceStr, coinbaseStr, timestampStr, numberStr, prevrandaoStr, gasLimitStr, chainIdStr, baseFeeStr, blobBaseFeeStr, blobIndexStr, blobHashesStr) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(ENV_OPS, op)) return null;
+  const meta = ENV_OPS[op];
+  const parseAddr = s => {
+    if (typeof s !== "string") return null;
+    let h = s.trim();
+    if (/^0[xX]/.test(h)) h = h.slice(2);
+    if (!/^[0-9a-fA-F]{40}$/.test(h)) return null;
+    return h.toLowerCase();
+  };
+  const wordHex = v => "0x" + v.toString(16).padStart(64, "0");
+  const base = { opcode: op, opcodeByte: meta.byte, fork: meta.fork,
+    result: "", resultHex: "", resultAddress: "", accessGas: "", totalGas: "",
+    blobIndex: "", blobCount: "", blobInRange: "" };
+  const wordResult = (v, gas) => ({ ...base, result: v.toString(), resultHex: wordHex(v), totalGas: gas.toString() });
+  const addrResult = (h, gas) => ({ ...wordResult(BigInt("0x" + h), gas), resultAddress: "0x" + h });
+  switch (op) {
+    case "address": { const a = parseAddr(addressStr); return a === null ? null : addrResult(a, meta.gas); }
+    case "origin": { const a = parseAddr(originStr); return a === null ? null : addrResult(a, meta.gas); }
+    case "caller": { const a = parseAddr(callerStr); return a === null ? null : addrResult(a, meta.gas); }
+    case "coinbase": { const a = parseAddr(coinbaseStr); return a === null ? null : addrResult(a, meta.gas); }
+    case "balance": {
+      const a = parseAddr(balanceAddrStr);
+      const v = parseWord256(balanceValueStr);
+      if (a === null || v === null || typeof balanceCold !== "boolean") return null;
+      const access = balanceCold ? 2600n : 100n;
+      return { ...wordResult(v, access), resultAddress: "0x" + a, accessGas: access.toString() };
+    }
+    case "selfbalance": { const v = parseWord256(selfBalanceStr); return v === null ? null : wordResult(v, meta.gas); }
+    case "blobhash": {
+      const idx = parseWord256(blobIndexStr);
+      if (idx === null || typeof blobHashesStr !== "string") return null;
+      const hashes = [];
+      if (blobHashesStr.trim() !== "") {
+        for (const part of blobHashesStr.split(",")) {
+          let h = part.trim();
+          if (/^0[xX]/.test(h)) h = h.slice(2);
+          if (!/^[0-9a-fA-F]{64}$/.test(h)) return null;
+          hashes.push(h.toLowerCase());
+        }
+        if (hashes.length > ENV_BLOB_MAX) return null;
+      }
+      const inRange = idx < BigInt(hashes.length);
+      const v = inRange ? BigInt("0x" + hashes[Number(idx)]) : 0n;
+      return { ...wordResult(v, meta.gas), blobIndex: idx.toString(), blobCount: String(hashes.length), blobInRange: inRange ? "true" : "false" };
+    }
+    default: {
+      const field = { callvalue: callValueStr, gasprice: gasPriceStr, timestamp: timestampStr,
+        number: numberStr, prevrandao: prevrandaoStr, gaslimit: gasLimitStr,
+        chainid: chainIdStr, basefee: baseFeeStr, blobbasefee: blobBaseFeeStr }[op];
+      const v = parseWord256(field);
+      return v === null ? null : wordResult(v, meta.gas);
+    }
+  }
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -7448,6 +7569,55 @@ if (typeof document !== "undefined") {
       el.textContent = `CODECOPY (${r.opcodeByte}): copies ${r.copySize} byte(s) from code offset ${r.offset} to memory offset ${r.destOffset} — bytes past the end of the ${r.codeBytes}-byte code copy as zero (this copy zero-pads its source; it never halts the way RETURNDATACOPY does), and a gap in memory is zero-filled. Copied: ${r.copied}. Memory after (${r.memoryAfterBytes} byte(s)): ${r.memoryAfter}. MSIZE is ${r.msizeAfter}. Gas: ${r.totalGas} — the flat 3 plus ${r.wordGas} for the word(s) copied plus ${r.expansionGas} of memory expansion. Computed locally from the code and memory you gave — nothing is executed and no chain is queried.`;
     });
 
+    /* Environment opcodes (ADDRESS / BALANCE / ORIGIN / CALLER / CALLVALUE / GASPRICE / COINBASE / TIMESTAMP / NUMBER / PREVRANDAO / GASLIMIT / CHAINID / SELFBALANCE / BASEFEE / BLOBHASH / BLOBBASEFEE) */
+    const envBtn = document.getElementById("env-btn");
+    if (envBtn) envBtn.addEventListener("click", () => {
+      const cold = document.getElementById("env-balcold").checked;
+      const r = envCalc(
+        document.getElementById("env-op").value,
+        document.getElementById("env-address").value,
+        document.getElementById("env-baladdr").value,
+        document.getElementById("env-balvalue").value,
+        cold,
+        document.getElementById("env-selfbal").value,
+        document.getElementById("env-caller").value,
+        document.getElementById("env-callvalue").value,
+        document.getElementById("env-origin").value,
+        document.getElementById("env-gasprice").value,
+        document.getElementById("env-coinbase").value,
+        document.getElementById("env-timestamp").value,
+        document.getElementById("env-number").value,
+        document.getElementById("env-prevrandao").value,
+        document.getElementById("env-gaslimit").value,
+        document.getElementById("env-chainid").value,
+        document.getElementById("env-basefee").value,
+        document.getElementById("env-blobbasefee").value,
+        document.getElementById("env-blobindex").value,
+        document.getElementById("env-blobhashes").value);
+      const el = document.getElementById("env-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: each opcode reads only its own field(s) of the environment — an address must be exactly 40 hex characters (0x prefix optional), a value one 256-bit word in decimal or 0x hex, and the blob versioned hashes a comma-separated list of 32-byte hashes (0x prefix optional per entry, at most 32 entries, empty for a transaction with no blobs).";
+        return;
+      }
+      const NAME = r.opcode.toUpperCase();
+      const tail = "Computed locally from the environment you gave — nothing is executed and no chain is queried.";
+      if (r.opcode === "balance") {
+        el.textContent = `BALANCE (${r.opcodeByte}, ${r.fork}): pushes ${r.result} — the balance in wei you supplied for ${toChecksumAddress(r.resultAddress)}. Gas: ${r.totalGas} — the EIP-2929 account access cost for a ${cold ? "cold account (its first touch in this transaction; a later touch of the same account would be warm at 100)" : "warm account (already touched in this transaction; a cold first touch would cost 2,600)"}, the same total the hub's account-access gas tool quotes. The executing account's own balance is SELFBALANCE's job, at a flat 5 with no access cost. ${tail}`;
+        return;
+      }
+      if (r.opcode === "blobhash") {
+        el.textContent = r.blobInRange === "true"
+          ? `BLOBHASH (${r.opcodeByte}, ${r.fork}): pushes ${r.resultHex} — blob versioned hash ${r.blobIndex} of the ${r.blobCount} the transaction you described carries. Gas: 3 — the flat Verylow tier. ${tail}`
+          : `BLOBHASH (${r.opcodeByte}, ${r.fork}): pushes 0 — the index ${r.blobIndex} is past the end of the transaction's ${r.blobCount}-entry blob versioned hash list, and an out-of-range index pushes 0 rather than halting (the opposite failure mode from RETURNDATACOPY). Gas: 3 — the flat Verylow tier. ${tail}`;
+        return;
+      }
+      if (r.resultAddress !== "") {
+        el.textContent = `${NAME} (${r.opcodeByte}, ${r.fork}): pushes the address ${toChecksumAddress(r.resultAddress)} (as the word ${r.resultHex}). Gas: ${r.totalGas} — the flat Base tier. ${tail}`;
+        return;
+      }
+      el.textContent = `${NAME} (${r.opcodeByte}, ${r.fork}): pushes ${r.result} (the word ${r.resultHex}) — the value you supplied for this field of the environment. Gas: ${r.totalGas}${r.opcode === "selfbalance" ? " — the flat Low tier, with no EIP-2929 access cost, because the balance read is the executing account's own" : " — the flat Base tier"}. ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -7461,5 +7631,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

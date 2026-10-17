@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=89"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=90"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -5145,6 +5145,101 @@ check("jump refuses an unknown opcode, a malformed destination or JUMPI conditio
   app.jumpCalc("jump", null, "", CODE_CODE) === null &&
   app.jumpCalc("jump", "0", "", null) === null);
 check("jump tool section present in index.html", html.includes("jump-btn") && html.includes("Jump opcode calculator"));
+
+
+/* SLOAD (0x54) / SSTORE (0x55), both Frontier: SLOAD pushes the
+   slot's current word and changes nothing, at the EIP-2929 slot
+   access cost alone; SSTORE replaces the slot's word under
+   EIP-2200 metering as amended by EIP-2929 / EIP-3529, with the
+   EIP-2200 sentry (gas remaining at or below the 2,300 stipend)
+   checked BEFORE any metering. The metering here is implemented
+   independently of the hub's SSTORE gas function and the two
+   are cross-checked exactly below, as are SLOAD's totals
+   against the hub's SLOAD gas tool. Verified against an
+   independent pure-Python oracle (oracle-storage-op.py)
+   anchored in-script on hand values (the prefilled cold
+   clean-set at 22,100, the sentry pair at 2,300 / 2,301, the
+   dirty restore and un-clear refunds) before generating. */
+check("storage controls labelled in index.html",
+  ["storage-op", "storage-slot", "storage-original", "storage-current", "storage-new", "storage-gas", "storage-cold"].every(id => html.includes(`for="${id}"`)));
+check("storage matches the Python oracle",
+  (() => { const V = [
+    [["sload", "0", "", "1000000", "", "", true], "sload|0x54|Frontier|0|0x0000000000000000000000000000000000000000000000000000000000000000||1000000||1000000|1000000|0x00000000000000000000000000000000000000000000000000000000000f4240|true||2100|||false||load"],
+    [["sload", "0", "", "1000000", "", "", false], "sload|0x54|Frontier|0|0x0000000000000000000000000000000000000000000000000000000000000000||1000000||1000000|1000000|0x00000000000000000000000000000000000000000000000000000000000f4240|false||100|||false||load"],
+    [["sload", "1", "", "0", "", "", true], "sload|0x54|Frontier|1|0x0000000000000000000000000000000000000000000000000000000000000001||0||0|0|0x0000000000000000000000000000000000000000000000000000000000000000|true||2100|||false||load"],
+    [["sload", "0xff", "", "0xdeadbeef", "", "", false], "sload|0x54|Frontier|255|0x00000000000000000000000000000000000000000000000000000000000000ff||3735928559||3735928559|3735928559|0x00000000000000000000000000000000000000000000000000000000deadbeef|false||100|||false||load"],
+    [["sload", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "", "", true], "sload|0x54|Frontier|115792089237316195423570985008687907853269984665640564039457584007913129639935|0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff||115792089237316195423570985008687907853269984665640564039457584007913129639935||115792089237316195423570985008687907853269984665640564039457584007913129639935|115792089237316195423570985008687907853269984665640564039457584007913129639935|0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff|true||2100|||false||load"],
+    [["sstore", "0", "0", "0", "1000000", "100000", true], "sstore|0x55|Frontier|0|0x0000000000000000000000000000000000000000000000000000000000000000|0|0|1000000||1000000|0x00000000000000000000000000000000000000000000000000000000000f4240|true|clean-set|22100|0|100000|false||store"],
+    [["sstore", "0", "0", "0", "1000000", "100000", false], "sstore|0x55|Frontier|0|0x0000000000000000000000000000000000000000000000000000000000000000|0|0|1000000||1000000|0x00000000000000000000000000000000000000000000000000000000000f4240|false|clean-set|20000|0|100000|false||store"],
+    [["sstore", "1", "5", "5", "0", "100000", false], "sstore|0x55|Frontier|1|0x0000000000000000000000000000000000000000000000000000000000000001|5|5|0||0|0x0000000000000000000000000000000000000000000000000000000000000000|false|clean-clear|2900|4800|100000|false||store"],
+    [["sstore", "1", "5", "5", "0", "100000", true], "sstore|0x55|Frontier|1|0x0000000000000000000000000000000000000000000000000000000000000001|5|5|0||0|0x0000000000000000000000000000000000000000000000000000000000000000|true|clean-clear|5000|4800|100000|false||store"],
+    [["sstore", "1", "5", "5", "9", "100000", false], "sstore|0x55|Frontier|1|0x0000000000000000000000000000000000000000000000000000000000000001|5|5|9||9|0x0000000000000000000000000000000000000000000000000000000000000009|false|clean-reset|2900|0|100000|false||store"],
+    [["sstore", "1", "5", "5", "5", "100000", false], "sstore|0x55|Frontier|1|0x0000000000000000000000000000000000000000000000000000000000000001|5|5|5||5|0x0000000000000000000000000000000000000000000000000000000000000005|false|no-op|100|0|100000|false||store"],
+    [["sstore", "1", "5", "5", "5", "100000", true], "sstore|0x55|Frontier|1|0x0000000000000000000000000000000000000000000000000000000000000001|5|5|5||5|0x0000000000000000000000000000000000000000000000000000000000000005|true|no-op|2200|0|100000|false||store"],
+    [["sstore", "2", "0", "7", "0", "100000", false], "sstore|0x55|Frontier|2|0x0000000000000000000000000000000000000000000000000000000000000002|0|7|0||0|0x0000000000000000000000000000000000000000000000000000000000000000|false|dirty|100|19900|100000|false||store"],
+    [["sstore", "2", "9", "0", "3", "100000", false], "sstore|0x55|Frontier|2|0x0000000000000000000000000000000000000000000000000000000000000002|9|0|3||3|0x0000000000000000000000000000000000000000000000000000000000000003|false|dirty|100|-4800|100000|false||store"],
+    [["sstore", "2", "9", "3", "0", "100000", false], "sstore|0x55|Frontier|2|0x0000000000000000000000000000000000000000000000000000000000000002|9|3|0||0|0x0000000000000000000000000000000000000000000000000000000000000000|false|dirty|100|4800|100000|false||store"],
+    [["sstore", "2", "9", "3", "9", "100000", false], "sstore|0x55|Frontier|2|0x0000000000000000000000000000000000000000000000000000000000000002|9|3|9||9|0x0000000000000000000000000000000000000000000000000000000000000009|false|dirty|100|2800|100000|false||store"],
+    [["sstore", "2", "9", "0", "9", "100000", false], "sstore|0x55|Frontier|2|0x0000000000000000000000000000000000000000000000000000000000000002|9|0|9||9|0x0000000000000000000000000000000000000000000000000000000000000009|false|dirty|100|-2000|100000|false||store"],
+    [["sstore", "2", "9", "3", "4", "100000", false], "sstore|0x55|Frontier|2|0x0000000000000000000000000000000000000000000000000000000000000002|9|3|4||4|0x0000000000000000000000000000000000000000000000000000000000000004|false|dirty|100|0|100000|false||store"],
+    [["sstore", "0x2", "0x9", "0x3", "0x0", "0x186a0", false], "sstore|0x55|Frontier|2|0x0000000000000000000000000000000000000000000000000000000000000002|9|3|0||0|0x0000000000000000000000000000000000000000000000000000000000000000|false|dirty|100|4800|100000|false||store"],
+    [["sstore", "1", "5", "5", "5", "2300", false], "sstore|0x55|Frontier|1|0x0000000000000000000000000000000000000000000000000000000000000001|5|5|5||5|0x0000000000000000000000000000000000000000000000000000000000000005|false||||2300|true|sentry|halt"],
+    [["sstore", "1", "5", "5", "5", "2301", false], "sstore|0x55|Frontier|1|0x0000000000000000000000000000000000000000000000000000000000000001|5|5|5||5|0x0000000000000000000000000000000000000000000000000000000000000005|false|no-op|100|0|2301|false||store"],
+    [["sstore", "1", "5", "5", "5", "0", false], "sstore|0x55|Frontier|1|0x0000000000000000000000000000000000000000000000000000000000000001|5|5|5||5|0x0000000000000000000000000000000000000000000000000000000000000005|false||||0|true|sentry|halt"],
+    [["sstore", "0", "0", "0", "1", "10000", false], "sstore|0x55|Frontier|0|0x0000000000000000000000000000000000000000000000000000000000000000|0|0|1||0|0x0000000000000000000000000000000000000000000000000000000000000000|false||||10000|true|insufficient|halt"],
+    [["sstore", "0", "0", "0", "1", "20000", false], "sstore|0x55|Frontier|0|0x0000000000000000000000000000000000000000000000000000000000000000|0|0|1||1|0x0000000000000000000000000000000000000000000000000000000000000001|false|clean-set|20000|0|20000|false||store"],
+    [["sstore", "0", "0", "0", "1", "22099", true], "sstore|0x55|Frontier|0|0x0000000000000000000000000000000000000000000000000000000000000000|0|0|1||0|0x0000000000000000000000000000000000000000000000000000000000000000|true||||22099|true|insufficient|halt"],
+    [["sstore", "0", "0", "0", "1", "22100", true], "sstore|0x55|Frontier|0|0x0000000000000000000000000000000000000000000000000000000000000000|0|0|1||1|0x0000000000000000000000000000000000000000000000000000000000000001|true|clean-set|22100|0|22100|false||store"]
+  ]; return V.every(([inp, exp]) => { const r = app.storageCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.fork, r.slot, r.slotHex, r.original, r.current, r.newValue, r.pushed, r.storageAfter, r.storageAfterHex, r.cold, r.branch, r.totalGas, r.refundDelta, r.gasBefore, r.halted, r.haltReason, r.outcome].join("|") === exp; }); })());
+check("storage: prefilled page values \u2014 storing 1,000,000 into an empty cold slot 0 is a clean set at 22,100 gas",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const op = /id="storage-op"[\s\S]*?<option value="sstore" selected>/.test(html) ? "sstore" : "sload";
+    const cold = /id="storage-cold" type="checkbox" checked/.test(html);
+    const r = app.storageCalc(op, g("storage-slot"), g("storage-original"), g("storage-current"), g("storage-new"), g("storage-gas"), cold);
+    return r !== null && r.outcome === "store" && r.branch === "clean-set" && r.totalGas === "22100" && r.storageAfter === "1000000"; })());
+check("storage: SSTORE gas, refund and branch agree with the hub's SSTORE gas function exactly, across every branch, cold and warm",
+  [["0", "0", "1"], ["0", "0", "0"], ["5", "5", "0"], ["5", "5", "9"], ["5", "5", "5"], ["0", "7", "0"], ["9", "0", "3"], ["9", "3", "0"], ["9", "3", "9"], ["9", "0", "9"], ["9", "3", "4"]].every(([o, c, n]) =>
+    [true, false].every(cold => { const a = app.storageCalc("sstore", "3", o, c, n, "100000", cold);
+      const b = app.sstoreGas(o, c, n, cold);
+      return a !== null && b !== null && a.totalGas === b.gas && a.refundDelta === b.refundDelta && a.branch === b.branch; })));
+check("storage: SLOAD pushes the current word, leaves storage unchanged, and its total agrees with the hub's SLOAD gas tool exactly, cold and warm",
+  [true, false].every(cold => { const a = app.storageCalc("sload", "7", "", "424242", "", "", cold);
+    const b = app.sloadGasCalc(cold);
+    return a !== null && b !== null && a.pushed === "424242" && a.storageAfter === "424242" && a.totalGas === b.totalGas; }));
+check("storage: the sentry pair \u2014 the SAME 100-gas no-op write halts at 2,300 gas remaining (sentry) and stores at 2,301, and the sentry halts a clean set at 2,300 too",
+  app.storageCalc("sstore", "1", "5", "5", "5", "2300", false).haltReason === "sentry" &&
+  app.storageCalc("sstore", "1", "5", "5", "5", "2301", false).outcome === "store" &&
+  app.storageCalc("sstore", "1", "5", "5", "5", "2301", false).totalGas === "100" &&
+  app.storageCalc("sstore", "0", "0", "0", "1", "2300", false).haltReason === "sentry" &&
+  app.storageCalc("sstore", "0", "0", "0", "1", "0", false).haltReason === "sentry");
+check("storage: above the sentry but below the metered cost the reason is insufficient \u2014 and gas exactly equal to the cost succeeds, warm and cold",
+  app.storageCalc("sstore", "0", "0", "0", "1", "10000", false).haltReason === "insufficient" &&
+  app.storageCalc("sstore", "0", "0", "0", "1", "20000", false).outcome === "store" &&
+  app.storageCalc("sstore", "0", "0", "0", "1", "22099", true).haltReason === "insufficient" &&
+  app.storageCalc("sstore", "0", "0", "0", "1", "22100", true).outcome === "store");
+check("storage: either halt leaves the slot's word unchanged and reports no gas or refund figure",
+  (() => { const a = app.storageCalc("sstore", "0", "7", "7", "1", "2300", false);
+    const b = app.storageCalc("sstore", "0", "0", "0", "1", "10000", false);
+    return a !== null && a.halted === "true" && a.haltReason === "sentry" && a.storageAfter === "7" && a.totalGas === "" && a.refundDelta === "" && a.branch === "" &&
+      b !== null && b.halted === "true" && b.haltReason === "insufficient" && b.storageAfter === "0" && b.totalGas === "" && b.refundDelta === "" && b.branch === ""; })());
+check("storage: SLOAD never reads its original, new-value or gas fields \u2014 garbage there cannot change its answer, while SSTORE refuses that same garbage in any field it reads",
+  app.storageCalc("sload", "0", "garbage", "42", "garbage", "garbage", false).pushed === "42" &&
+  app.storageCalc("sload", "0", null, "42", null, null, false) !== null &&
+  app.storageCalc("sstore", "0", "garbage", "0", "1", "100000", false) === null &&
+  app.storageCalc("sstore", "0", "0", "0", "garbage", "100000", false) === null &&
+  app.storageCalc("sstore", "0", "0", "0", "1", "garbage", false) === null);
+check("storage refuses an unknown opcode, a malformed slot, current, original, new or gas word, a word at or past 2^256, a non-boolean warmth, and null inputs",
+  app.storageCalc("tstore", "0", "0", "0", "1", "100000", false) === null &&
+  app.storageCalc("sload", "-1", "", "0", "", "", false) === null &&
+  app.storageCalc("sload", "0", "", "-1", "", "", false) === null &&
+  app.storageCalc("sstore", "0", "0", "0", "115792089237316195423570985008687907853269984665640564039457584007913129639936", "100000", false) === null &&
+  app.storageCalc("sstore", "0", "0", "0", "1", "-5", false) === null &&
+  app.storageCalc("sload", "0", "", "0", "", "", "yes") === null &&
+  app.storageCalc(null, "0", "", "0", "", "", false) === null &&
+  app.storageCalc("sload", null, "", "0", "", "", false) === null &&
+  app.storageCalc("sload", "0", "", null, "", "", false) === null);
+check("storage tool section present in index.html", html.includes("storage-btn") && html.includes("Storage opcode calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

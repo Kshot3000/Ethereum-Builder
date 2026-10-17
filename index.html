@@ -1095,6 +1095,27 @@
       <button id="jump-btn" type="button">Apply jump opcode</button>
       <p id="jump-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Storage opcode calculator — SLOAD / SSTORE against the slot's state</h3>
+      <p><code>SLOAD</code> (<code>0x54</code>) and <code>SSTORE</code> (<code>0x55</code>), both Frontier, are the EVM's persistent storage: one 32-byte word per 256-bit slot in the executing contract's own storage. SLOAD pops a slot key and pushes that slot's <em>current</em> word, changing nothing. SSTORE pops the key first (it sits on top of the stack) and the value second, and replaces the slot's word. Metering turns on three values: the <em>original</em> word (what the slot held when the transaction began), the <em>current</em> word (what it holds just before this opcode) and the <em>new</em> word. SLOAD pays only the <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> slot access cost — 2,100 cold (the slot's first touch in this transaction) or 100 warm, the total the hub's SLOAD gas tool quotes. SSTORE follows <a href="https://eips.ethereum.org/EIPS/eip-2200">EIP-2200</a> as amended by EIP-2929 and <a href="https://eips.ethereum.org/EIPS/eip-3529">EIP-3529</a>: a no-op (new = current) costs 100; a clean slot (current = original) costs 20,000 to set from zero or 2,900 to reset or clear, a clear adding 4,800 to the refund counter; a dirty slot costs 100 with refund-counter adjustments (undoing an earlier clear subtracts 4,800, clearing adds 4,800, restoring the original adds 19,900 from a zero original or 2,800 from a non-zero one); a cold slot adds 2,100 to any of these — the same totals and refunds the hub's SSTORE gas tool quotes, cross-checked exactly in the tests. SSTORE's trap is the EIP-2200 <em>sentry</em>, checked before any metering: with gas remaining at or below the 2,300 call stipend the opcode halts out of gas <em>even when the write would cost only 100</em> — that is what stops a stipend-funded fallback frame from changing state — and a frame above the sentry but below the metered cost halts too, the two halts reported with distinct reasons and the storage left unchanged. The prefilled call stores 1,000,000 into an empty cold slot 0 at 22,100 gas; set the gas remaining to 2,300 on a no-op write (original = current = new) and it halts on the sentry instead. Honest scope: an SSTORE inside a static context fails for a non-gas reason (write protection) not modelled here; the refund shown is the refund-<em>counter</em> change this one opcode makes, before the transaction-level cap; and the slot, values, warmth and gas remaining are values <em>you</em> supply — this page executes nothing and reads no chain. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="storage-op">Opcode</label>
+      <select id="storage-op"><option value="sload">SLOAD (0x54) — push the slot's current word</option><option value="sstore" selected>SSTORE (0x55) — replace the slot's word</option></select>
+      <label for="storage-slot">Storage slot / key (one 256-bit value, decimal or 0x hex — the word the opcode pops first)</label>
+      <input id="storage-slot" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="storage-original">Original value (SSTORE only — the word the slot held when the transaction began; not read for SLOAD)</label>
+      <input id="storage-original" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="storage-current">Current value (the word the slot holds just before this opcode — SLOAD pushes exactly this)</label>
+      <input id="storage-current" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="storage-new">New value (SSTORE only — the word popped second, stored into the slot; not read for SLOAD)</label>
+      <input id="storage-new" type="text" inputmode="numeric" spellcheck="false" value="1000000">
+      <label for="storage-gas">Gas remaining before the opcode (SSTORE only — at or below 2,300 the EIP-2200 sentry halts the write before metering; not read for SLOAD)</label>
+      <input id="storage-gas" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <label for="storage-cold">Slot is cold — its first touch in this transaction (unchecked is warm, already touched; a cold SSTORE adds 2,100 and a cold SLOAD costs 2,100 instead of 100)</label>
+      <input id="storage-cold" type="checkbox" checked>
+      <button id="storage-btn" type="button">Apply storage opcode</button>
+      <p id="storage-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1483,6 +1504,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=89"></script>
+<script src="app.js?v=90"></script>
 </body>
 </html>

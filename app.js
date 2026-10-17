@@ -6382,6 +6382,124 @@ function jumpCalc(opStr, destStr, condStr, codeStr) {
   return { ...base, outcome: "halt", nextPc: "", halted: "true", totalGas: "" };
 }
 
+/* Storage opcodes -- SLOAD (0x54) / SSTORE (0x55), both
+   Frontier: the executing contract's own persistent storage,
+   one 32-byte word per 256-bit slot. The hub already prices
+   these opcodes in isolation (the SLOAD gas tool, the SSTORE
+   gas & refund tool); this tool applies them: SLOAD pushes the
+   slot's CURRENT word and changes nothing, SSTORE replaces the
+   slot's word with the new value it pops (key on top of the
+   stack, value second) and reports the word stored after.
+   Original means the value the slot held when the transaction
+   began, current the value it holds just before this opcode --
+   the pair EIP-2200 meters against -- and both are read only
+   by SSTORE: SLOAD consults the current word and the slot's
+   warmth alone, so its original, new-value and gas fields are
+   never parsed (lazily, like the hub's other per-opcode
+   fields, and the tests carry garbage-field cases for it).
+   Gas follows the current rules, restated here in my own
+   words. SLOAD pays only the EIP-2929 slot access cost: 2,100
+   cold (the slot's first touch in this transaction) or 100
+   warm -- the same total the hub's SLOAD gas tool quotes, and
+   the tests cross-check the two tools exactly. SSTORE is
+   metered by EIP-2200 as amended by EIP-2929 and EIP-3529,
+   implemented here independently and cross-checked in tests
+   against the hub's SSTORE gas function exactly: a no-op
+   (new == current) costs 100; a clean slot (current ==
+   original) costs 20,000 to set from zero, or 2,900 to reset
+   or clear, a clear earning a 4,800 refund-counter increase
+   (EIP-3529's figure, down from 15,000); a dirty slot
+   (current != original) costs 100 with refund-counter
+   adjustments -- undoing an earlier clear in the same
+   transaction subtracts 4,800, clearing adds 4,800, and
+   restoring the original value adds 19,900 when the original
+   was zero or 2,800 when it was not -- and a cold slot adds
+   2,100 to any of these.
+   SSTORE's trap is the EIP-2200 sentry, checked BEFORE any
+   metering: if the frame's gas remaining is at or below the
+   2,300 call stipend, SSTORE halts out of gas even when the
+   write itself would cost only 100 -- that is what stops a
+   stipend-funded fallback frame from changing state. A frame
+   above the sentry but below the metered cost halts out of
+   gas too; the two halts are reported with distinct reasons
+   (sentry / insufficient), the storage is left unchanged,
+   and no gas or refund figure applies, in the hub's halt
+   shape. Gas exactly equal to the metered cost succeeds.
+   SLOAD has no sentry and no gas input. Honest scope: an
+   SSTORE inside a static context fails for a non-gas reason
+   (write protection) not modelled here; the slot, values,
+   warmth and gas remaining are user-supplied values, not
+   execution state or live chain data this page reads; the
+   refund figure is the refund-COUNTER change this one opcode
+   makes, before the transaction-level cap (EIP-3529 caps the
+   applied refund at a fifth of the gas used); and a frame
+   revert undoes the frame's storage writes, which a single
+   opcode application cannot show. All words are single
+   256-bit values via the SSTORE gas tool's parser, refused
+   rather than wrapped when wider. */
+const STORAGE_OPS = {
+  sload: { byte: "0x54" },
+  sstore: { byte: "0x55" }
+};
+const SSTORE_SENTRY_GAS = 2300n;
+function storageCalc(opStr, slotStr, originalStr, currentStr, newStr, gasStr, cold) {
+  if (typeof opStr !== "string") return null;
+  if (typeof cold !== "boolean") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(STORAGE_OPS, op)) return null;
+  const slot = sstoreParseWord(slotStr);
+  const current = sstoreParseWord(currentStr);
+  if (slot === null || current === null) return null;
+  const wordHex = v => "0x" + v.toString(16).padStart(64, "0");
+  const base = { opcode: op, opcodeByte: STORAGE_OPS[op].byte, fork: "Frontier",
+    slot: slot.toString(), slotHex: wordHex(slot),
+    cold: cold ? "true" : "false" };
+  if (op === "sload") {
+    const gas = cold ? 2100n : 100n;
+    return { ...base, original: "", current: current.toString(), newValue: "",
+      pushed: current.toString(), storageAfter: current.toString(),
+      storageAfterHex: wordHex(current), branch: "",
+      totalGas: gas.toString(), refundDelta: "", gasBefore: "",
+      halted: "false", haltReason: "", outcome: "load" };
+  }
+  const original = sstoreParseWord(originalStr);
+  const fresh = sstoreParseWord(newStr);
+  const gasBefore = sstoreParseWord(gasStr);
+  if (original === null || fresh === null || gasBefore === null) return null;
+  const full = { ...base, original: original.toString(),
+    current: current.toString(), newValue: fresh.toString(), pushed: "",
+    gasBefore: gasBefore.toString() };
+  if (gasBefore <= SSTORE_SENTRY_GAS) {
+    return { ...full, storageAfter: current.toString(),
+      storageAfterHex: wordHex(current), branch: "", totalGas: "",
+      refundDelta: "", halted: "true", haltReason: "sentry", outcome: "halt" };
+  }
+  let gas, refund = 0n, branch;
+  if (fresh === current) {
+    gas = 100n; branch = "no-op";
+  } else if (current === original) {
+    if (original === 0n) { gas = 20000n; branch = "clean-set"; }
+    else if (fresh === 0n) { gas = 2900n; refund = 4800n; branch = "clean-clear"; }
+    else { gas = 2900n; branch = "clean-reset"; }
+  } else {
+    gas = 100n; branch = "dirty";
+    if (original !== 0n) {
+      if (current === 0n) refund -= 4800n;
+      if (fresh === 0n) refund += 4800n;
+    }
+    if (fresh === original) refund += original === 0n ? 19900n : 2800n;
+  }
+  if (cold) gas += 2100n;
+  if (gasBefore < gas) {
+    return { ...full, storageAfter: current.toString(),
+      storageAfterHex: wordHex(current), branch: "", totalGas: "",
+      refundDelta: "", halted: "true", haltReason: "insufficient", outcome: "halt" };
+  }
+  return { ...full, storageAfter: fresh.toString(),
+    storageAfterHex: wordHex(fresh), branch, totalGas: gas.toString(),
+    refundDelta: refund.toString(), halted: "false", haltReason: "", outcome: "store" };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -8184,6 +8302,39 @@ if (typeof document !== "undefined") {
       el.textContent = `${name} (${r.opcodeByte}, ${r.fork}): destination ${r.dest} is NOT a valid jump destination in the ${r.codeBytes} byte(s) of code you supplied (valid destinations: ${dests})${r.destFake === "true" ? " — the byte stored there is 0x5b, but it sits inside PUSH immediate data, so it is data, not a JUMPDEST" : ""} — an invalid jump destination, an exceptional halt that consumes the frame's gas, so no single-opcode gas figure applies. ${tail}`;
     });
 
+    /* SLOAD (0x54) / SSTORE (0x55) */
+    const storageBtn = document.getElementById("storage-btn");
+    if (storageBtn) storageBtn.addEventListener("click", () => {
+      const cold = document.getElementById("storage-cold").checked;
+      const r = storageCalc(
+        document.getElementById("storage-op").value,
+        document.getElementById("storage-slot").value,
+        document.getElementById("storage-original").value,
+        document.getElementById("storage-current").value,
+        document.getElementById("storage-new").value,
+        document.getElementById("storage-gas").value,
+        cold);
+      const el = document.getElementById("storage-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the slot and the current value (and, for SSTORE, the original value, the new value and the gas remaining) must each be one 256-bit word, decimal or 0x hex. SLOAD reads only the slot, the current value and the warmth — its other fields are not read.";
+        return;
+      }
+      const tail = "Computed locally from the storage state you gave — nothing is executed and no chain is queried.";
+      if (r.opcode === "sload") {
+        el.textContent = `SLOAD (${r.opcodeByte}, ${r.fork}): pushes the current word of slot ${r.slot} — ${r.pushed} (${r.storageAfterHex}) — and storage is unchanged. Gas: ${r.totalGas} — the EIP-2929 slot access cost for a ${cold ? "cold slot (its first touch in this transaction; a later touch of the same slot would be warm at 100)" : "warm slot (already touched in this transaction; a cold first touch would cost 2,100)"}, with no other term — the same total the hub's SLOAD gas tool quotes. ${tail}`;
+        return;
+      }
+      if (r.halted === "true" && r.haltReason === "sentry") {
+        el.textContent = `SSTORE (${r.opcodeByte}, ${r.fork}): the frame's gas remaining, ${r.gasBefore}, is at or below the 2,300 call stipend, so the EIP-2200 sentry halts the opcode out of gas before any metering — even a 100-gas no-op write cannot run on a stipend. Slot ${r.slot} keeps its current word ${r.current}; no gas or refund figure applies. ${tail}`;
+        return;
+      }
+      if (r.halted === "true") {
+        el.textContent = `SSTORE (${r.opcodeByte}, ${r.fork}): the frame's gas remaining, ${r.gasBefore}, is above the 2,300 sentry but below this write's metered cost, so the opcode halts out of gas. Slot ${r.slot} keeps its current word ${r.current}; no gas or refund figure applies. The metered cost itself is what the hub's SSTORE gas tool quotes for these values. ${tail}`;
+        return;
+      }
+      el.textContent = `SSTORE (${r.opcodeByte}, ${r.fork}): slot ${r.slot} goes from its current word ${r.current} to ${r.storageAfter} (${r.storageAfterHex}) — the ${r.branch} branch of EIP-2200 metering against the transaction-original word ${r.original}, on a ${cold ? "cold slot (first touch in this transaction, +2,100 included)" : "warm slot"}. Gas: ${r.totalGas}. Refund counter change: ${r.refundDelta} (the counter change this one opcode makes, before the transaction-level refund cap). The same total and refund the hub's SSTORE gas tool quotes for these values. ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -8197,5 +8348,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

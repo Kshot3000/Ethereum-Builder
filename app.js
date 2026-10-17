@@ -5506,6 +5506,121 @@ function memCalc(opStr, offsetStr, valueStr, memoryStr) {
   };
 }
 
+/* Calldata opcodes CALLDATALOAD (0x35) / CALLDATASIZE (0x36) /
+   CALLDATACOPY (0x37), all Frontier — what a call frame's
+   read-only input byte array, the calldata, yields. The three
+   traps live in the padding and the offsets. CALLDATALOAD
+   pushes the 32 big-endian bytes STARTING at its offset, so
+   loading at 0 of a transfer(address,uint256) call pushes the
+   selector in the HIGH four bytes followed by the first 28
+   bytes of the address word — not the selector as a number,
+   which sits at no offset; and offsets are BYTE offsets into
+   the raw calldata including the 4 selector bytes, so the
+   two argument words sit at 4 and 36, not at 0 and 1.
+   CALLDATACOPY copies size bytes from a calldata offset to a
+   memory destination, zero-padding the source past the
+   calldata's end and zero-filling any memory gap, exactly as
+   CALLDATALOAD zero-pads — the contrast is RETURNDATACOPY,
+   the one copy that REVERTS when its source range runs past
+   the return data's end, and borrowing that behaviour here
+   is wrong. CALLDATASIZE pushes the calldata's length in
+   bytes. Gas splits inside the family: SIZE is a flat 2 (the
+   Base tier), LOAD a flat 3 (Verylow) at ANY offset — a load
+   at 2^255 pushes 0 and still costs 3, because calldata is
+   not memory and reading it expands nothing — and COPY is
+   the flat 3 plus 3 per word copied (the size rounded up to
+   whole words) plus the memory-expansion increase on the
+   hub's own cost curve for growing the destination, the
+   same total the hub's copy-gas tool quotes; a zero-size
+   copy touches no memory whatever its destination and costs
+   the flat 3 alone. Inputs are refused rather than wrapped:
+   the offsets and size are single 256-bit words in decimal
+   or 0x hex via parseWord256 (for LOAD the destination and
+   size arguments are never read; for SIZE none of the three
+   is); the calldata and memory hex must be even-length; and
+   the supplied calldata, the supplied memory, the copy size
+   and a non-empty copy's destination end are each capped at
+   4,096 bytes so the byte strings stay displayable — display
+   caps, stated as such. The offsets themselves are NOT
+   capped: no allocation depends on them, a real frame's
+   offsets are bounded by the stack word, not by this cap. */
+const CDAT_MAX_BYTES = 4096;
+const CDAT_BYTES = { calldataload: "0x35", calldatasize: "0x36", calldatacopy: "0x37" };
+function cdCalc(opStr, offsetStr, destStr, sizeStr, calldataStr, memoryStr) {
+  if (typeof opStr !== "string" || typeof calldataStr !== "string" || typeof memoryStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(CDAT_BYTES, op)) return null;
+  const parseBytes = s => {
+    let h = s.trim();
+    if (/^0[xX]/.test(h)) h = h.slice(2);
+    if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+    if (h.length / 2 > CDAT_MAX_BYTES) return null;
+    const arr = [];
+    for (let i = 0; i < h.length; i += 2) arr.push(parseInt(h.slice(i, i + 2), 16));
+    return arr;
+  };
+  const cd = parseBytes(calldataStr);
+  const before = parseBytes(memoryStr);
+  if (cd === null || before === null) return null;
+  const after = before.slice();
+  let offset = null, dest = null, size = null, result = null, copied = null;
+  let baseGas = 0n, wordGas = 0n;
+  if (op === "calldataload") {
+    offset = parseWord256(offsetStr);
+    if (offset === null) return null;
+    result = 0n;
+    for (let i = 0; i < 32; i++) {
+      const idx = offset + BigInt(i);
+      const b = idx < BigInt(cd.length) ? cd[Number(idx)] : 0;
+      result = result * 256n + BigInt(b);
+    }
+    baseGas = 3n;
+  } else if (op === "calldatasize") {
+    result = BigInt(cd.length);
+    baseGas = 2n;
+  } else {
+    offset = parseWord256(offsetStr);
+    dest = parseWord256(destStr);
+    size = parseWord256(sizeStr);
+    if (offset === null || dest === null || size === null) return null;
+    if (size > BigInt(CDAT_MAX_BYTES)) return null;
+    if (size > 0n && (dest > BigInt(CDAT_MAX_BYTES) || dest + size > BigInt(CDAT_MAX_BYTES))) return null;
+    const sz = Number(size);
+    copied = [];
+    for (let i = 0; i < sz; i++) {
+      const idx = offset + BigInt(i);
+      copied.push(idx < BigInt(cd.length) ? cd[Number(idx)] : 0);
+    }
+    if (sz > 0) {
+      const d = Number(dest), end = d + sz;
+      while (after.length < end) after.push(0);
+      for (let i = 0; i < sz; i++) after[d + i] = copied[i];
+    }
+    wordGas = 3n * BigInt(Math.ceil(sz / 32));
+    baseGas = 3n;
+  }
+  const touchedEnd = (op === "calldatacopy" && size !== null && size > 0n) ? Number(dest) + Number(size) : before.length;
+  const wordsBefore = BigInt(Math.ceil(before.length / 32));
+  const wordsAfter = BigInt(Math.ceil(Math.max(before.length, touchedEnd) / 32));
+  const expansion = wordsAfter > wordsBefore ? memTotalCost(wordsAfter) - memTotalCost(wordsBefore) : 0n;
+  const toHex = arr => "0x" + arr.map(b => b.toString(16).padStart(2, "0")).join("");
+  const wordHex = v => v === null ? "" : "0x" + v.toString(16).padStart(64, "0");
+  return {
+    opcode: op, opcodeByte: CDAT_BYTES[op],
+    calldataBytes: String(cd.length),
+    offset: offset === null ? "" : offset.toString(),
+    destOffset: dest === null ? "" : dest.toString(),
+    copySize: size === null ? "" : size.toString(),
+    result: result === null ? "" : result.toString(), resultHex: wordHex(result),
+    copied: copied === null ? "" : toHex(copied),
+    memoryBefore: toHex(before), memoryAfter: toHex(after),
+    memoryBeforeBytes: String(before.length), memoryAfterBytes: String(after.length),
+    msizeBefore: (wordsBefore * 32n).toString(), msizeAfter: (wordsAfter * 32n).toString(),
+    wordGas: wordGas.toString(), expansionGas: expansion.toString(),
+    totalGas: (baseGas + wordGas + expansion).toString()
+  };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -7051,6 +7166,32 @@ if (typeof document !== "undefined") {
       el.textContent = `MSTORE (${r.opcodeByte}) at offset ${r.offset}: writes the value ${r.value} (${r.valueHex}) as a 32-byte big-endian word — its low byte lands at offset ${Number(r.offset) + 31}. Memory after (${r.memoryAfterBytes} byte(s)): ${r.memoryAfter}. MSIZE is ${r.msizeAfter}. ${gas} Computed locally from the memory you gave — nothing is executed and no chain is queried.`;
     });
 
+    /* Calldata opcodes (CALLDATALOAD / CALLDATASIZE / CALLDATACOPY) */
+    const cdatBtn = document.getElementById("cdat-btn");
+    if (cdatBtn) cdatBtn.addEventListener("click", () => {
+      const r = cdCalc(
+        document.getElementById("cdat-op").value,
+        document.getElementById("cdat-offset").value,
+        document.getElementById("cdat-dest").value,
+        document.getElementById("cdat-size").value,
+        document.getElementById("cdat-calldata").value,
+        document.getElementById("cdat-memory").value);
+      const el = document.getElementById("cdat-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: enter the offset and (for CALLDATACOPY) the destination and size each as one 256-bit word, decimal or 0x hex, and the calldata and the memory before as hex bytes (0x prefix optional, an even number of hex digits, at most 4,096 bytes each; empty is empty). For CALLDATACOPY the size and, when the size is not zero, the destination end must also stay within 4,096 bytes.";
+        return;
+      }
+      if (r.opcode === "calldataload") {
+        el.textContent = `CALLDATALOAD (${r.opcodeByte}) at offset ${r.offset}: the 32 big-endian bytes there push ${r.result} (${r.resultHex}) — bytes past the end of the ${r.calldataBytes}-byte calldata read as zero, and no memory is touched (memory unchanged at ${r.memoryAfterBytes} byte(s)). Gas: 3 — the flat Verylow tier, at any offset, because reading calldata expands nothing. Computed locally from the calldata you gave — nothing is executed and no chain is queried.`;
+        return;
+      }
+      if (r.opcode === "calldatasize") {
+        el.textContent = `CALLDATASIZE (${r.opcodeByte}): pushes ${r.result} — the length in bytes of the calldata you supplied. Gas: 2 — the flat Base tier. No memory is touched (memory unchanged at ${r.memoryAfterBytes} byte(s)). Computed locally from the calldata you gave — nothing is executed and no chain is queried.`;
+        return;
+      }
+      el.textContent = `CALLDATACOPY (${r.opcodeByte}): copies ${r.copySize} byte(s) from calldata offset ${r.offset} to memory offset ${r.destOffset} — bytes past the end of the ${r.calldataBytes}-byte calldata copy as zero, and a gap in memory is zero-filled. Copied: ${r.copied}. Memory after (${r.memoryAfterBytes} byte(s)): ${r.memoryAfter}. MSIZE is ${r.msizeAfter}. Gas: ${r.totalGas} — the flat 3 plus ${r.wordGas} for the word(s) copied plus ${r.expansionGas} of memory expansion. Computed locally from the calldata and memory you gave — nothing is executed and no chain is queried.`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -7064,5 +7205,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

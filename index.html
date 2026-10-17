@@ -908,6 +908,25 @@
       <button id="memop-btn" type="button">Apply memory opcode</button>
       <p id="memop-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>Calldata opcode calculator — CALLDATALOAD / CALLDATASIZE / CALLDATACOPY</h3>
+      <p>The call frame's input, all Frontier: <code>CALLDATALOAD</code> (<code>0x35</code>) pushes the 32 big-endian bytes at an offset in the calldata, <code>CALLDATASIZE</code> (<code>0x36</code>) pushes the calldata's length in bytes, and <code>CALLDATACOPY</code> (<code>0x37</code>) copies a range of it into memory. Calldata is the byte array the caller passed — read-only, unlike the memory the opcodes above work on. Three traps. A load returns the bytes <em>starting</em> at its offset, so loading at 0 of a <code>transfer(address,uint256)</code> call pushes the 4 selector bytes in the <em>high</em> bytes followed by the first 28 bytes of the address word — not the selector as a number, which sits at no offset. And the offsets are <em>byte</em> offsets into the raw calldata including those 4 selector bytes, so that call's two argument words sit at 4 and 36, not at 0 and 1 — the word-index reading is off by the selector everywhere. Finally, both the load and the copy <em>zero-pad</em> their source: bytes past the calldata's end read as zero and a copy writes those zeros into memory (filling any gap on the way). The one copy that behaves differently is <code>RETURNDATACOPY</code>, which <em>reverts</em> when its source range runs past the return data's end — borrowing that behaviour here, or for <code>CODECOPY</code>, is wrong. Gas splits inside the family: <code>CALLDATASIZE</code> is a flat 2 (the base tier) and <code>CALLDATALOAD</code> a flat 3 (the verylow tier) at <em>any</em> offset — a load at 2<sup>255</sup> pushes 0 and still costs 3, because calldata is not memory and reading it expands nothing — while <code>CALLDATACOPY</code> pays the flat 3 <em>plus</em> 3 per word copied (the size rounded up to whole words) <em>plus</em> the memory-expansion increase for growing the destination, on the cost curve the memory-expansion tool prices (the same total the hub's copy-gas tool quotes); a zero-size copy touches no memory whatever its destination and costs the flat 3 alone. The prefilled call is the ABI case: <code>CALLDATALOAD</code> at offset 36 of the supplied <code>transfer</code> calldata pushes exactly 1000000, the amount word, at 3 gas. Honest scope: the calldata and memory are bytes <em>you</em> supply, not a call this page makes or reads; the supplied calldata, the supplied memory, the copy size and a non-empty copy's destination end are each capped at 4,096 bytes so the byte strings stay displayable — display caps, stated as such — while the offsets themselves are any 256-bit word, because no allocation depends on them. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="cdat-op">Opcode</label>
+      <select id="cdat-op"><option value="calldataload" selected>CALLDATALOAD (0x35) — pushes the 32 big-endian bytes at the calldata offset</option><option value="calldatasize">CALLDATASIZE (0x36) — pushes the calldata length in bytes</option><option value="calldatacopy">CALLDATACOPY (0x37) — copies calldata bytes into memory</option></select>
+      <label for="cdat-offset">Calldata offset (one 256-bit value, decimal or 0x hex — a BYTE offset; ignored for CALLDATASIZE)</label>
+      <input id="cdat-offset" type="text" inputmode="numeric" spellcheck="false" value="36">
+      <label for="cdat-dest">Memory destination offset (one 256-bit value, decimal or 0x hex — CALLDATACOPY only, ignored otherwise)</label>
+      <input id="cdat-dest" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="cdat-size">Copy size in bytes (one 256-bit value, decimal or 0x hex — CALLDATACOPY only, ignored otherwise)</label>
+      <input id="cdat-size" type="text" inputmode="numeric" spellcheck="false" value="32">
+      <label for="cdat-calldata">Calldata (hex bytes, 0x prefix optional, an even number of hex digits, at most 4,096 bytes — empty is empty calldata; bytes past the end read as zero)</label>
+      <input id="cdat-calldata" type="text" spellcheck="false" value="0xa9059cbb000000000000000000000000222222222222222222222222222222222222222200000000000000000000000000000000000000000000000000000000000f4240">
+      <label for="cdat-memory">Memory before (hex bytes, 0x prefix optional, an even number of hex digits, at most 4,096 bytes — empty is empty memory; only CALLDATACOPY changes it)</label>
+      <input id="cdat-memory" type="text" spellcheck="false" value="">
+      <button id="cdat-btn" type="button">Apply calldata opcode</button>
+      <p id="cdat-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1296,6 +1315,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=80"></script>
+<script src="app.js?v=81"></script>
 </body>
 </html>

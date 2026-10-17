@@ -1040,6 +1040,25 @@
       <button id="exec-btn" type="button">Apply execution-state opcode</button>
       <p id="exec-out" class="out" aria-live="polite"></p>
     </div>
+
+    <div class="tool">
+      <h3>External code opcode calculator — EXTCODESIZE / EXTCODEHASH</h3>
+      <p><code>EXTCODESIZE</code> (<code>0x3b</code>, Frontier) and <code>EXTCODEHASH</code> (<code>0x3f</code>, Constantinople, <a href="https://eips.ethereum.org/EIPS/eip-1052">EIP-1052</a>) each pop an address and read <em>another</em> account — where <code>CODESIZE</code> and <code>CODECOPY</code> above read the executing account's <em>own</em> code. <code>EXTCODESIZE</code> pushes the length in bytes of the target's code: 0 for a non-existent account, and 0 for any account with no code, funded or not. <code>EXTCODEHASH</code> pushes the Keccak-256 of the target's code — with the split that is this family's trap. A non-existent account, or an <em>empty</em> one (<a href="https://eips.ethereum.org/EIPS/eip-161">EIP-161</a>: nonce 0, balance 0, no code), pushes <strong>0</strong> — <em>not</em> the hash of empty data. An account that exists and is not empty but has no code — a funded or transacted externally owned account — pushes <code>0xc5d246…</code>, the Keccak-256 of empty data. And an account with code pushes the Keccak-256 of that code. So which of the two zero-ish answers appears turns on the target's balance and nonce as well as its code: emptiness is a three-field fact, and a check that reads “hash is 0, so there is no contract” or “hash is <code>c5d246…</code>, so the account does not exist” is wrong in one direction each. The prefilled opcode makes the trap visible: a cold <code>EXTCODEHASH</code> of the prefilled target — an externally owned account carrying a supplied 1 ETH balance at nonce 1, with no code — pushes exactly <code>0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470</code>, not 0. Gas changed under this family: <a href="https://eips.ethereum.org/EIPS/eip-1052">EIP-1052</a> priced <code>EXTCODEHASH</code> at a flat 400, but since Berlin both opcodes pay the <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> account access cost for their target and nothing else — 2,600 cold or 100 warm, the same total the hub's account-access gas tool quotes — charged for the touch, not for what is found, so a cold read of a non-existent account still costs the full 2,600. Each opcode reads only the state it needs: <code>EXTCODESIZE</code> consults the code alone, so the balance and nonce fields below are not read for it, while <code>EXTCODEHASH</code> must read all three to decide emptiness. Honest scope: the target address and its code, balance and nonce are values <em>you</em> supply — this page executes nothing and reads no chain, so none of this is live chain state. The supplied code is capped at 4,096 bytes so the byte string stays displayable — a display cap, stated as such (real deployed code may run to the EIP-170 limit of 24,576 bytes). Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="ext-op">Opcode</label>
+      <select id="ext-op"><option value="extcodesize">EXTCODESIZE (0x3b) — pushes the byte length of another account's code</option><option value="extcodehash" selected>EXTCODEHASH (0x3f) — pushes the Keccak-256 of another account's code, 0 if it is non-existent or empty (EIP-1052)</option></select>
+      <label for="ext-addr">Target account address (exactly 40 hex characters, 0x prefix optional — the low 160 bits of the word the opcode pops)</label>
+      <input id="ext-addr" type="text" spellcheck="false" value="0x7e5f4552091a69125d5dfcb7b8c2659029395bdf">
+      <label for="ext-code">Target account's code (hex bytes, 0x prefix optional, an even number of hex digits, at most 4,096 bytes — empty is an account with no code)</label>
+      <input id="ext-code" type="text" spellcheck="false" value="">
+      <label for="ext-balance">Target account's balance in wei (EXTCODEHASH only — one 256-bit value, decimal or 0x hex; part of the EIP-161 emptiness test)</label>
+      <input id="ext-balance" type="text" inputmode="numeric" spellcheck="false" value="1000000000000000000">
+      <label for="ext-nonce">Target account's nonce (EXTCODEHASH only — one 256-bit value, decimal or 0x hex; part of the EIP-161 emptiness test)</label>
+      <input id="ext-nonce" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <label for="ext-cold">Target account is cold — its first touch in this transaction (unchecked is warm, already touched)</label>
+      <input id="ext-cold" type="checkbox" checked>
+      <button id="ext-btn" type="button">Apply external code opcode</button>
+      <p id="ext-out" class="out" aria-live="polite"></p>
+    </div>
     </div>
 
     <div class="tool">
@@ -1428,6 +1447,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=86"></script>
+<script src="app.js?v=87"></script>
 </body>
 </html>

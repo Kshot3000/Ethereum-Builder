@@ -6096,6 +6096,89 @@ function execCalc(opStr, pcStr, memoryStr, gasBeforeStr) {
   return { ...base, gasBefore: before.toString(), result: v.toString(), resultHex: wordHex(v) };
 }
 
+/* External code opcodes — EXTCODESIZE (0x3b, Frontier) and
+   EXTCODEHASH (0x3f, Constantinople, EIP-1052): each pops one stack
+   word and reads the account at its low 160 bits — ANOTHER account,
+   where CODESIZE / CODECOPY above read the executing account's own
+   code. The target here is supplied directly as that address
+   (exactly 40 hex characters), together with the account state the
+   answer turns on: its code, its balance and its nonce, all inputs
+   YOU supply — this page executes nothing and reads no chain.
+   EXTCODESIZE pushes the length in bytes of the target's code: 0
+   for a non-existent account, and 0 for any account with no code,
+   funded or not. It consults the code alone.
+   EXTCODEHASH pushes the Keccak-256 of the target's code, with the
+   EIP-1052 split that is the family's trap. A non-existent account,
+   or an EMPTY one (EIP-161: nonce 0, balance 0, no code), pushes 0
+   — NOT the hash of empty data. An account that exists and is not
+   empty but has no code — a funded or transacted externally owned
+   account — pushes keccak256("") = 0xc5d246…, the empty-data hash.
+   An account with code pushes keccak256 of that code. So which of
+   the two zero-ish answers appears turns on balance and nonce as
+   well as code: emptiness is a three-field fact, and code that
+   checks "hash == 0 means no contract" or "hash == c5d246… means
+   the account does not exist" is wrong in one direction each.
+   Gas is the other place the family changed: EIP-1052 priced
+   EXTCODEHASH at a flat 400, but since Berlin both opcodes pay the
+   EIP-2929 account access cost for their target and nothing else —
+   2,600 cold, 100 warm, the same total the hub's account-access
+   gas tool quotes for both — charged for the touch, not for what
+   is found, so a cold read of a non-existent account costs the
+   full 2,600.
+   Inputs are parsed lazily, as on a real frame: EXTCODESIZE reads
+   only the address, the code and the warmth, so a garbage balance
+   or nonce cannot change its answer; EXTCODEHASH must read all
+   three state fields to decide emptiness. Inputs are refused
+   rather than wrapped: the address must be exactly 40 hex
+   characters (0x prefix optional); balance and nonce are single
+   256-bit words via parseWord256; the supplied code hex must be
+   even-length and is capped at 4,096 bytes so the byte string
+   stays displayable — a display cap, stated as such, matching the
+   hub's code tools (real deployed code may run to the EIP-170
+   limit of 24,576 bytes). */
+const EXTCODE_OPS = {
+  extcodesize: { byte: "0x3b", fork: "Frontier" },
+  extcodehash: { byte: "0x3f", fork: "Constantinople (EIP-1052)" }
+};
+const EXTCODE_MAX_BYTES = 4096;
+const EXTCODE_EMPTY_HASH = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
+function extcodeCalc(opStr, addrStr, codeStr, balanceStr, nonceStr, cold) {
+  if (typeof opStr !== "string" || typeof cold !== "boolean") return null;
+  const op = opStr.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(EXTCODE_OPS, op)) return null;
+  if (typeof addrStr !== "string" || typeof codeStr !== "string") return null;
+  let addr = addrStr.trim();
+  if (/^0[xX]/.test(addr)) addr = addr.slice(2);
+  if (!/^[0-9a-fA-F]{40}$/.test(addr)) return null;
+  let h = codeStr.trim();
+  if (/^0[xX]/.test(h)) h = h.slice(2);
+  if (h !== "" && (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0)) return null;
+  if (h.length / 2 > EXTCODE_MAX_BYTES) return null;
+  const code = [];
+  for (let i = 0; i < h.length; i += 2) code.push(parseInt(h.slice(i, i + 2), 16));
+  const meta = EXTCODE_OPS[op];
+  const access = cold ? 2600n : 100n;
+  const wordHex = v => "0x" + v.toString(16).padStart(64, "0");
+  const base = { opcode: op, opcodeByte: meta.byte, fork: meta.fork,
+    targetAddress: "0x" + addr.toLowerCase(), codeBytes: String(code.length),
+    empty: "", result: "", resultHex: "",
+    accessGas: access.toString(), totalGas: access.toString() };
+  if (op === "extcodesize") {
+    const v = BigInt(code.length);
+    return { ...base, result: v.toString(), resultHex: wordHex(v) };
+  }
+  const balance = parseWord256(balanceStr);
+  const nonce = parseWord256(nonceStr);
+  if (balance === null || nonce === null) return null;
+  const empty = balance === 0n && nonce === 0n && code.length === 0;
+  const hash = empty ? "0".repeat(64)
+    : code.length === 0 ? EXTCODE_EMPTY_HASH
+    : keccak256Bytes(code);
+  const v = BigInt("0x" + hash);
+  return { ...base, empty: empty ? "true" : "false",
+    result: v.toString(), resultHex: "0x" + hash };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -7817,6 +7900,39 @@ if (typeof document !== "undefined") {
       el.textContent = `GAS (${r.opcodeByte}, ${r.fork}): pushes ${r.result} (the word ${r.resultHex}) — the frame's gas remaining after the GAS opcode's own cost is deducted: ${r.gasBefore} in hand minus 2, never the ${r.gasBefore} itself, and the frame's full remainder — the EIP-150 63/64 cap limits what a later CALL may forward, not what GAS reports. Gas: 2 — the flat Base tier. ${tail}`;
     });
 
+    /* External code opcodes EXTCODESIZE (0x3b) / EXTCODEHASH (0x3f) */
+    const extBtn = document.getElementById("ext-btn");
+    if (extBtn) extBtn.addEventListener("click", () => {
+      const cold = document.getElementById("ext-cold").checked;
+      const r = extcodeCalc(
+        document.getElementById("ext-op").value,
+        document.getElementById("ext-addr").value,
+        document.getElementById("ext-code").value,
+        document.getElementById("ext-balance").value,
+        document.getElementById("ext-nonce").value,
+        cold);
+      const el = document.getElementById("ext-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the target address must be exactly 40 hex characters (0x prefix optional), the target's code even-length hex of at most 4,096 bytes (empty is an account with no code), and (for EXTCODEHASH) the balance and nonce each one 256-bit word, decimal or 0x hex. EXTCODESIZE reads only the address, the code and the warmth.";
+        return;
+      }
+      const tail = "Computed locally from the account state you gave — nothing is executed and no chain is queried.";
+      const gasNote = `Gas: ${r.totalGas} — the EIP-2929 account access cost for a ${cold ? "cold account (its first touch in this transaction; a later touch of the same account would be warm at 100)" : "warm account (already touched in this transaction; a cold first touch would cost 2,600)"}, the same total the hub's account-access gas tool quotes.`;
+      if (r.opcode === "extcodesize") {
+        el.textContent = `EXTCODESIZE (${r.opcodeByte}, ${r.fork}): pushes ${r.result} — the length in bytes of the code you supplied for ${toChecksumAddress(r.targetAddress)}. An account with no code pushes 0, funded or not, and a non-existent account pushes 0. ${gasNote} ${tail}`;
+        return;
+      }
+      if (r.empty === "true") {
+        el.textContent = `EXTCODEHASH (${r.opcodeByte}, ${r.fork}): pushes 0 — the account at ${toChecksumAddress(r.targetAddress)} is empty as you supplied it (nonce 0, balance 0, no code), or does not exist, and EIP-1052 pushes 0 for such an account, NOT the hash of empty data (0xc5d246…). ${gasNote} ${tail}`;
+        return;
+      }
+      if (r.codeBytes === "0") {
+        el.textContent = `EXTCODEHASH (${r.opcodeByte}, ${r.fork}): pushes ${r.resultHex} — the Keccak-256 of empty data, because the account at ${toChecksumAddress(r.targetAddress)} exists and is not empty (its balance or nonce is non-zero) but carries no code, like a funded externally owned account. It is not 0: 0 is reserved for a non-existent or empty account. ${gasNote} ${tail}`;
+        return;
+      }
+      el.textContent = `EXTCODEHASH (${r.opcodeByte}, ${r.fork}): pushes ${r.resultHex} — the Keccak-256 of the ${r.codeBytes} byte(s) of code you supplied for ${toChecksumAddress(r.targetAddress)}. ${gasNote} ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -7830,5 +7946,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

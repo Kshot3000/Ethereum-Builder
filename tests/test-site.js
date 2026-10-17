@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=86"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=87"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -4893,6 +4893,87 @@ check("exec refuses an unknown opcode, a word at or past 2^256 for the selected 
   app.execCalc("gas", "", "", null) === null &&
   app.execCalc(null, "2", "", "100000") === null);
 check("exec tool section present in index.html", html.includes("exec-btn") && html.includes("Execution-state opcode calculator"));
+
+/* External code opcodes EXTCODESIZE (0x3b, Frontier) / EXTCODEHASH
+   (0x3f, Constantinople, EIP-1052): each reads ANOTHER account.
+   SIZE pushes the target code's length (0 for no code, funded or
+   not) and consults the code alone; HASH pushes keccak256(code),
+   except that a non-existent or EMPTY account (EIP-161: nonce 0,
+   balance 0, no code) pushes 0 while a non-empty account with no
+   code (a funded EOA) pushes keccak256("") = 0xc5d246.... Both pay
+   the EIP-2929 account access cost since Berlin (2,600 cold / 100
+   warm), not EIP-1052's original flat 400. Verified against an
+   independent pure-Python transcription (oracle-extcode-op.py)
+   whose Keccak-256 is implemented from the Keccak-f[1600]
+   permutation, anchored in-script on hand values (the published
+   empty / abc Keccak vectors, the prefilled funded EOA at
+   0xc5d246..., the non-existent account at 0) before generating. */
+check("extcode controls labelled in index.html",
+  ["ext-op", "ext-addr", "ext-code", "ext-balance", "ext-nonce", "ext-cold"].every(id => html.includes(`for="${id}"`)));
+check("extcode matches the Python oracle",
+  (() => { const V = [
+    [["extcodehash", "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf", "", "1000000000000000000", "1", true], "extcodehash|0x3f|Constantinople (EIP-1052)|0x7e5f4552091a69125d5dfcb7b8c2659029395bdf|0|false|89477152217924674838424037953991966239322087453347756267410168184682657981552|0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470|2600|2600"],
+    [["extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x605b5b615b5b5b", "0", "0", true], "extcodesize|0x3b|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7||7|0x0000000000000000000000000000000000000000000000000000000000000007|2600|2600"],
+    [["extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x605b5b615b5b5b", "0", "0", false], "extcodesize|0x3b|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7||7|0x0000000000000000000000000000000000000000000000000000000000000007|100|100"],
+    [["extcodehash", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x605b5b615b5b5b", "0", "0", true], "extcodehash|0x3f|Constantinople (EIP-1052)|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|false|58875784623104190257469222248377376204718572652536075728788771276384234902228|0x822a83608172e9ae7506974120cdafa2fd434ee85a977f190c2a1c703bc812d4|2600|2600"],
+    [["extcodehash", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "", "0", "0", true], "extcodehash|0x3f|Constantinople (EIP-1052)|0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48|0|true|0|0x0000000000000000000000000000000000000000000000000000000000000000|2600|2600"],
+    [["extcodesize", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "", "0", "0", true], "extcodesize|0x3b|Frontier|0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48|0||0|0x0000000000000000000000000000000000000000000000000000000000000000|2600|2600"],
+    [["extcodehash", "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf", "", "0", "5", true], "extcodehash|0x3f|Constantinople (EIP-1052)|0x7e5f4552091a69125d5dfcb7b8c2659029395bdf|0|false|89477152217924674838424037953991966239322087453347756267410168184682657981552|0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470|2600|2600"],
+    [["extcodehash", "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf", "", "1", "0", false], "extcodehash|0x3f|Constantinople (EIP-1052)|0x7e5f4552091a69125d5dfcb7b8c2659029395bdf|0|false|89477152217924674838424037953991966239322087453347756267410168184682657981552|0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470|100|100"],
+    [["extcodesize", "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf", "", "1000000000000000000", "1", true], "extcodesize|0x3b|Frontier|0x7e5f4552091a69125d5dfcb7b8c2659029395bdf|0||0|0x0000000000000000000000000000000000000000000000000000000000000000|2600|2600"],
+    [["extcodehash", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x00", "0", "0", true], "extcodehash|0x3f|Constantinople (EIP-1052)|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|1|false|85131057757245807317576516368191972321038229705283732634690444270750521936266|0xbc36789e7a1e281436464229828f817d6612f7b477d66591ff96a9e064bcc98a|2600|2600"],
+    [["extcodehash", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0xabababababababababababababababababababababababababababababababab", "0", "0", false], "extcodehash|0x3f|Constantinople (EIP-1052)|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|32|false|56642249537158088096363112399190320545198587682493121623788456663825426347705|0x7d3a608bb850f47c2d77d6be73b8f93c94a80264b7bb3cc5c7d2fb54d07ef6b9|100|100"],
+    [["extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0xabababababababababababababababababababababababababababababababab", "0", "0", true], "extcodesize|0x3b|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|32||32|0x0000000000000000000000000000000000000000000000000000000000000020|2600|2600"],
+    [["extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x605b5b615b5b5b", "garbage", null, true], "extcodesize|0x3b|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7||7|0x0000000000000000000000000000000000000000000000000000000000000007|2600|2600"],
+    [["extcodesize", "C02AAA39B223FE8D0A0E5C4F27EAD9083C756CC2", "0x605b5b615b5b5b", "0", "0", false], "extcodesize|0x3b|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7||7|0x0000000000000000000000000000000000000000000000000000000000000007|100|100"],
+    [["extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "605b5b615b5b5b", "0", "0", true], "extcodesize|0x3b|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7||7|0x0000000000000000000000000000000000000000000000000000000000000007|2600|2600"],
+    [["extcodehash", "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf", "", "0xde0b6b3a7640000", "0", true], "extcodehash|0x3f|Constantinople (EIP-1052)|0x7e5f4552091a69125d5dfcb7b8c2659029395bdf|0|false|89477152217924674838424037953991966239322087453347756267410168184682657981552|0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470|2600|2600"],
+    [["extcodehash", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x605b5b615b5b5b", "12345", "9", false], "extcodehash|0x3f|Constantinople (EIP-1052)|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|7|false|58875784623104190257469222248377376204718572652536075728788771276384234902228|0x822a83608172e9ae7506974120cdafa2fd434ee85a977f190c2a1c703bc812d4|100|100"],
+    [["extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "", "0", "0", false], "extcodesize|0x3b|Frontier|0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2|0||0|0x0000000000000000000000000000000000000000000000000000000000000000|100|100"],
+  ]; return V.every(([inp, exp]) => { const r = app.extcodeCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.fork, r.targetAddress, r.codeBytes, r.empty, r.result, r.resultHex, r.accessGas, r.totalGas].join("|") === exp; }); })());
+check("extcode: prefilled page values -- EXTCODEHASH selected, cold, funded EOA with no code pushes exactly 0xc5d246... at 2,600 gas",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const sel = html.match(/<select id="ext-op">([\s\S]*?)<\/select>/);
+    const r = app.extcodeCalc("extcodehash", g("ext-addr"), g("ext-code"), g("ext-balance"), g("ext-nonce"), true);
+    return sel !== null && sel[1].includes('value="extcodehash" selected') &&
+      html.includes('id="ext-cold" type="checkbox" checked') &&
+      r !== null && r.resultHex === "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470" &&
+      r.empty === "false" && r.codeBytes === "0" && r.totalGas === "2600"; })());
+check("extcode: the EIP-1052 split -- an empty account pushes 0, a non-empty account with no code pushes keccak256 of empty data, and the two are never equal",
+  (() => { const e = app.extcodeCalc("extcodehash", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "", "0", "0", true);
+    const f = app.extcodeCalc("extcodehash", "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf", "", "1", "0", true);
+    const n = app.extcodeCalc("extcodehash", "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf", "", "0", "1", true);
+    return e.result === "0" && e.empty === "true" &&
+      f.resultHex === "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470" && f.empty === "false" &&
+      n.resultHex === f.resultHex && e.resultHex !== f.resultHex; })());
+check("extcode: EXTCODESIZE of an account with no code is 0 whether the account is empty, funded or non-existent -- and of a contract is its code length",
+  app.extcodeCalc("extcodesize", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "", "0", "0", true).result === "0" &&
+  app.extcodeCalc("extcodesize", "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf", "", "1000000000000000000", "1", true).result === "0" &&
+  app.extcodeCalc("extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x605b5b615b5b5b", "0", "0", true).result === "7");
+check("extcode: EXTCODEHASH of code is the hub's own keccak256Bytes of that code, never the empty hash",
+  (() => { const r = app.extcodeCalc("extcodehash", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x605b5b615b5b5b", "0", "0", true);
+    return r.resultHex === "0x" + app.keccak256Bytes([0x60, 0x5b, 0x5b, 0x61, 0x5b, 0x5b, 0x5b]) &&
+      r.resultHex !== "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; })());
+check("extcode: EXTCODESIZE reads only the code -- a garbage balance or a missing nonce changes nothing, while EXTCODEHASH refuses them because emptiness needs all three fields",
+  app.extcodeCalc("extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x605b5b615b5b5b", "garbage", null, true).result === "7" &&
+  app.extcodeCalc("extcodehash", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "", "garbage", "0", true) === null &&
+  app.extcodeCalc("extcodehash", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "", "0", null, true) === null);
+check("extcode: both opcodes pay the EIP-2929 access cost the hub's account-access gas tool quotes -- 2,600 cold, 100 warm, never EIP-1052's old flat 400",
+  app.extcodeCalc("extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "", "0", "0", true).totalGas === app.accountAccessGasCalc("EXTCODESIZE", true).totalGas &&
+  app.extcodeCalc("extcodehash", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "", "0", "0", false).totalGas === app.accountAccessGasCalc("EXTCODEHASH", false).totalGas &&
+  app.extcodeCalc("extcodehash", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "", "0", "0", true).totalGas === "2600");
+check("extcode refuses an unknown opcode, a short address, odd-length or over-cap code, a balance or nonce at or past 2^256 for EXTCODEHASH, a non-boolean warmth, and a null selected input -- and accepts exactly 4,096 code bytes",
+  app.extcodeCalc("extcodecopy", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "", "0", "0", true) === null &&
+  app.extcodeCalc("extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc", "", "0", "0", true) === null &&
+  app.extcodeCalc("extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x0", "0", "0", true) === null &&
+  app.extcodeCalc("extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x" + "00".repeat(4097), "0", "0", true) === null &&
+  app.extcodeCalc("extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0x" + "00".repeat(4096), "0", "0", true).result === "4096" &&
+  app.extcodeCalc("extcodehash", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "", "115792089237316195423570985008687907853269984665640564039457584007913129639936", "0", true) === null &&
+  app.extcodeCalc("extcodesize", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "", "0", "0", "yes") === null &&
+  app.extcodeCalc("extcodesize", null, "", "0", "0", true) === null &&
+  app.extcodeCalc(null, "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "", "0", "0", true) === null);
+check("extcode tool section present in index.html", html.includes("ext-btn") && html.includes("External code opcode calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

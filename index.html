@@ -1247,6 +1247,33 @@
     </div>
 
     <div class="tool">
+      <h3>SELFDESTRUCT opcode calculator — contract termination applied</h3>
+      <p><code>SELFDESTRUCT</code> (<code>0xff</code>, Frontier) pops a beneficiary address and <em>terminates</em> the executing frame successfully — nothing is pushed and execution does not continue past it in this frame — moving the executing account's whole balance to the beneficiary. Its price is the hub's SELFDESTRUCT gas tool's: 5,000 base, +2,600 if the beneficiary is cold (<a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a>), and +25,000 only when the beneficiary is <em>empty</em> — balance 0, nonce 0 and no code, derived here from the beneficiary state you supply — <em>and</em> the balance moved is positive; the refund is 0, the old 24,000 having been removed by <a href="https://eips.ethereum.org/EIPS/eip-3529">EIP-3529</a>. Two failures are <em>exceptional</em> halts, not soft failures: the frame cannot pay the gas cost, and the frame is static — this opcode moves value, so a static frame may not run it at all, where a value-carrying CALL in a static frame merely fails softly. Each consumes the frame's whole remaining gas and changes nothing. The family's trap is <a href="https://eips.ethereum.org/EIPS/eip-6780">EIP-6780</a> (Cancun), which changed what the opcode <em>does</em> without changing its price: if the executing account was created in the <em>same transaction</em>, it is deleted at the transaction's <em>end</em> — code, storage and nonce cleared then, not at the opcode, so the code stays callable for the rest of the transaction; if it was <em>not</em> created in this transaction, nothing is deleted at all — only the balance moves and the account survives intact, which is why most contracts you can call today cannot actually be destroyed by their own <code>SELFDESTRUCT</code> anymore. A beneficiary that is the account <em>itself</em> splits the same way: with deletion, its balance is <em>burned</em> — sent to an account that is then removed, so it leaves circulation; without deletion, sending the balance to itself is a no-op and it stays exactly where it was. The prefilled termination — a pre-existing contract holding 1 ETH destructing to a cold, empty beneficiary — costs 32,600 gas (5,000 + 2,600 cold + 25,000 new-account), leaves the beneficiary holding the 1 ETH, and does <em>not</em> delete the contract. Honest scope: the state is values <em>you</em> supply — whether the account was created in this transaction is a fact of the transaction, supplied here as a flag — and this page executes nothing and reads no chain. Computed locally; nothing is terminated and no chain is queried.</p>
+      <label for="sdop-gas">Gas available (the frame's remaining gas when the opcode runs)</label>
+      <input id="sdop-gas" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <label for="sdop-self">Executing account (the contract running the opcode)</label>
+      <input id="sdop-self" type="text" spellcheck="false" value="0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a">
+      <label for="sdop-selfbal">Executing account balance (wei — the opcode moves all of it)</label>
+      <input id="sdop-selfbal" type="text" inputmode="numeric" spellcheck="false" value="1000000000000000000">
+      <label for="sdop-bene">Beneficiary address (the account that receives the balance)</label>
+      <input id="sdop-bene" type="text" spellcheck="false" value="0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826">
+      <label for="sdop-benebal">Beneficiary balance (wei — emptiness is derived from this, its nonce and its code flag)</label>
+      <input id="sdop-benebal" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="sdop-benenonce">Beneficiary nonce (a non-zero nonce alone makes it an existing account)</label>
+      <input id="sdop-benenonce" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="sdop-hascode">Beneficiary already has code (any code alone makes it an existing account)</label>
+      <input id="sdop-hascode" type="checkbox">
+      <label for="sdop-cold">Beneficiary is cold (not yet touched in this transaction — adds 2,600)</label>
+      <input id="sdop-cold" type="checkbox" checked>
+      <label for="sdop-created">Executing account was created in this same transaction (EIP-6780: only then is it deleted, at the transaction's end)</label>
+      <input id="sdop-created" type="checkbox">
+      <label for="sdop-static">Calling frame is static (the opcode then halts exceptionally — it moves value)</label>
+      <input id="sdop-static" type="checkbox">
+      <button id="sdop-btn" type="button">Apply SELFDESTRUCT opcode</button>
+      <p id="sdop-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1632,6 +1659,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=94"></script>
+<script src="app.js?v=95"></script>
 </body>
 </html>

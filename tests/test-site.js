@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=94"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=95"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -5697,6 +5697,121 @@ check("createop refuses an unknown opcode, a CREATE2 salt that is not exactly 32
   app.createCalc(null, "1000000", "0", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0", "0x", "0", "0", "success", "0", "0x", "0x", "0x", "0", "0", "0", "0", false, false) === null &&
   app.createCalc("create", "1000000", "0", null, "0", "0x", "0", "0", "success", "0", "0x", "0x", "0x", "0", "0", "0", "0", false, false) === null);
 check("createop tool section present in index.html", html.includes("createop-btn") && html.includes("CREATE / CREATE2 opcode calculator"));
+/* SELFDESTRUCT (0xff, Frontier; EIP-6780 in Cancun): the opcode
+   terminates the executing frame and moves the account's whole
+   balance to the beneficiary. Gas is the hub's SELFDESTRUCT gas
+   tool's price (5,000 + 2,600 cold + 25,000 for a positive
+   balance to an EMPTY beneficiary -- balance 0, nonce 0, no
+   code, derived from supplied state), refund 0 since EIP-3529.
+   Two exceptional halts consume the whole remaining gas: oog
+   (checked first) and a static frame. EIP-6780: the account is
+   deleted at the transaction's end ONLY if it was created in
+   the same transaction; otherwise only the balance moves. A
+   self-beneficiary burns its balance when deleted and no-ops
+   when not. Gas is cross-checked below against the hub's
+   SELFDESTRUCT gas tool exactly. Verified against an
+   independent pure-Python oracle (oracle-selfdestruct-op.py)
+   whose Keccak-f[1600] checksum is anchored in-script on the
+   published empty / abc vectors and both addresses' EIP-55
+   forms, plus hand-computed prefill gas, before generating. */
+check("sdop controls labelled in index.html",
+  ["sdop-gas", "sdop-self", "sdop-selfbal", "sdop-bene", "sdop-benebal", "sdop-benenonce", "sdop-hascode", "sdop-cold", "sdop-created", "sdop-static"].every(id => html.includes(`for="${id}"`)));
+check("sdop matches the Python oracle",
+  (() => { const V = [
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|terminated||32600|67400|0|1000000000000000000|true|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, true, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|terminated||32600|67400|0|1000000000000000000|true|0|true|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "5", "3", true, false, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|false|5000|0|0|0|5000|terminated||5000|95000|0|1000000000000000005|true|0|false|3|true|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "5", "3", true, false, true, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|false|5000|0|0|0|5000|terminated||5000|95000|0|1000000000000000005|true|0|true|3|true|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "5", "1", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|false|5000|2600|0|0|7600|terminated||7600|92400|0|1000000000000000005|true|0|false|1|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|0|0|7600|terminated||7600|92400|0|0|false|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, true, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|0|0|7600|terminated||7600|92400|0|0|false|0|true|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "1", true, false, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|true|false|5000|0|0|0|5000|terminated||5000|95000|1000000000000000000|1000000000000000000|false|0|false|1|true|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "1", true, false, true, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|true|false|5000|0|0|0|5000|terminated||5000|95000|0|0|false|1000000000000000000|true|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, true], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|halt|static|100000|0|1000000000000000000|0|false|0|false|0|false|true"],
+    [["32599", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|halt|oog|32599|0|1000000000000000000|0|false|0|false|0|false|true"],
+    [["32600", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|terminated||32600|0|0|1000000000000000000|true|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|terminated||32600|67400|0|1|true|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "123456789", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, false, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|0|25000|0|30000|terminated||30000|70000|0|123456789|true|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "5", "0", false, false, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|false|5000|0|0|0|5000|terminated||5000|95000|0|1000000000000000005|true|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", true, false, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|false|5000|0|0|0|5000|terminated||5000|95000|0|1000000000000000000|true|0|false|0|true|false"]
+  ]; return V.every(([inp, exp]) => { const r = app.selfdestructCalc(...inp);
+    return r !== null && [r.opcode, r.opcodeByte, r.fork, r.selfAddress, r.beneficiary, r.isSelfBeneficiary, r.beneficiaryEmpty, r.baseGas, r.accessGas, r.newAccountGas, r.refund, r.totalGas, r.outcome, r.haltReason, r.gasUsed, r.gasAfter, r.selfAfter, r.beneficiaryAfter, r.transferred, r.burned, r.deleted, r.beneficiaryNonceAfter, r.beneficiaryHasCodeAfter, r.halted].join("|") === exp; }); })());
+check("sdop: prefilled page values \u2014 a pre-existing contract's 1 ETH to a cold empty beneficiary costs 32,600 and does NOT delete it",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const r = app.selfdestructCalc(g("sdop-gas"), g("sdop-self"), g("sdop-selfbal"), g("sdop-bene"),
+      g("sdop-benebal"), g("sdop-benenonce"), false, true, false, false);
+    return r !== null && r.outcome === "terminated" && r.totalGas === "32600" && r.gasAfter === "67400" &&
+      r.selfAfter === "0" && r.beneficiaryAfter === "1000000000000000000" && r.transferred === "true" &&
+      r.deleted === "false" && r.beneficiaryEmpty === "true" && html.includes('id="sdop-cold" type="checkbox" checked'); })());
+check("sdop: gas agrees with the hub's SELFDESTRUCT gas tool exactly on every oracle row",
+  (() => { const V = [
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|terminated||32600|67400|0|1000000000000000000|true|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, true, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|terminated||32600|67400|0|1000000000000000000|true|0|true|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "5", "3", true, false, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|false|5000|0|0|0|5000|terminated||5000|95000|0|1000000000000000005|true|0|false|3|true|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "5", "3", true, false, true, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|false|5000|0|0|0|5000|terminated||5000|95000|0|1000000000000000005|true|0|true|3|true|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "5", "1", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|false|5000|2600|0|0|7600|terminated||7600|92400|0|1000000000000000005|true|0|false|1|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|0|0|7600|terminated||7600|92400|0|0|false|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, true, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|0|0|7600|terminated||7600|92400|0|0|false|0|true|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "1", true, false, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|true|false|5000|0|0|0|5000|terminated||5000|95000|1000000000000000000|1000000000000000000|false|0|false|1|true|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "1", true, false, true, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|true|false|5000|0|0|0|5000|terminated||5000|95000|0|0|false|1000000000000000000|true|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, true], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|halt|static|100000|0|1000000000000000000|0|false|0|false|0|false|true"],
+    [["32599", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|halt|oog|32599|0|1000000000000000000|0|false|0|false|0|false|true"],
+    [["32600", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|terminated||32600|0|0|1000000000000000000|true|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|2600|25000|0|32600|terminated||32600|67400|0|1|true|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "123456789", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, false, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|true|5000|0|25000|0|30000|terminated||30000|70000|0|123456789|true|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "5", "0", false, false, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|false|5000|0|0|0|5000|terminated||5000|95000|0|1000000000000000005|true|0|false|0|false|false"],
+    [["100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", true, false, false, false], "selfdestruct|0xff|Frontier|0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A|0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826|false|false|5000|0|0|0|5000|terminated||5000|95000|0|1000000000000000000|true|0|false|0|true|false"]
+  ]; return V.every(([inp]) => { const r = app.selfdestructCalc(...inp); if (r === null) return false;
+      const g = app.selfdestructGasCalc(inp[7], r.beneficiaryEmpty === "true", inp[2]);
+      return g !== null && r.baseGas === g.baseGas && r.accessGas === g.accessGas &&
+        r.newAccountGas === g.newAccountGas && r.refund === g.refund && r.totalGas === g.totalGas; }); })());
+check("sdop: the EIP-6780 split, paired \u2014 identical inputs, created-in-this-transaction flips only the deletion, never the gas or the balances",
+  (() => { const a = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false);
+    const b = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, true, false);
+    return a.deleted === "false" && b.deleted === "true" && a.totalGas === b.totalGas &&
+      a.selfAfter === b.selfAfter && a.beneficiaryAfter === b.beneficiaryAfter; })());
+check("sdop: the self-beneficiary split, paired \u2014 created in this transaction burns the 1 ETH, otherwise the transfer to itself is a no-op",
+  (() => { const a = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "1", true, false, false, false);
+    const b = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "1", true, false, true, false);
+    return a.isSelfBeneficiary === "true" && a.selfAfter === "1000000000000000000" && a.burned === "0" && a.deleted === "false" &&
+      b.burned === "1000000000000000000" && b.selfAfter === "0" && b.beneficiaryAfter === "0" && b.deleted === "true" &&
+      b.beneficiaryHasCodeAfter === "false" && b.beneficiaryNonceAfter === "0" && a.totalGas === "5000" && b.totalGas === "5000"; })());
+check("sdop: emptiness needs all three \u2014 a balance, a nonce or code alone each make the beneficiary existing and defeat the 25,000 charge",
+  (() => { const byBal = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "5", "0", false, false, false, false);
+    const byNonce = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "1", false, false, false, false);
+    const byCode = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", true, false, false, false);
+    const empty = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, false, false, false);
+    return [byBal, byNonce, byCode].every(r => r.beneficiaryEmpty === "false" && r.newAccountGas === "0" && r.totalGas === "5000") &&
+      empty.beneficiaryEmpty === "true" && empty.newAccountGas === "25000" && empty.totalGas === "30000" &&
+      byBal.beneficiaryAfter === "1000000000000000005"; })());
+check("sdop: the halts, paired \u2014 32,599 gas halts oog consuming all of it where 32,600 terminates, and a static frame halts consuming the whole 100,000",
+  (() => { const oog = app.selfdestructCalc("32599", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false);
+    const exact = app.selfdestructCalc("32600", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false);
+    const stat = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, true);
+    return oog.outcome === "halt" && oog.haltReason === "oog" && oog.gasUsed === "32599" && oog.selfAfter === "1000000000000000000" &&
+      exact.outcome === "terminated" && exact.gasAfter === "0" &&
+      stat.outcome === "halt" && stat.haltReason === "static" && stat.gasUsed === "100000" && stat.beneficiaryAfter === "0"; })());
+check("sdop: a zero balance pays no new-account charge and transfers nothing \u2014 yet a same-transaction creation is still deleted",
+  (() => { const a = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false);
+    const b = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, true, false);
+    return a.newAccountGas === "0" && a.totalGas === "7600" && a.transferred === "false" && a.deleted === "false" &&
+      b.deleted === "true" && b.totalGas === "7600"; })());
+check("sdop: only zero-vs-non-zero of the balance prices the new-account charge \u2014 1 wei and 1 ETH to a cold empty beneficiary both cost 32,600",
+  (() => { const wei = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false);
+    const eth = app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false);
+    return wei.totalGas === "32600" && eth.totalGas === "32600" && wei.beneficiaryAfter === "1"; })());
+check("sdop refuses a short address, a balance or nonce at 2^256, a non-boolean flag, an inconsistent self-beneficiary (wrong balance, no code, or cold) and null inputs",
+  app.selfdestructCalc("100000", "0x123", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false) === null &&
+  app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", (2n ** 256n).toString(), "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false) === null &&
+  app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", (2n ** 256n).toString(), false, true, false, false) === null &&
+  app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", "false", true, false, false) === null &&
+  app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "5", "1", true, false, false, false) === null &&
+  app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "1", false, false, false, false) === null &&
+  app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "1", true, true, false, false) === null &&
+  app.selfdestructCalc(null, "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", "0", "0", false, true, false, false) === null &&
+  app.selfdestructCalc("100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "1000000000000000000", null, "0", "0", false, true, false, false) === null);
+check("sdop tool section present in index.html", html.includes("sdop-btn") && html.includes("SELFDESTRUCT opcode calculator"));
+
 
 
 

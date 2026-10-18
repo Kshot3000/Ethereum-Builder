@@ -7039,6 +7039,119 @@ function createCalc(opStr, gasAvailStr, valueStr, creatorStr, nonceStr, saltStr,
     returndata: "0x", returndataBytes: "0" };
 }
 
+/* SELFDESTRUCT opcode calculator -- SELFDESTRUCT (0xff,
+   Frontier), the semantics sibling of the hub's SELFDESTRUCT
+   GAS tool above and the last opcode family that had a gas
+   tool but no execution application. The opcode pops a
+   beneficiary address and TERMINATES the executing frame
+   successfully (nothing is pushed; execution does not continue
+   past it in this frame), moving the executing account's WHOLE
+   balance to the beneficiary. Gas is the gas tool's price,
+   cross-checked against selfdestructGasCalc exactly in tests:
+   5,000 base + 2,600 if the beneficiary is cold (EIP-2929) +
+   25,000 only when the beneficiary is EMPTY -- balance 0,
+   nonce 0 and no code, derived here from the beneficiary state
+   you supply rather than taken as a flag -- AND the balance
+   moved is positive; the refund is 0 since EIP-3529 removed
+   the old 24,000. Two failures are EXCEPTIONAL halts, not soft
+   failures: the frame cannot pay the gas cost (reason oog,
+   checked first -- the charge precedes execution), and the
+   frame is static (reason static -- the opcode moves value,
+   so a static frame may not run it at all, where a value CALL
+   in a static frame merely fails softly). Each consumes the
+   frame's whole remaining gas and changes nothing. The
+   family's trap is EIP-6780 (Cancun): what the opcode DOES
+   split on whether the executing account was created in the
+   SAME transaction. Created in this transaction, the account
+   is deleted at the transaction's END -- code, storage and
+   nonce cleared then, not at the opcode, so the code stays
+   callable for the rest of the transaction. NOT created in
+   this transaction, nothing is deleted at all: only the
+   balance moves and the account survives intact. A beneficiary
+   that is the account ITSELF splits the same way: with
+   deletion the balance is BURNED (sent to an account that is
+   then removed, leaving circulation); without deletion the
+   transfer is a NO-OP and the balance stays exactly where it
+   was. A self-beneficiary is by construction warm (the frame's
+   own account is accessed), existing (it is executing code,
+   so it has code) and carrying the account's own balance --
+   an input claiming otherwise is inconsistent and refused.
+   For a distinct beneficiary, receiving the balance changes
+   neither its nonce nor its code; for a deleted
+   self-beneficiary both are reported cleared with the account.
+   Honest scope: the state is supplied, not read -- this page
+   executes nothing and queries no chain; whether the account
+   was created in this transaction is a fact of the transaction
+   you supply as a flag, and a later call to a not-deleted
+   account within the same transaction is a new application of
+   this same tool, not state this one tracks. All words are
+   single 256-bit values via the SSTORE gas tool's parser,
+   refused rather than wrapped when wider. */
+function selfdestructCalc(gasAvailStr, selfAddrStr, selfBalStr, beneficiaryStr,
+    beneficiaryBalStr, beneficiaryNonceStr, beneficiaryHasCode,
+    beneficiaryCold, createdInSameTx, inStatic) {
+  if (typeof beneficiaryHasCode !== "boolean" || typeof beneficiaryCold !== "boolean" ||
+      typeof createdInSameTx !== "boolean" || typeof inStatic !== "boolean") return null;
+  const parseAddr = s => {
+    if (typeof s !== "string") return null;
+    let h = s.trim();
+    if (/^0[xX]/.test(h)) h = h.slice(2);
+    if (!/^[0-9a-fA-F]{40}$/.test(h)) return null;
+    return "0x" + h.toLowerCase();
+  };
+  const gasAvail = sstoreParseWord(gasAvailStr);
+  const selfAddr = parseAddr(selfAddrStr);
+  const selfBal = sstoreParseWord(selfBalStr);
+  const beneficiary = parseAddr(beneficiaryStr);
+  const beneficiaryBal = sstoreParseWord(beneficiaryBalStr);
+  const beneficiaryNonce = sstoreParseWord(beneficiaryNonceStr);
+  if (gasAvail === null || selfAddr === null || selfBal === null ||
+      beneficiary === null || beneficiaryBal === null || beneficiaryNonce === null) return null;
+  const isSelf = selfAddr === beneficiary;
+  if (isSelf && (beneficiaryBal !== selfBal || !beneficiaryHasCode || beneficiaryCold)) return null;
+  const beneficiaryEmpty = beneficiaryBal === 0n && beneficiaryNonce === 0n && !beneficiaryHasCode;
+  const g = selfdestructGasCalc(beneficiaryCold, beneficiaryEmpty, selfBal.toString());
+  if (g === null) return null;
+  const total = BigInt(g.totalGas);
+  const head = { opcode: "selfdestruct", opcodeByte: "0xff", fork: "Frontier",
+    selfAddress: toChecksumAddress(selfAddr), beneficiary: toChecksumAddress(beneficiary),
+    isSelfBeneficiary: isSelf ? "true" : "false",
+    beneficiaryEmpty: beneficiaryEmpty ? "true" : "false",
+    baseGas: g.baseGas, accessGas: g.accessGas, newAccountGas: g.newAccountGas,
+    refund: g.refund, totalGas: g.totalGas };
+  const unchanged = { selfAfter: selfBal.toString(), beneficiaryAfter: beneficiaryBal.toString(),
+    transferred: "false", burned: "0", deleted: "false",
+    beneficiaryNonceAfter: beneficiaryNonce.toString(),
+    beneficiaryHasCodeAfter: beneficiaryHasCode ? "true" : "false" };
+  if (gasAvail < total) {
+    return { ...head, outcome: "halt", haltReason: "oog",
+      gasUsed: gasAvail.toString(), gasAfter: "0", ...unchanged, halted: "true" };
+  }
+  if (inStatic) {
+    return { ...head, outcome: "halt", haltReason: "static",
+      gasUsed: gasAvail.toString(), gasAfter: "0", ...unchanged, halted: "true" };
+  }
+  const deleted = createdInSameTx;
+  let selfAfter, beneficiaryAfter, burned, transferred;
+  if (isSelf) {
+    if (deleted) { selfAfter = 0n; beneficiaryAfter = 0n; burned = selfBal; }
+    else { selfAfter = selfBal; beneficiaryAfter = selfBal; burned = 0n; }
+    transferred = false;
+  } else {
+    selfAfter = 0n; beneficiaryAfter = beneficiaryBal + selfBal; burned = 0n;
+    transferred = selfBal > 0n;
+  }
+  const beneNonceAfter = isSelf && deleted ? 0n : beneficiaryNonce;
+  const beneCodeAfter = isSelf && deleted ? false : beneficiaryHasCode;
+  return { ...head, outcome: "terminated", haltReason: "",
+    gasUsed: total.toString(), gasAfter: (gasAvail - total).toString(),
+    selfAfter: selfAfter.toString(), beneficiaryAfter: beneficiaryAfter.toString(),
+    transferred: transferred ? "true" : "false", burned: burned.toString(),
+    deleted: deleted ? "true" : "false",
+    beneficiaryNonceAfter: beneNonceAfter.toString(),
+    beneficiaryHasCodeAfter: beneCodeAfter ? "true" : "false", halted: "false" };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -9031,6 +9144,43 @@ if (typeof document !== "undefined") {
       el.textContent = `${name}: creation succeeds and the opcode pushes the new address ${r.targetAddress}. Upfront ${r.upfrontGas} (32,000 + ${r.wordGas} for ${r.initcodeWords} initcode word(s) + ${r.memoryGas} of memory expansion); ${r.forwardedGas} was forwarded to the initcode, which used ${r.initGasUsed}, and depositing its ${r.deployedCodeBytes} byte(s) of code cost ${r.depositGas} — total gas used ${r.gasUsed} (gas after: ${r.gasAfter}). The new account sits at nonce ${r.targetNonceAfter}${r.transferred === "true" ? ` holding the endowment: creator ${r.creatorAfter}, new account ${r.targetAfter}` : ` with balance ${r.targetAfter} and no endowment moved`}; the creator's nonce is now ${r.creatorNonceAfter}. ${tail}`;
     });
 
+    /* SELFDESTRUCT opcode calculator */
+    const sdopBtn = document.getElementById("sdop-btn");
+    if (sdopBtn) sdopBtn.addEventListener("click", () => {
+      const r = selfdestructCalc(
+        document.getElementById("sdop-gas").value,
+        document.getElementById("sdop-self").value,
+        document.getElementById("sdop-selfbal").value,
+        document.getElementById("sdop-bene").value,
+        document.getElementById("sdop-benebal").value,
+        document.getElementById("sdop-benenonce").value,
+        document.getElementById("sdop-hascode").checked,
+        document.getElementById("sdop-cold").checked,
+        document.getElementById("sdop-created").checked,
+        document.getElementById("sdop-static").checked);
+      const el = document.getElementById("sdop-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: gas and both balances and the beneficiary nonce must each be one 256-bit word, decimal or 0x hex; both addresses must be exactly 40 hex characters; and a beneficiary that is the executing account itself must carry that account's own balance, have code and be warm — anything else describes an account that cannot be executing this opcode.";
+        return;
+      }
+      const tail = "Computed locally from the state you gave — nothing is executed and no chain is queried.";
+      const name = `SELFDESTRUCT (${r.opcodeByte}, ${r.fork}; EIP-6780 semantics)`;
+      if (r.outcome === "halt") {
+        el.textContent = r.haltReason === "static"
+          ? `${name}: the frame is static and this opcode moves value, so it halts exceptionally — the frame's whole remaining gas (${r.gasUsed}) is consumed, no balance moves and nothing is deleted. ${tail}`
+          : `${name}: the frame cannot pay the ${r.totalGas} this opcode costs, so it halts out of gas — the whole remaining ${r.gasUsed} is consumed, no balance moves and nothing is deleted. ${tail}`;
+        return;
+      }
+      const gasPart = `Gas ${r.gasUsed} in total (5,000 base + ${r.accessGas} access + ${r.newAccountGas} new-account; refund ${r.refund}; gas after: ${r.gasAfter}).`;
+      if (r.isSelfBeneficiary === "true") {
+        el.textContent = r.deleted === "true"
+          ? `${name}: the beneficiary is the account itself and it was created in this transaction, so it IS deleted at the transaction's end and its balance of ${r.burned} wei is burned — it leaves circulation and no account receives it. Balances after: the account ${r.selfAfter}. ${gasPart} ${tail}`
+          : `${name}: the beneficiary is the account itself and it was NOT created in this transaction, so nothing is deleted and sending the balance to itself is a no-op — the account survives with its balance unchanged at ${r.selfAfter} wei. ${gasPart} ${tail}`;
+        return;
+      }
+      el.textContent = `${name}: the frame terminates and the account's whole balance moves to ${r.beneficiary} — balances after: executing account ${r.selfAfter}, beneficiary ${r.beneficiaryAfter} (its nonce stays ${r.beneficiaryNonceAfter}). ${r.deleted === "true" ? "The account was created in this transaction, so it IS deleted at the transaction's end — code, storage and nonce cleared then, not before." : "The account was NOT created in this transaction, so it is NOT deleted — only the balance moved and the account survives intact (EIP-6780)."} ${gasPart} ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -9044,5 +9194,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

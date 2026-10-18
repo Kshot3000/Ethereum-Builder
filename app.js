@@ -7274,6 +7274,120 @@ function logCalc(opStr, gasAvailStr, selfAddrStr, offsetStr, sizeStr,
     logged: "true", halted: "false" };
 }
 
+/* Halting opcode calculator -- STOP (0x00) / RETURN (0xf3),
+   Frontier; REVERT (0xfd), Byzantium (EIP-140); INVALID (0xfe),
+   Frontier -- the four ways a frame ends by opcode, and the
+   only opcode family that had NO hub tool at all (every other
+   family has a gas tool, an execution application, or both).
+   The four split on three axes, and the splits are the lesson.
+   STATE: STOP and RETURN end the frame successfully, so the
+   frame's changes are KEPT; REVERT rolls them back; an
+   exceptional halt (INVALID, or RETURN/REVERT out of gas) rolls
+   them back too. DATA: RETURN and REVERT both hand the caller
+   the memory region [offset, offset+size) -- for REVERT that is
+   the revert data the caller reads from its returndata buffer --
+   while STOP and INVALID return nothing. GAS: STOP has no cost
+   at all, and RETURN/REVERT have NO flat cost either -- their
+   only charge is the memory-expansion increase for the region,
+   on the hub's cost curve, cross-checked against the hub's
+   memoryGas tool exactly in tests -- so RETURN of a region
+   memory already covers costs 0. A successful REVERT returns
+   its unused gas to the caller; an exceptional halt never does:
+   INVALID consumes the frame's WHOLE remaining gas by design,
+   and a RETURN/REVERT whose expansion exceeds the remaining
+   gas halts exceptionally (reason oog) consuming all of it,
+   returning no data and leaving memory unchanged. STOP and
+   INVALID pop nothing and read nothing -- their offset, size
+   and memory fields are never read (lazily parsed; garbage-
+   field tests) -- while RETURN/REVERT read theirs like the
+   other memory families: memory is zero-initialised, a region
+   past the supplied end reads zeros and expands memory to the
+   region end, and a zero-size region touches no memory
+   whatever its offset (offset 2^255 with size 0 returns empty
+   at 0 gas). None of the four writes state, so none is barred
+   from a static frame -- REVERT is precisely how a static frame
+   reports an error. Honest scope: the gas and memory are values
+   you supply -- this page executes nothing and reads no chain;
+   what an enclosing call does with the outcome (a caller's
+   CALL copies RETURN/REVERT data into its own returndata
+   buffer; a top-level frame's RETURN data is the transaction's
+   output) is a caller-level fact this single application does
+   not track. All words are single 256-bit values, refused
+   rather than wrapped; the supplied memory, the size and a
+   non-empty region's end are capped at 4,096 bytes as stated
+   display caps. */
+const HALTOP_MAX_BYTES = 4096;
+function haltCalc(opStr, gasAvailStr, offsetStr, sizeStr, memoryStr) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  const META = { stop: ["0x00", "Frontier"], return: ["0xf3", "Frontier"],
+    revert: ["0xfd", "Byzantium"], invalid: ["0xfe", "Frontier"] };
+  if (!(op in META)) return null;
+  const gasAvail = sstoreParseWord(gasAvailStr);
+  if (gasAvail === null) return null;
+  const opcodeByte = META[op][0], fork = META[op][1];
+  if (op === "stop") {
+    return { opcode: op, opcodeByte, fork, offset: "", size: "",
+      expansionGas: "0", totalGas: "0", outcome: "stopped", haltReason: "",
+      gasUsed: "0", gasAfter: gasAvail.toString(),
+      returnedData: "0x", returnedBytes: "0", stateKept: "true",
+      memoryBefore: "", memoryAfter: "",
+      memoryBeforeBytes: "", memoryAfterBytes: "",
+      msizeBefore: "", msizeAfter: "", halted: "false" };
+  }
+  if (op === "invalid") {
+    return { opcode: op, opcodeByte, fork, offset: "", size: "",
+      expansionGas: "", totalGas: gasAvail.toString(),
+      outcome: "halt", haltReason: "invalid",
+      gasUsed: gasAvail.toString(), gasAfter: "0",
+      returnedData: "0x", returnedBytes: "0", stateKept: "false",
+      memoryBefore: "", memoryAfter: "",
+      memoryBeforeBytes: "", memoryAfterBytes: "",
+      msizeBefore: "", msizeAfter: "", halted: "true" };
+  }
+  if (typeof memoryStr !== "string") return null;
+  const offset = sstoreParseWord(offsetStr);
+  const size = sstoreParseWord(sizeStr);
+  if (offset === null || size === null) return null;
+  if (size > BigInt(HALTOP_MAX_BYTES)) return null;
+  let mh = memoryStr.trim();
+  if (/^0[xX]/.test(mh)) mh = mh.slice(2);
+  if (mh !== "" && (!/^[0-9a-fA-F]+$/.test(mh) || mh.length % 2 !== 0)) return null;
+  if (mh.length / 2 > HALTOP_MAX_BYTES) return null;
+  const before = [];
+  for (let i = 0; i < mh.length; i += 2) before.push(parseInt(mh.slice(i, i + 2), 16));
+  const regionEnd = size === 0n ? 0n : offset + size;
+  if (size > 0n && regionEnd > BigInt(HALTOP_MAX_BYTES)) return null;
+  const wordsBefore = BigInt(Math.ceil(before.length / 32));
+  const endNum = Number(regionEnd);
+  const wordsAfter = BigInt(Math.ceil(Math.max(before.length, endNum) / 32));
+  const expansion = wordsAfter > wordsBefore ? memTotalCost(wordsAfter) - memTotalCost(wordsBefore) : 0n;
+  const toHex = arr => "0x" + arr.map(b => b.toString(16).padStart(2, "0")).join("");
+  const head = { opcode: op, opcodeByte, fork,
+    offset: offset.toString(), size: size.toString(),
+    expansionGas: expansion.toString(), totalGas: expansion.toString(),
+    memoryBefore: toHex(before), memoryBeforeBytes: String(before.length),
+    msizeBefore: (wordsBefore * 32n).toString() };
+  if (gasAvail < expansion) {
+    return { ...head, outcome: "halt", haltReason: "oog",
+      gasUsed: gasAvail.toString(), gasAfter: "0",
+      returnedData: "0x", returnedBytes: "0", stateKept: "false",
+      memoryAfter: toHex(before), memoryAfterBytes: String(before.length),
+      msizeAfter: (wordsBefore * 32n).toString(), halted: "true" };
+  }
+  const off = Number(offset), sz = Number(size);
+  const region = [];
+  for (let i = 0; i < sz; i++) region.push(off + i < before.length ? before[off + i] : 0);
+  const after = before.slice();
+  while (after.length < endNum) after.push(0);
+  return { ...head, outcome: op === "return" ? "returned" : "reverted", haltReason: "",
+    gasUsed: expansion.toString(), gasAfter: (gasAvail - expansion).toString(),
+    returnedData: toHex(region), returnedBytes: size.toString(),
+    stateKept: op === "return" ? "true" : "false",
+    memoryAfter: toHex(after), memoryAfterBytes: String(after.length),
+    msizeAfter: (wordsAfter * 32n).toString(), halted: "false" };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -9336,6 +9450,39 @@ if (typeof document !== "undefined") {
       el.textContent = `${name}: one log record is appended under the executing account ${r.address} with ${topicPart} and data ${r.data} (${r.dataBytes} byte(s) read from memory at offset ${document.getElementById("logop-offset").value.trim()}; memory now ${r.memoryAfterBytes} byte(s), size ${r.msizeAfter}). Gas used ${r.gasUsed} (gas after: ${r.gasAfter}). ${gasPart} ${tail}`;
     });
 
+    /* Halting opcode calculator */
+    const haltopBtn = document.getElementById("haltop-btn");
+    if (haltopBtn) haltopBtn.addEventListener("click", () => {
+      const r = haltCalc(
+        document.getElementById("haltop-op").value,
+        document.getElementById("haltop-gas").value,
+        document.getElementById("haltop-offset").value,
+        document.getElementById("haltop-size").value,
+        document.getElementById("haltop-memory").value);
+      const el = document.getElementById("haltop-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the gas (and, for RETURN/REVERT, the offset and size) must each be one 256-bit word, decimal or 0x hex, and the memory even-length hex — the memory, the size and a non-empty region's end are each capped at 4,096 bytes. STOP and INVALID never read the offset, size or memory fields, so their contents cannot cause this refusal.";
+        return;
+      }
+      const tail = "Computed locally from the state you gave — nothing is executed and no chain is queried.";
+      const name = `${r.opcode.toUpperCase()} (${r.opcodeByte}, ${r.fork})`;
+      if (r.outcome === "stopped") {
+        el.textContent = `${name}: the frame halts successfully at no cost — gas used 0 (gas after: ${r.gasAfter}), no data is returned and the frame's state changes are kept. ${tail}`;
+        return;
+      }
+      if (r.outcome === "halt" && r.haltReason === "invalid") {
+        el.textContent = `${name}: executing the designated invalid instruction halts the frame exceptionally — its whole remaining gas (${r.gasUsed}) is consumed by design, no data is returned and the frame's state changes are rolled back. ${tail}`;
+        return;
+      }
+      if (r.outcome === "halt") {
+        el.textContent = `${name}: the memory expansion this region needs (${r.totalGas}) exceeds the frame's remaining gas, so the frame halts exceptionally — the whole remaining ${r.gasUsed} is consumed, no data is returned, the state changes are rolled back and memory is unchanged. ${tail}`;
+        return;
+      }
+      el.textContent = r.outcome === "returned"
+        ? `${name}: the frame halts successfully and returns ${r.returnedBytes} byte(s) from memory — ${r.returnedData} — and its state changes are kept. Gas used ${r.gasUsed}, the memory-expansion increase alone (RETURN has no flat cost; gas after: ${r.gasAfter}). ${tail}`
+        : `${name}: the frame halts and rolls its state changes back, but still returns ${r.returnedBytes} byte(s) from memory — ${r.returnedData} — as the revert data its caller reads, and its unused gas is returned: gas used ${r.gasUsed}, the memory-expansion increase alone (gas after: ${r.gasAfter}). ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -9349,5 +9496,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

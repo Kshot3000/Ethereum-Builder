@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=96"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=97"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -5935,6 +5935,97 @@ check("logop refuses a bad opcode, a malformed topic the opcode reads, a topic a
   app.logCalc(null, "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "", "", "", "", "0x", false) === null &&
   app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "", "", "", "", null, false) === null);
 check("logop tool section present in index.html", html.includes("logop-btn") && html.includes("LOG opcode calculator"));
+
+
+/* ---------- halting opcodes (STOP / RETURN / REVERT / INVALID) ---------- */
+const HALTOP_ROWS = [
+    [["stop", "100000", "garbage", "garbage", "garbage"], "stop|0x00|Frontier|||0|0|stopped||0|100000|0x|0|true|||||||false"],
+    [["return", "100000", "0", "32", "0x00000000000000000000000000000000000000000000000000000000000f4240"], "return|0xf3|Frontier|0|32|0|0|returned||0|100000|0x00000000000000000000000000000000000000000000000000000000000f4240|32|true|0x00000000000000000000000000000000000000000000000000000000000f4240|0x00000000000000000000000000000000000000000000000000000000000f4240|32|32|32|32|false"],
+    [["return", "100000", "0", "32", "0x"], "return|0xf3|Frontier|0|32|3|3|returned||3|99997|0x0000000000000000000000000000000000000000000000000000000000000000|32|true|0x|0x0000000000000000000000000000000000000000000000000000000000000000|0|32|0|32|false"],
+    [["return", "500", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "0x"], "return|0xf3|Frontier|57896044618658097711785492504343953926634992332820282019728792003956564819968|0|0|0|returned||0|500|0x|0|true|0x|0x|0|0|0|0|false"],
+    [["return", "100000", "16", "32", "0x00000000000000000000000000000000000000000000000000000000000f4240"], "return|0xf3|Frontier|16|32|3|3|returned||3|99997|0x000000000000000000000000000f424000000000000000000000000000000000|32|true|0x00000000000000000000000000000000000000000000000000000000000f4240|0x00000000000000000000000000000000000000000000000000000000000f424000000000000000000000000000000000|32|48|32|64|false"],
+    [["return", "3", "0", "32", "0x"], "return|0xf3|Frontier|0|32|3|3|returned||3|0|0x0000000000000000000000000000000000000000000000000000000000000000|32|true|0x|0x0000000000000000000000000000000000000000000000000000000000000000|0|32|0|32|false"],
+    [["return", "2", "0", "32", "0x"], "return|0xf3|Frontier|0|32|3|3|halt|oog|2|0|0x|0|false|0x|0x|0|0|0|0|true"],
+    [["revert", "100000", "0", "4", "0xdeadbeef"], "revert|0xfd|Byzantium|0|4|0|0|reverted||0|100000|0xdeadbeef|4|false|0xdeadbeef|0xdeadbeef|4|4|32|32|false"],
+    [["revert", "100000", "32", "32", "0x00000000000000000000000000000000000000000000000000000000000f4240"], "revert|0xfd|Byzantium|32|32|3|3|reverted||3|99997|0x0000000000000000000000000000000000000000000000000000000000000000|32|false|0x00000000000000000000000000000000000000000000000000000000000f4240|0x00000000000000000000000000000000000000000000000000000000000f42400000000000000000000000000000000000000000000000000000000000000000|32|64|32|64|false"],
+    [["revert", "2", "0", "32", "0x"], "revert|0xfd|Byzantium|0|32|3|3|halt|oog|2|0|0x|0|false|0x|0x|0|0|0|0|true"],
+    [["invalid", "777", "garbage", "garbage", "garbage"], "invalid|0xfe|Frontier||||777|halt|invalid|777|0|0x|0|false|||||||true"],
+    [["invalid", "0", "", "", ""], "invalid|0xfe|Frontier||||0|halt|invalid|0|0|0x|0|false|||||||true"],
+    [["stop", "0", "x", "x", "x"], "stop|0x00|Frontier|||0|0|stopped||0|0|0x|0|true|||||||false"],
+    [["return", "100000", "32", "32", "0x11111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222"], "return|0xf3|Frontier|32|32|0|0|returned||0|100000|0x2222222222222222222222222222222222222222222222222222222222222222|32|true|0x11111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222|0x11111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222|64|64|64|64|false"],
+    [["revert", "500", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "0x"], "revert|0xfd|Byzantium|57896044618658097711785492504343953926634992332820282019728792003956564819968|0|0|0|reverted||0|500|0x|0|false|0x|0x|0|0|0|0|false"],
+    [["return", "100000", "31", "1", "0x00000000000000000000000000000000000000000000000000000000000f4240"], "return|0xf3|Frontier|31|1|0|0|returned||0|100000|0x40|1|true|0x00000000000000000000000000000000000000000000000000000000000f4240|0x00000000000000000000000000000000000000000000000000000000000f4240|32|32|32|32|false"]
+];
+const haltopJoin = r => [r.opcode, r.opcodeByte, r.fork, r.offset, r.size, r.expansionGas, r.totalGas, r.outcome, r.haltReason, r.gasUsed, r.gasAfter, r.returnedData, r.returnedBytes, r.stateKept, r.memoryBefore, r.memoryAfter, r.memoryBeforeBytes, r.memoryAfterBytes, r.msizeBefore, r.msizeAfter, r.halted].join("|");
+check("haltop controls labelled in index.html",
+  ["haltop-op", "haltop-gas", "haltop-offset", "haltop-size", "haltop-memory"].every(id => html.includes(`for="${id}"`)));
+check("haltop matches the Python oracle",
+  HALTOP_ROWS.every(([inp, exp]) => { const r = app.haltCalc(...inp);
+    return r !== null && haltopJoin(r) === exp; }));
+check("haltop: expansion agrees with the hub's memory expansion tool exactly on every RETURN/REVERT oracle row",
+  (() => { let priced = 0, skipped = 0;
+    const ok = HALTOP_ROWS.every(([inp]) => {
+      if (inp[0] !== "return" && inp[0] !== "revert") { skipped++; return true; }
+      const r = app.haltCalc(...inp);
+      const beforeBytes = (inp[4].replace(/^0[xX]/, "").length) / 2;
+      const end = inp[3] === "0" ? beforeBytes : Number(inp[2]) + Number(inp[3]);
+      const g = app.memoryGas(String(beforeBytes), String(Math.max(beforeBytes, end)));
+      priced++;
+      return g !== null && g.expansionGas === r.expansionGas; });
+    return ok && priced === 12 && skipped === 4; })());
+check("haltop: prefilled page values \u2014 RETURN of the supplied 1,000,000 word costs 0, the expansion-only price of an already-covered region",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const r = app.haltCalc(g("haltop-op"), g("haltop-gas"), g("haltop-offset"), g("haltop-size"), g("haltop-memory"));
+    return r !== null && r.outcome === "returned" && r.gasUsed === "0" && r.gasAfter === "100000" &&
+      r.returnedData === "0x00000000000000000000000000000000000000000000000000000000000f4240" &&
+      r.returnedBytes === "32" && r.stateKept === "true" &&
+      html.includes('<option value="return" selected>'); })());
+check("haltop: the RETURN/REVERT pair \u2014 identical inputs, identical gas and data, split only on the state",
+  (() => { const inp = ["100000", "32", "32", "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000"];
+    const a = app.haltCalc("return", ...inp);
+    const b = app.haltCalc("revert", ...inp);
+    return a.outcome === "returned" && b.outcome === "reverted" &&
+      a.stateKept === "true" && b.stateKept === "false" &&
+      a.gasUsed === b.gasUsed && a.returnedData === b.returnedData && a.gasAfter === b.gasAfter; })());
+check("haltop: the STOP/INVALID pair \u2014 identical garbage inputs, STOP keeps state at 0 gas while INVALID consumes the whole frame and rolls back",
+  (() => { const a = app.haltCalc("stop", "777", "garbage", "garbage", "garbage");
+    const b = app.haltCalc("invalid", "777", "garbage", "garbage", "garbage");
+    return a.outcome === "stopped" && a.gasUsed === "0" && a.gasAfter === "777" && a.stateKept === "true" &&
+      b.outcome === "halt" && b.haltReason === "invalid" && b.gasUsed === "777" && b.gasAfter === "0" && b.stateKept === "false"; })());
+check("haltop: the oog pair \u2014 2 gas halts exceptionally consuming all of it where 3 returns the word with nothing left",
+  (() => { const oog = app.haltCalc("return", "2", "0", "32", "0x");
+    const exact = app.haltCalc("return", "3", "0", "32", "0x");
+    return oog.outcome === "halt" && oog.haltReason === "oog" && oog.gasUsed === "2" && oog.returnedData === "0x" &&
+      oog.stateKept === "false" && oog.memoryAfter === "0x" &&
+      exact.outcome === "returned" && exact.gasUsed === "3" && exact.gasAfter === "0"; })());
+check("haltop: a successful REVERT returns its unused gas where INVALID at the same gas returns none",
+  (() => { const a = app.haltCalc("revert", "100000", "0", "32", "0x");
+    const b = app.haltCalc("invalid", "100000", "0", "32", "0x");
+    return a.gasUsed === "3" && a.gasAfter === "99997" && b.gasUsed === "100000" && b.gasAfter === "0"; })());
+check("haltop: a zero-size region touches no memory whatever its offset \u2014 2^255 with size 0 returns empty at 0 gas, for REVERT as for RETURN",
+  (() => { const big = (2n ** 255n).toString();
+    const a = app.haltCalc("return", "500", big, "0", "0x");
+    const b = app.haltCalc("revert", "500", big, "0", "0x");
+    return a.outcome === "returned" && a.gasUsed === "0" && a.returnedData === "0x" && a.memoryAfterBytes === "0" &&
+      b.outcome === "reverted" && b.gasUsed === "0" && b.returnedData === "0x" && b.stateKept === "false"; })());
+check("haltop: STOP and INVALID never read their region fields \u2014 even null there cannot refuse them, where RETURN with the same nulls is refused",
+  app.haltCalc("stop", "100", null, null, null) !== null &&
+  app.haltCalc("invalid", "100", null, null, null) !== null &&
+  app.haltCalc("return", "100", null, null, null) === null &&
+  app.haltCalc("stop", "100", "garbage", "garbage", "garbage").outcome === "stopped");
+check("haltop refuses a bad opcode, an offset at 2^256, a size over the 4,096 cap, a region end over the cap, odd-length memory, memory over the cap, malformed gas and null inputs",
+  app.haltCalc("ret", "100000", "0", "0", "0x") === null &&
+  app.haltCalc("return", "100000", (2n ** 256n).toString(), "0", "0x") === null &&
+  app.haltCalc("return", "100000", "0", "4097", "0x") === null &&
+  app.haltCalc("revert", "100000", "4096", "1", "0x") === null &&
+  app.haltCalc("return", "100000", "0", "0", "0x0") === null &&
+  app.haltCalc("return", "100000", "0", "0", "0x" + "00".repeat(4097)) === null &&
+  app.haltCalc("return", "-1", "0", "0", "0x") === null &&
+  app.haltCalc("stop", "1.5", "0", "0", "0x") === null &&
+  app.haltCalc(null, "100000", "0", "0", "0x") === null &&
+  app.haltCalc("return", null, "0", "0", "0x") === null &&
+  app.haltCalc("revert", "100000", "0", "0", null) === null);
+check("haltop tool section present in index.html", html.includes("haltop-btn") && html.includes("Halting opcode calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

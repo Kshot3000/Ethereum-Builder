@@ -5975,7 +5975,7 @@ check("haltop: expansion agrees with the hub's memory expansion tool exactly on 
     return ok && priced === 12 && skipped === 4; })());
 check("haltop: prefilled page values \u2014 RETURN of the supplied 1,000,000 word costs 0, the expansion-only price of an already-covered region",
   (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
-    const r = app.haltCalc(g("haltop-op"), g("haltop-gas"), g("haltop-offset"), g("haltop-size"), g("haltop-memory"));
+    const r = app.haltCalc("return", g("haltop-gas"), g("haltop-offset"), g("haltop-size"), g("haltop-memory"));
     return r !== null && r.outcome === "returned" && r.gasUsed === "0" && r.gasAfter === "100000" &&
       r.returnedData === "0x00000000000000000000000000000000000000000000000000000000000f4240" &&
       r.returnedBytes === "32" && r.stateKept === "true" &&

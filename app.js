@@ -4892,8 +4892,9 @@ function blsGasCalc(nameStr, pairsStr) {
    12,000 (the EIP-2537 discount at k = 1 is 1000, so there is
    no separate MUL precompile); a multi-pair MSM is a sum of
    such multiplications under Pippenger's discount and stays
-   gas-only here, like the pairing check and the two
-   field-to-curve maps (G2 arithmetic is run by the G2 tool
+   gas-only here, like the pairing check and the
+   field-to-curve maps (the Fp-to-G1 map is run by its own
+   tool below; G2 arithmetic is run by the G2 tool
    below). The curve is
    y^2 = x^3 + 4 over the field of prime order
    p = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787:
@@ -5034,8 +5035,8 @@ function blsG1Calc(opStr, x1Hex, y1Hex, aHex, bHex) {
    22,500 (the EIP-2537 G2 discount at k = 1 is 1000, so there
    is no separate MUL precompile); a multi-pair MSM is a sum of
    such multiplications under Pippenger's discount and stays
-   gas-only here, like the pairing check and the two
-   field-to-curve maps. The arithmetic lives in the quadratic
+   gas-only here, like the pairing check and the
+   Fp2-to-G2 map. The arithmetic lives in the quadratic
    extension field Fp2 = Fp[u] / (u^2 + 1): an element is the
    pair (c0, c1) read as c0 + c1*u, with multiplication
    (a0*b0 - a1*b1, a0*b1 + a1*b0) and inversion through the
@@ -5221,9 +5222,10 @@ function blsG2Calc(opStr, x1aHex, x1bHex, y1aHex, y1bHex, aHex, bHex, cHex, dHex
    itself on a bad length where this page refuses it as
    malformed, and the gas tool above still prices any count.
    What remains gas-only in the BLS family after this tool is the
-   pairing check (0x0f) and the two field-to-curve maps (0x10,
-   0x11) — Fp12 / Miller-loop and isogeny machinery of a
-   different order. Verified in the tests against an independent
+   pairing check (0x0f) and the Fp2-to-G2 map (0x11) —
+   Fp12 / Miller-loop and extension-field isogeny machinery
+   of a different order; the Fp-to-G1 map (0x10) is run by
+   the tool below. Verified in the tests against an independent
    pure-Python oracle (oracle-bls-msm.py) carrying affine AND
    Jacobian implementations for both curves, anchored in-script
    BEFORE emitting vectors on go-ethereum's official precompile
@@ -5291,6 +5293,125 @@ function blsMsmCalc(opStr, inputHex) {
       ? "0x" + "00".repeat(256)
       : "0x" + total[0][0].toString(16).padStart(128, "0") + total[0][1].toString(16).padStart(128, "0") + total[1][0].toString(16).padStart(128, "0") + total[1][1].toString(16).padStart(128, "0"),
     outputBytes: "256", totalGas: gas.totalGas
+  };
+}
+
+/* ---------- BLS12-381 MAP_FP_TO_G1 (field-to-curve map applied) ----------
+   The applied half of the G1 map pair: blsGasCalc quotes
+   MAP_FP_TO_G1's flat 5,500 at 0x10 from the operation name
+   alone and never reads the field element, while the pairing
+   check (0x0f) and the Fp2-to-G2 map (0x11) stay gas-only
+   (Fp12 / Miller-loop machinery, and extension-field isogeny
+   work, of a different order). This tool takes the
+   precompile's own input — exactly one 64-byte field element:
+   16 zero top bytes carrying a 48-byte value — and runs the
+   construction in the EIP-2537 field-to-curve document:
+     1. simplified SWU (the Shallue-van Woestijne-Ulas map in
+        its Brier et al. / Wahby-Boneh simplified form) maps u
+        to a point on the 11-isogenous curve
+        E': y^2 = x^3 + A' x + B' with Z = 11 (non-square,
+        != -1). It forms x1 from (-B/A)(1 + inv0(Z^2 u^4 +
+        Z u^2)) — inv0(0) is 0, and the tv1 == 0 case (u = 0)
+        is the exceptional branch, x1 = B / (Z A), whose gx1
+        is square by the condition on Z — and x2 = Z u^2 x1;
+        whichever of gx1, gx2 is square supplies (x, sqrt(g)),
+        and the root is chosen so sgn0(y) == sgn0(u), where
+        sgn0 is the parity (least significant bit) sign: that
+        convention is pinned by the testdata anchor below —
+        the alternative "greater than (p-1)/2" sign flips y on
+        9 of the first 20 official rows. sqrt in Fp is
+        a^((p+1)/4) because p % 4 == 3.
+     2. the 11-isogeny map takes the point to G1 itself:
+        x = x_num / x_den (degrees 11 / 10) and
+        y = y' * y_num / y_den (degrees 15 / 15); a zero
+        denominator returns the identity (infinity), per the
+        document. The 53 isogeny constants were extracted
+        PROGRAMMATICALLY from the EIP document, never
+        hand-copied.
+     3. the cofactor is cleared by multiplying by
+        h_eff = 0xd201000000010001 with the hub's own G1
+        multiplication, so the result lies in the prime-order
+        subgroup (the oracle asserts q * P = infinity on every
+        row) — this is a map INTO the subgroup, not just onto
+        the curve.
+   Two consequences are pinned in tests: map(-u) = -map(u)
+   (the SWU x depends on u^2 alone, and sgn0 flips under
+   negation because p is odd), and u = 0 maps through the
+   exceptional branch to a fixed non-infinity point. The
+   failure mode is a FAILED CALL, as for the other BLS tools:
+   a value at or above p — which any nonzero top byte forces,
+   since that makes the value at least 2^384 — returns
+   succeeded=false with no output, priced at the scheduled
+   charge cross-checked against blsGasCalc exactly in tests
+   (a failing BLS call burns all gas supplied to it, so the
+   scheduled charge is what a successful call pays).
+   Malformed input to THIS page is refused with null, as the
+   other calculators refuse unparseable input: the input must
+   be exactly 64 bytes of hex — a client fails the call itself
+   on a wrong length, where this page refuses it as malformed,
+   exactly as the official fail testdata splits the two cases.
+   Prefill is u = 1, mapping to
+   (0x10733111...88b908, 0x34d6e375...06d45) at 5,500.
+   Verified in the tests against an independent pure-Python
+   oracle (oracle-bls-map-g1.py) anchored in-script BEFORE
+   emitting vectors on go-ethereum's official precompile
+   testdata — all 105 blsMapG1 rows reproduce exactly, with
+   the SWU point asserted on E', the isogeny image and the
+   cleared point asserted on G1, and the cleared point
+   asserted in the subgroup, on every row; the fail testdata's
+   wrong-length rows classify as page-malformed and its
+   top-bytes / at-or-above-p rows fail the call. Computes
+   locally; no chain is queried. */
+const BLS_MAP_G1_APR = 0x144698a3b8e9433d693a02c96d4982b0ea985383ee66a8d8e8981aefd881ac98936f8da0e0f97f5cf428082d584c1dn;
+const BLS_MAP_G1_BPR = 0x12e2908d11688030018b12e8753eee3b2016c1f0f24f4070a0b9c14fcef35ef55a23215a316ceaa5d1cc48e98e172be0n;
+const BLS_MAP_G1_H_EFF = 0xd201000000010001n;
+const BLS_MAP_G1_K1 = [0x6e08c248e260e70bd1e962381edee3d31d79d7e22c837bc23c0bf1bc24c6b68c24b1b80b64d391fa9c8ba2e8ba2d229n, 0x10321da079ce07e272d8ec09d2565b0dfa7dccdde6787f96d50af36003b14866f69b771f8c285decca67df3f1605fb7bn, 0x169b1f8e1bcfa7c42e0c37515d138f22dd2ecb803a0c5c99676314baf4bb1b7fa3190b2edc0327797f241067be390c9en, 0x80d3cf1f9a78fc47b90b33563be990dc43b756ce79f5574a2c596c928c5d1de4fa295f296b74e956d71986a8497e317n, 0x17b81e7701abdbe2e8743884d1117e53356de5ab275b4db1a682c62ef0f2753339b7c8f8c8f475af9ccb5618e3f0c88en, 0xd6ed6553fe44d296a3726c38ae652bfb11586264f0f8ce19008e218f9c86b2a8da25128c1052ecaddd7f225a139ed84n, 0x1630c3250d7313ff01d1201bf7a74ab5db3cb17dd952799b9ed3ab9097e68f90a0870d2dcae73d19cd13c1c66f652983n, 0xe99726a3199f4436642b4b3e4118e5499db995a1257fb3f086eeb65982fac18985a286f301e77c451154ce9ac8895d9n, 0x1778e7166fcc6db74e0609d307e55412d7f5e4656a8dbf25f1b33289f1b330835336e25ce3107193c5b388641d9b6861n, 0xd54005db97678ec1d1048c5d10a9a1bce032473295983e56878e501ec68e25c958c3e3d2a09729fe0179f9dac9edcb0n, 0x17294ed3e943ab2f0588bab22147a81c7c17e75b2f6a8417f565e33c70d1e86b4838f2a6f318c356e834eef1b3cb83bbn, 0x11a05f2b1e833340b809101dd99815856b303e88a2d7005ff2627b56cdb4e2c85610c2d5f2e62d6eaeac1662734649b7n];
+const BLS_MAP_G1_K2 = [0x1n, 0x95fc13ab9e92ad4476d6e3eb3a56680f682b4ee96f7d03776df533978f31c1593174e4b4b7865002d6384d168ecdd0an, 0xa10ecf6ada54f825e920b3dafc7a3cce07f8d1d7161366b74100da67f39883503826692abba43704776ec3a79a1d641n, 0x14a7ac2a9d64a8b230b3f5b074cf01996e7f63c21bca68a81996e1cdf9822c580fa5b9489d11e2d311f7d99bbdcc5a5en, 0x772caacf16936190f3e0c63e0596721570f5799af53a1894e2e073062aede9cea73b3538f0de06cec2574496ee84a3an, 0xe7355f8e4e667b955390f7f0506c6e9395735e9ce9cad4d0a43bcef24b8982f7400d24bc4228f11c02df9a29f6304a5n, 0x13a8e162022914a80a6f1d5f43e7a07dffdfc759a12062bb8d6b44e833b306da9bd29ba81f35781d539d395b3532a21en, 0x3425581a58ae2fec83aafef7c40eb545b08243f16b1655154cca8abc28d6fd04976d5243eecf5c4130de8938dc62cd8n, 0xb2962fe57a3225e8137e629bff2991f6f89416f5a718cd1fca64e00b11aceacd6a3d0967c94fedcfcc239ba5cb83e19n, 0x12561a5deb559c4348b4711298e536367041e8ca0cf0800c0126c2588c48bf5713daa8846cb026e9e5c8276ec82b3bffn, 0x8ca8d548cff19ae18b2e62f4bd3fa6f01d5ef4ba35b48ba9c9588617fc8ac62b558d681be343df8993cf9fa40d21b1cn];
+const BLS_MAP_G1_K3 = [0x15e6be4e990f03ce4ea50b3b42df2eb5cb181d8f84965a3957add4fa95af01b2b665027efec01c7704b456be69c8b604n, 0x5c129645e44cf1102a159f748c4a3fc5e673d81d7e86568d9ab0f5d396a7ce46ba1049b6579afb7866b1e715475224bn, 0x245a394ad1eca9b72fc00ae7be315dc757b3b080d4c158013e6632d3c40659cc6cf90ad1c232a6442d9d3f5db980133n, 0xb182cac101b9399d155096004f53f447aa7b12a3426b08ec02710e807b4633f06c851c1919211f20d4c04f00b971ef8n, 0x18b46a908f36f6deb918c143fed2edcc523559b8aaf0c2462e6bfe7f911f643249d9cdf41b44d606ce07c8a4d0074d8en, 0x19713e47937cd1be0dfd0b8f1d43fb93cd2fcbcb6caf493fd1183e416389e61031bf3a5cce3fbafce813711ad011c132n, 0xe1bba7a1186bdb5223abde7ada14a23c42a0ca7915af6fe06985e7ed1e4d43b9b3f7055dd4eba6f2bafaaebca731c30n, 0x9fc4018bd96684be88c9e221e4da1bb8f3abd16679dc26c1e8b6e6a1f20cabe69d65201c78607a360370e577bdba587n, 0x987c8d5333ab86fde9926bd2ca6c674170a05bfe3bdd81ffd038da6c26c842642f64550fedfe935a15e4ca31870fb29n, 0x4ab0b9bcfac1bbcb2c977d027796b3ce75bb8ca2be184cb5231413c4d634f3747a87ac2460f415ec961f8855fe9d6f2n, 0x16603fca40634b6a2211e11db8f0a6a074a7d0d4afadb7bd76505c3d3ad5544e203f6326c95a807299b23ab13633a5f0n, 0x8cc03fdefe0ff135caf4fe2a21529c4195536fbe3ce50b879833fd221351adc2ee7f8dc099040a841b6daecf2e8fedbn, 0x1f86376e8981c217898751ad8746757d42aa7b90eeb791c09e4a3ec03251cf9de405aba9ec61deca6355c77b0e5f4cbn, 0xcc786baa966e66f4a384c86a3b49942552e2d658a31ce2c344be4b91400da7d26d521628b00523b8dfe240c72de1f6n, 0x134996a104ee5811d51036d776fb46831223e96c254f383d0f906343eb67ad34d6c56711962fa8bfe097e75a2e41c696n, 0x90d97c81ba24ee0259d1f094980dcfa11ad138e48a869522b52af6c956543d3cd0c7aee9b3ba3c2be9845719707bb33n];
+const BLS_MAP_G1_K4 = [0x1n, 0xe0fa1d816ddc03e6b24255e0d7819c171c40f65e273b853324efcd6356caa205ca2f570f13497804415473a1d634b8fn, 0x2660400eb2e4f3b628bdd0d53cd76f2bf565b94e72927c1cb748df27942480e420517bd8714cc80d1fadc1326ed06f7n, 0xad6b9514c767fe3c3613144b45f1496543346d98adf02267d5ceef9a00d9b8693000763e3b90ac11e99b138573345ccn, 0xaccbb67481d033ff5852c1e48c50c477f94ff8aefce42d28c0f9a88cea7913516f968986f7ebbea9684b529e2561092n, 0x4d2f259eea405bd48f010a01ad2911d9c6dd039bb61a6290e591b36e636a5c871a5c29f4f83060400f8b49cba8f6aa8n, 0x167a55cda70a6e1cea820597d94a84903216f763e13d87bb5308592e7ea7d4fbc7385ea3d529b35e346ef48bb8913f55n, 0x1866c8ed336c61231a1be54fd1d74cc4f9fb0ce4c6af5920abc5750c4bf39b4852cfe2f7bb9248836b233d9d55535d4an, 0x16a3ef08be3ea7ea03bcddfabba6ff6ee5a4375efa1f4fd7feb34fd206357132b920f5b00801dee460ee415a15812ed9n, 0x166007c08a99db2fc3ba8734ace9824b5eecfdfa8d0cf8ef5dd365bc400a0051d5fa9c01a58b1fb93d1a1399126a775cn, 0x8d9e5297186db2d9fb266eaac783182b70152c65550d881c5ecd87b6f0f5a6449f38db9dfa9cce202c6477faaf9b7acn, 0xbe0e079545f43e4b00cc912f8228ddcc6d19c9f0f69bbb0542eda0fc9dec916a20b15dc0fd2ededda39142311a5001dn, 0x16b7d288798e5395f20d23bf89edb4d1d115c5dbddbcd30e123da489e726af41727364f2c28297ada8d26d98445f5416n, 0x58df3306640da276faaae7d6e8eb15778c4855551ae7f310c35a5dd279cd2eca6757cd636f96f891e2538b53dbf67f2n, 0x1962d75c2381201e1a0cbd6c43c348b885c84ff731c4d59ca4a10356f453e01f78a4260763529e3532f6102c2e49a03dn, 0x16112c4c3a9c98b252181140fad0eae9601a6de578980be6eec3232b5be72e7a07f3688ef60c206d01479253b03663c1n];
+function blsMapG1Poly(coeffs, x) {
+  let r = 0n;
+  for (const c of coeffs) r = blsG1Mod(r * x + c);
+  return r;
+}
+function blsMapG1Calc(inputHex) {
+  const bytes = parseHexBytes(inputHex, 64);
+  if (bytes === null) return null;
+  const gas = blsGasCalc("map-fp-to-g1", null);
+  if (gas === null) return null;
+  const failed = {
+    precompile: "mapg1", address: gas.address, succeeded: "false",
+    output: "0x", outputBytes: "0", totalGas: gas.totalGas
+  };
+  const u = bytesToBigInt(bytes);
+  if (u >= BLS_G1_P) return failed;
+  const Z = 11n;
+  const inv = a => secpModPow(a, BLS_G1_P - 2n, BLS_G1_P);
+  const arg = blsG1Mod(Z * Z * u ** 4n + Z * u * u);
+  const tv1 = arg === 0n ? 0n : inv(arg);
+  let x1 = blsG1Mod(blsG1Mod(-BLS_MAP_G1_BPR * inv(BLS_MAP_G1_APR)) * (1n + tv1));
+  if (tv1 === 0n) x1 = blsG1Mod(BLS_MAP_G1_BPR * inv(blsG1Mod(Z * BLS_MAP_G1_APR)));
+  const gx1 = blsG1Mod(x1 * x1 * x1 + BLS_MAP_G1_APR * x1 + BLS_MAP_G1_BPR);
+  const x2 = blsG1Mod(Z * u * u * x1);
+  const gx2 = blsG1Mod(x2 * x2 * x2 + BLS_MAP_G1_APR * x2 + BLS_MAP_G1_BPR);
+  const gx1Square = gx1 === 0n || secpModPow(gx1, (BLS_G1_P - 1n) / 2n, BLS_G1_P) === 1n;
+  const xp = gx1Square ? x1 : x2;
+  let yp = secpModPow(gx1Square ? gx1 : gx2, (BLS_G1_P + 1n) / 4n, BLS_G1_P);
+  if ((u & 1n) !== (yp & 1n)) yp = blsG1Mod(-yp);
+  const xDen = blsMapG1Poly(BLS_MAP_G1_K2, xp);
+  const yDen = blsMapG1Poly(BLS_MAP_G1_K4, xp);
+  let pt = null;
+  if (xDen !== 0n && yDen !== 0n) {
+    pt = [blsG1Mod(blsMapG1Poly(BLS_MAP_G1_K1, xp) * inv(xDen)),
+          blsG1Mod(yp * blsMapG1Poly(BLS_MAP_G1_K3, xp) * inv(yDen))];
+  }
+  const result = pt === null ? null : blsG1Mul(BLS_MAP_G1_H_EFF, pt);
+  return {
+    precompile: "mapg1", address: gas.address, succeeded: "true",
+    output: result === null
+      ? "0x" + "00".repeat(128)
+      : "0x" + result[0].toString(16).padStart(128, "0") + result[1].toString(16).padStart(128, "0"),
+    outputBytes: "128", totalGas: gas.totalGas
   };
 }
 
@@ -9909,6 +10030,22 @@ if (typeof document !== "undefined") {
         : `${r.precompile} precompile (${r.address}): the call FAILS — a field element at or above the field prime (nonzero top bytes included), a point that is not on the curve, or a point outside the prime-order subgroup, in ANY of the ${r.pairs} pair(s): no output, and a failing BLS precompile call burns all the gas supplied to it, so the caller's cost is whatever it forwarded (the scheduled charge is ${r.totalGas}). Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+
+    /* BLS12-381 MAP_FP_TO_G1 (field-to-curve map applied) */
+    const blsmapBtn = document.getElementById("blsmap-btn");
+    if (blsmapBtn) blsmapBtn.addEventListener("click", () => {
+      const r = blsMapG1Calc(
+        document.getElementById("blsmap-input").value);
+      const el = document.getElementById("blsmap-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the input is exactly 64 bytes of hex (with a 0x prefix) — one field element, its 48-byte value carried in a 64-byte element whose top 16 bytes must be zero for the call to succeed.";
+        return;
+      }
+      el.textContent = r.succeeded === "true"
+        ? `${r.precompile} precompile (${r.address}) result: ${r.output} — the mapped point in the EIP-2537 encoding, ${r.outputBytes} bytes (x and y, each a 64-byte field element whose top 16 bytes are zero; all zeros would be the point at infinity). Gas: ${r.totalGas} — the flat MAP_FP_TO_G1 charge from the gas calculator above. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the value you gave — nothing is called and no chain is queried.`
+        : `${r.precompile} precompile (${r.address}): the call FAILS — the field element is at or above the field prime (nonzero top bytes included, since those make the value at least 2^384): no output, and a failing BLS precompile call burns all the gas supplied to it, so the caller's cost is whatever it forwarded (the scheduled charge is ${r.totalGas}). Computed locally from the value you gave — nothing is called and no chain is queried.`;
+    });
+
     /* secp256r1 (P256VERIFY) precompile gas */
     const p256Btn = document.getElementById("p256-btn");
     if (p256Btn) p256Btn.addEventListener("click", () => {
@@ -10859,5 +10996,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

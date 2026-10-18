@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=109"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=110"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -6815,5 +6815,68 @@ check("bls multi-pair MSM: the index prefill is (G, 1) + (G, 1) — it sums to 2
 check("bls multi-pair MSM tool section present in index.html", html.includes("blsm-btn") && html.includes("multi-pair G1MSM and G2MSM applied"));
 check("bls multi-pair MSM controls labelled",
   ["blsm-op", "blsm-input"].every(id => html.includes(`for="${id}"`)));
+/* BLS12-381 MAP_FP_TO_G1 (field-to-curve map applied) —
+   the applied half of the G1 map pair, whose gas tool above
+   quotes 5,500 without reading the element. Verified against
+   an independent pure-Python oracle (oracle-bls-map-g1.py)
+   anchored in-script on go-ethereum's official blsMapG1
+   testdata: all 105 rows reproduce exactly (SWU point on E',
+   isogeny image and cofactor-cleared point on G1, cleared
+   point in the subgroup, asserted per row), the fail rows
+   split into page-malformed lengths and failed calls, and the
+   parity sgn0 convention is pinned by those rows (the
+   (p-1)/2 sign flips y on 9 of the first 20). */
+const BLSMAP_VECTORS = [
+  [["0x0000000000000000000000000000000014406e5bfb9209256a3820879a29ac2f62d6aca82324bf3ae2aa7d3c54792043bd8c791fccdb080c1a52dc68b8b69350"], ["mapg1", "true", "0x000000000000000000000000000000000d7721bcdb7ce1047557776eb2659a444166dc6dd55c7ca6e240e21ae9aa18f529f04ac31d861b54faf3307692545db700000000000000000000000000000000108286acbdf4384f67659a8abe89e712a504cb3ce1cba07a716869025d60d499a00d1da8cdc92958918c222ea93d87f0", "5500"]],  // testdata matter_fp_to_g1_0 (go-ethereum blsMapG1, verbatim)
+  [["0x000000000000000000000000000000000e885bb33996e12f07da69073e2c0cc880bc8eff26d2a724299eb12d54f4bcf26f4748bb020e80a7e3794a7b0e47a641"], ["mapg1", "true", "0x00000000000000000000000000000000191ba6e4c4dafa22c03d41b050fe8782629337641be21e0397dc2553eb8588318a21d30647182782dee7f62a22fd020c000000000000000000000000000000000a721510a67277eabed3f153bd91df0074e1cbd37ef65b85226b1ce4fb5346d943cf21c388f0c5edbc753888254c760a", "5500"]],  // testdata matter_fp_to_g1_1 (go-ethereum blsMapG1, verbatim)
+  [["0x000000000000000000000000000000000ba1b6d79150bdc368a14157ebfe8b5f691cf657a6bbe30e79b6654691136577d2ef1b36bfb232e3336e7e4c9352a8ed"], ["mapg1", "true", "0x000000000000000000000000000000001658c31c0db44b5f029dba56786776358f184341458577b94d3a53c877af84ffbb1a13cc47d228a76abb4b67912991850000000000000000000000000000000018cf1f27eab0a1a66f28a227bd624b7d1286af8f85562c3f03950879dd3b8b4b72e74b034223c6fd93de7cd1ade367cb", "5500"]],  // testdata matter_fp_to_g1_2 (go-ethereum blsMapG1, verbatim)
+  [["0x000000000000000000000000000000000dd824886d2123a96447f6c56e3a3fa992fbfefdba17b6673f9f630ff19e4d326529db37e1c1be43f905bf9202e0278d"], ["mapg1", "true", "0x000000000000000000000000000000000e7a16a975904f131682edbb03d9560d3e48214c9986bd50417a77108d13dc957500edf96462a3d01e62dc6cd468ef11000000000000000000000000000000000ae89e677711d05c30a48d6d75e76ca9fb70fe06c6dd6ff988683d89ccde29ac7d46c53bb97a59b1901abf1db66052db", "5500"]],  // testdata last row bls_g1map_613531325f616161 (go-ethereum blsMapG1, verbatim)
+  [["0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"], ["mapg1", "true", "0x000000000000000000000000000000001073311196f8ef19477219ccee3a48035ff432295aa9419eed45d186027d88b90832e14c4f0e2aa4d15f54d1c3ed0f9300000000000000000000000000000000034d6e3755a2073039d609db4cf3aef548283b5cc92f1021cbdb276414bcd8072b112d80a2b0a7dbf22bdaf17e006d45", "5500"]],  // prefill: u = 1
+  [["0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"], ["mapg1", "true", "0x0000000000000000000000000000000011a9a0372b8f332d5c30de9ad14e50372a73fa4c45d5f2fa5097f2d6fb93bcac592f2e1711ac43db0519870c7d0ea41500000000000000000000000000000000092c0f994164a0719f51c24ba3788de240ff926b55f58c445116e8bc6a47cd63392fd4e8e22bdf9feaa96ee773222133", "5500"]],  // u = 0 — the exceptional SWU branch (Z^2 u^4 + Z u^2 == 0, x1 = B / (Z A))
+  [["0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002"], ["mapg1", "true", "0x00000000000000000000000000000000163d8bde8d53a02f733c7c48a57d31e7d3419f7c0ca8eee26bea104da6eed8641b2769feda6ba1f8984bcc84d3c9ffdc000000000000000000000000000000000843845d8cbf2013d604a35de7c1a2ae5e9d7ca2e048f386e193c661f949a5eb47de84ee3bf0c8567594275da9425d0b", "5500"]],  // u = 2
+  [["0x000000000000000000000000000000001a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaaa"], ["mapg1", "true", "0x000000000000000000000000000000001073311196f8ef19477219ccee3a48035ff432295aa9419eed45d186027d88b90832e14c4f0e2aa4d15f54d1c3ed0f930000000000000000000000000000000016b3a3b2e3dddf6a11459ddaf657fde21c4f10282a56029d9b55ab3ce1f41e1cf39ad27e0ea35823c7d3250e81ff3d66", "5500"]],  // u = p - 1 = -1 — the negation of the prefill point (map(-u) = -map(u))
+  [["0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000075bcd15"], ["mapg1", "true", "0x0000000000000000000000000000000013e0389e420f134a77d24f520b6ff40db8b6fe19137462ec777c5b28dfda6fb7453510991fd7aeda186fa45c1d7d08e7000000000000000000000000000000000328ba308b2ed6a8dde4cd8ddddd3e993a02626412c15538e217f960265fc082e73254f9bd78f970061cfc1b17ebacc4", "5500"]],  // u = 123456789
+  [["0x000000000000000000000000000000001a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab"], ["mapg1", "false", "0x", "5500"]],  // u = p exactly — at the prime: the call fails, no output
+  [["0x000000000000000000000000000000001a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffdae4"], ["mapg1", "false", "0x", "5500"]],  // u = p + 12345 — above the prime: the call fails
+  [["0x1000000000000000000000000000000000156c8a6a2c184569d69a76be144b5cdc5141d2d2ca4fe341f011e25e3969c55ad9e9b9ce2eb833c81a908e5fa4ac5f"], ["mapg1", "false", "0x", "5500"]],  // fail testdata bls_mapg1_top_bytes — nonzero top bytes make the value >= 2^384 > p: the call fails
+];
+check("bls map fp to g1 reproduces the oracle results (Python oracle)",
+  BLSMAP_VECTORS.every(([inp, exp]) => { const r = app.blsMapG1Calc(inp[0]); return r !== null &&
+    r.precompile === exp[0] && r.succeeded === exp[1] && r.output === exp[2] && r.totalGas === exp[3] &&
+    r.outputBytes === (exp[1] === "true" ? "128" : "0"); }));
+check("bls map fp to g1 gas agrees with the hub's BLS gas tool on every oracle row",
+  BLSMAP_VECTORS.every(([inp, exp]) => { const r = app.blsMapG1Calc(inp[0]);
+    const g = app.blsGasCalc("map-fp-to-g1", null);
+    return r !== null && g !== null && r.totalGas === g.totalGas && r.address === g.address && r.totalGas === "5500"; }));
+check("bls map fp to g1: every successful result is on the curve y^2 = x^3 + 4 (checked independently in the test)",
+  BLSMAP_VECTORS.filter(([, exp]) => exp[1] === "true").every(([, exp]) => {
+    const P = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787n;
+    const x = BigInt("0x" + exp[2].slice(2, 130)), y = BigInt("0x" + exp[2].slice(130, 258));
+    return (y * y - (x * x * x + 4n)) % P === 0n; }));
+check("bls map fp to g1: map(-u) is -map(u) — same x, y coordinates summing to the field prime",
+  (() => { const P = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787n;
+    const pos = BLSMAP_VECTORS.find(([inp]) => inp[0].endsWith("00000001"));
+    const neg = BLSMAP_VECTORS.find(([inp]) => inp[0].endsWith("ffffffffaaaa"));
+    if (!pos || !neg) return false;
+    const x1 = pos[1][2].slice(2, 130), y1 = BigInt("0x" + pos[1][2].slice(130, 258));
+    const x2 = neg[1][2].slice(2, 130), y2 = BigInt("0x" + neg[1][2].slice(130, 258));
+    const rPos = app.blsMapG1Calc(pos[0][0]), rNeg = app.blsMapG1Calc(neg[0][0]);
+    return x1 === x2 && y1 + y2 === P && rPos.output === pos[1][2] && rNeg.output === neg[1][2]; })());
+check("bls map fp to g1 refuses a wrong length (empty, 63 or 65 bytes), odd-length and non-hex input, and null inputs",
+  app.blsMapG1Calc("0x") === null &&
+  app.blsMapG1Calc("0x" + "00".repeat(63)) === null &&
+  app.blsMapG1Calc("0x" + "00".repeat(65)) === null &&
+  app.blsMapG1Calc("0x" + "0".repeat(127)) === null &&
+  app.blsMapG1Calc("0xzz" + "00".repeat(63)) === null &&
+  app.blsMapG1Calc(null) === null &&
+  app.blsMapG1Calc("0x" + "00".repeat(64)) !== null);
+check("bls map fp to g1: the index prefill is u = 1 — it maps to the oracle's prefill point at 5,500",
+  (() => { const g = id => { const m = new RegExp(`id="${id}"[^>]*value="([^"]*)"`).exec(html); return m && m[1]; };
+    const r = app.blsMapG1Calc(g("blsmap-input"));
+    const want = BLSMAP_VECTORS.find(([inp]) => inp[0].endsWith("00000001"));
+    return r !== null && want !== undefined && r.succeeded === "true" && r.totalGas === "5500" && r.output === want[1][2]; })());
+check("bls map fp to g1 tool section present in index.html", html.includes("blsmap-btn") && html.includes("MAP_FP_TO_G1 field-to-curve map applied"));
+check("bls map fp to g1 controls labelled",
+  ["blsmap-input"].every(id => html.includes(`for="${id}"`)));
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=99"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=100"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -611,6 +611,42 @@ check("EIP-7702 authorization digests (Python oracle)",
   app.eip7702AuthorizationDigest("-1", "0x1111111111111111111111111111111111111111", "3") === null &&
   app.eip7702AuthorizationDigest("8453", "0x1111", "3") === null &&
   app.eip7702AuthorizationDigest("8453", "0x1111111111111111111111111111111111111111", "x") === null);
+/* EIP-7702 authorization digest calculator — the standalone tool for the
+   digest function above (its construction half; the verifier below is the
+   checking half, as the permit digest / verify tools pair up). Vectors
+   from the independent pure-Python oracle (oracle-auth7702-digest.py,
+   reusing oracle-auth7702.py's Keccak-256 / RLP code; anchored on the
+   published Keccak vectors, the hand-derived prefill payload
+   05 ‖ d9 ‖ 82 2105 ‖ 94 ‖ 20×0x11 ‖ 03, and the two digest values the
+   check above already carries). */
+const ADIG_VECTORS = [
+  ["8453", "0x1111111111111111111111111111111111111111", "3", "0x05d982210594111111111111111111111111111111111111111103", "0xa220321b87c7e2f32cd61ca94318a803d6b748661985c7e4e77f4d9a67eb048e"],
+  ["0", "0x2222222222222222222222222222222222222222", "0", "0x05d78094222222222222222222222222222222222222222280", "0xfb6605641675aed59f0a3f2c102ac202312494431d767f683a450b845ff3a8cc"],
+  ["1", "0x1111111111111111111111111111111111111111", "0", "0x05d70194111111111111111111111111111111111111111180", "0xd35655e0048045ff05a91979004fc1afa8325086bbab53c2498ecfcfe431d99f"],
+  ["8453", "0x2222222222222222222222222222222222222222", "0", "0x05d982210594222222222222222222222222222222222222222280", "0x8621b54ace937edfd2c2e1cf94785939e7f5d22e159c561012721fb0eb493a12"],
+  ["0", "0x1111111111111111111111111111111111111111", "3", "0x05d78094111111111111111111111111111111111111111103", "0x9acd9ca7b53e3d8d3426e12ba640efafc7a542480b3c83022c1596a03b746c27"],
+  ["10", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "18446744073709551615", "0x05df0a944b48c98cd9d99d00dafe5cc4bb9e965345c5b15a88ffffffffffffffff", "0xed5e423e829c94ad26a9db5980ae6f9a98871f2183fd216ee4ebf93b0e2e5b31"],
+  ["42161", "0x2222222222222222222222222222222222222222", "4294967295", "0x05dd82a4b194222222222222222222222222222222222222222284ffffffff", "0x66de8414b7b9a2ed2c9c023e574416886d44d92f0753ce14283597fcd36913a2"]
+];
+check("EIP-7702 authorization digest calculator reproduces the oracle payloads and digests (Python oracle)",
+  ADIG_VECTORS.every(([c, a, n, p, d]) => { const r = app.authorizationDigestCalc(c, a, n); return r !== null && r.payload === p && r.digest === d; }));
+check("EIP-7702 authorization digest calculator agrees with the digest function the verifier uses, on every oracle row",
+  ADIG_VECTORS.every(([c, a, n, , d]) => app.authorizationDigestCalc(c, a, n)?.digest === app.eip7702AuthorizationDigest(c, a, n) && d === app.eip7702AuthorizationDigest(c, a, n)));
+check("EIP-7702 authorization digest calculator: every field is inside the hash (chain, delegate and nonce mutations all change the digest)",
+  app.authorizationDigestCalc("1", "0x1111111111111111111111111111111111111111", "3").digest !== ADIG_VECTORS[0][4] &&
+  app.authorizationDigestCalc("8453", "0x2222222222222222222222222222222222222222", "3").digest !== ADIG_VECTORS[0][4] &&
+  app.authorizationDigestCalc("8453", "0x1111111111111111111111111111111111111111", "4").digest !== ADIG_VECTORS[0][4]);
+check("EIP-7702 authorization digest calculator refuses malformed input",
+  app.authorizationDigestCalc("-1", "0x1111111111111111111111111111111111111111", "3") === null &&
+  app.authorizationDigestCalc("8453", "0x1111", "3") === null &&
+  app.authorizationDigestCalc("8453", "0x1111111111111111111111111111111111111111", "x") === null &&
+  app.authorizationDigestCalc("8453", "0x1111111111111111111111111111111111111111", "1.5") === null &&
+  app.authorizationDigestCalc(8453, "0x1111111111111111111111111111111111111111", "3") === null &&
+  app.authorizationDigestCalc("8453", "0x1111111111111111111111111111111111111111", null) === null);
+check("EIP-7702 authorization digest calculator: the index prefill is the oracle tuple (8453 / 0x1111…1111 / 3)",
+  (() => { const g = id => { const m = new RegExp(`id="${id}"[^>]*value="([^"]*)"`).exec(html); return m && m[1]; };
+    return g("adig-chain") === "8453" && g("adig-addr") === "0x1111111111111111111111111111111111111111" && g("adig-nonce") === "3" &&
+      app.authorizationDigestCalc(g("adig-chain"), g("adig-addr"), g("adig-nonce"))?.digest === "0xa220321b87c7e2f32cd61ca94318a803d6b748661985c7e4e77f4d9a67eb048e"; })());
 /* EIP-7702 authorization signature verification — the two authorization
    tuples of the type-4 oracle transaction above, recovered by the
    independent pure-Python oracle (oracle-auth7702.py: Keccak-f[1600] +
@@ -643,6 +679,9 @@ check("EIP-7702 authorization verification refuses the high-s twin, an EIP-155 v
 check("EIP-7702 authorization verify tool section present in index.html", html.includes("a7702-btn") && html.includes("EIP-7702 authorization signature verification"));
 check("EIP-7702 authorization verify controls labelled",
   ["a7702-chain", "a7702-addr", "a7702-nonce", "a7702-sig"].every(id => html.includes(`for="${id}"`)));
+check("EIP-7702 authorization digest tool section present in index.html", html.includes("adig-btn") && html.includes("EIP-7702 authorization digest calculator"));
+check("EIP-7702 authorization digest controls labelled",
+  ["adig-chain", "adig-addr", "adig-nonce"].every(id => html.includes(`for="${id}"`)));
 check("transaction decoder rejects malformed and non-canonical input",
   app.decodeRawTransaction("") === null &&
   app.decodeRawTransaction("0x") === null &&

@@ -1683,6 +1683,19 @@ dave</textarea>
     </div>
 
     <div class="tool">
+      <h3>EIP-7702 authorization digest calculator</h3>
+      <p>Before an <a href="https://eips.ethereum.org/EIPS/eip-7702">EIP-7702</a> authorization can be verified (the tool below) or included in a set code transaction, someone has to <em>produce</em> it — and what the authority signs is not the transaction but this digest: <code>keccak256(0x05 ‖ rlp([chain_id, address, nonce]))</code>, the <code>0x05</code> magic byte keeping an authorization from ever being mistaken for a transaction. This calculator is the construction half of the pair, the way the EIP-2612 permit digest calculator above pairs with its verifier: give it the tuple's three fields and it returns the digest to sign and the exact payload bytes that were hashed, so a hand-built tuple can be checked byte for byte. The prefill is the first authorization of the type-4 oracle transaction the decoder tests carry — Base (chain ID 8453), delegate <code>0x1111…1111</code>, nonce 3 — whose signature the verification tool below recovers to the EIP-155 example key's published address. Details that bite: a chain ID of 0 makes the authorization valid on <em>any</em> chain, and zero chain IDs and nonces RLP-encode as the empty string (<code>0x80</code>), never as a zero byte — both are visible in the payload when you zero the prefill's fields. Computes a digest only: nothing is signed here, no key is used or asked for, and no chain is queried.</p>
+      <label for="adig-chain">Authorization chain ID (0 = valid on any chain)</label>
+      <input id="adig-chain" type="text" inputmode="numeric" spellcheck="false" value="8453">
+      <label for="adig-addr">Delegate address (the code being delegated to, 20 bytes)</label>
+      <input id="adig-addr" type="text" spellcheck="false" value="0x1111111111111111111111111111111111111111">
+      <label for="adig-nonce">Authority nonce (the signing account's nonce in the tuple)</label>
+      <input id="adig-nonce" type="text" inputmode="numeric" spellcheck="false" value="3">
+      <button id="adig-btn" type="button">Calculate authorization digest</button>
+      <p id="adig-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>EIP-7702 authorization signature verification</h3>
       <p>An <a href="https://eips.ethereum.org/EIPS/eip-7702">EIP-7702</a> set code transaction carries authorization tuples, each signed on its own by the account delegating its code — over a digest that is <em>not</em> the transaction's signing hash: <code>keccak256(0x05 ‖ rlp([chain_id, address, nonce]))</code>, where the <code>0x05</code> magic byte keeps an authorization from ever being mistaken for a transaction. The transaction <em>sender</em> recovery tool above recovers a whole transaction's authorities; this tool verifies a single tuple the way a client checks it before applying the delegation: recompute the tuple's digest and recover the signer — the <em>authority</em>, the account whose code is delegated. The prefilled tuple is the first authorization of the type-4 oracle transaction the decoder tests carry: on Base (chain ID 8453) it delegates to <code>0x1111…1111</code> at nonce 3, and its authority is the published address of the EIP-155 example key (<code>0x9d8A…5A4F</code>) — change any field and the recovered authority changes with it, because every field is inside the hash; the same signature checked against chain ID 1 recovers to a different account entirely. A chain ID of 0 in a tuple means the authorization is valid on any chain. Honest scope: a client <em>also</em> requires the tuple nonce to equal the authority's current nonce and then increments it — chain state this page does not read — so a recovered authority here means the signature check passes, not that the tuple would still be applied now. Strict in the same way as the verifiers above: the signature must be exactly 65 bytes (<code>r ‖ s ‖ v</code>, with <code>v</code> the tuple's y-parity 0 or 1, or 27 / 28 in the form wallets return; an EIP-155-style <code>v</code> is refused, because an authorization carries no chain ID in its <code>v</code>) and <code>s</code> must be the canonical low-<code>s</code> form — the malleable high-<code>s</code> twin of this very signature recovers the same authority mathematically and is still refused, exactly as a client skips that tuple. Verifies a signature only: nothing is signed, no key is used or asked for, and no chain is queried.</p>
       <label for="a7702-chain">Authorization chain ID (0 = valid on any chain)</label>
@@ -1737,6 +1750,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=99"></script>
+<script src="app.js?v=100"></script>
 </body>
 </html>

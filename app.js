@@ -4223,6 +4223,138 @@ function precompileGasCalc(nameStr, inputLenStr) {
   };
 }
 
+/* ---------- Original precompiles applied (SHA-256 / RIPEMD-160 / identity) ----------
+   The applied counterpart of the gas calculator above for the
+   three of the original four whose work is a plain hash or a
+   copy: that tool prices SHA-256 (0x02), RIPEMD-160 (0x03) and
+   identity (0x04) from the input LENGTH alone and never reads
+   the contents — this one takes the input bytes and runs them.
+   (The fourth, ecrecover at 0x01, is applied by the signature
+   recovery tools further down; ModExp at 0x05 likewise has its
+   own applied calculator above.) The outputs are the
+   precompiles' own return data, framed exactly as a client
+   returns them:
+     - SHA-256: the 32-byte FIPS 180-4 digest, computed by the
+       hub's existing sha256Bytes (the same code the blob
+       versioned-hash tool uses).
+     - RIPEMD-160: the 20-byte digest placed in the LOW 20 bytes
+       of a 32-byte word — 12 leading zero bytes, then the hash.
+       Returning the bare 20 bytes instead is the trap of this
+       family: go-ethereum's ripemd160 precompile left-pads to
+       32, and callers read a full word. The hash itself is
+       computed here from the specification (Dobbertin,
+       Bosselaers, Preneel): two parallel lines of 80 steps over
+       64-byte blocks, little-endian words throughout — unlike
+       SHA-256's big-endian words, so the two digests of the
+       same input share nothing but the block size.
+     - identity: the input bytes unchanged, so the output is
+       exactly as long as the input (empty in, empty out).
+   None of the three can fail on contents: every byte string is
+   a valid input, and an empty input hashes to the well-known
+   empty digest under both hashes. The price is the hub's own
+   precompileGasCalc fed the input's true length, cross-checked
+   against it exactly in tests on every row — base plus per-word
+   on the length rounded up to whole 32-byte words, so the
+   applied tool and the gas tool can never disagree about a
+   call's price. Input to THIS page is hex bytes (0x prefix
+   optional, empty allowed) capped at 4,096 bytes as a stated
+   page computation cap — the precompiles themselves accept any
+   length a caller's gas can pay for, and the gas tool above
+   still prices lengths beyond the cap; malformed hex is
+   refused, as the other calculators refuse unparseable input.
+   Verified against an independent pure-Python oracle
+   (oracle-orig-precompile.py): its from-specification
+   RIPEMD-160 was anchored in-script BEFORE emitting on the
+   published RIPEMD-160 test suite (all nine vectors, including
+   1,000,000 x 'a') and on OpenSSL's digest, agreeing with both
+   on 143 inputs, and its SHA-256 on the FIPS 180-4 examples —
+   11 input rows x 3 precompiles emitted, every output and
+   price reproduced here in tests. Computes locally; no chain
+   is queried. */
+const ORIG_APPLIED_MAX_BYTES = 4096;
+const RMD_RL = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+  7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
+  3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
+  1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
+  4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13];
+const RMD_RR = [5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
+  6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
+  15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
+  8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
+  12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11];
+const RMD_SL = [11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
+  7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
+  11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
+  11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
+  9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6];
+const RMD_SR = [8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
+  9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
+  9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
+  15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
+  8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11];
+const RMD_KL = [0x00000000, 0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xa953fd4e];
+const RMD_KR = [0x50a28be6, 0x5c4dd124, 0x6d703ef3, 0x7a6d76e9, 0x00000000];
+function rmdRol(x, n) { return ((x << n) | (x >>> (32 - n))) >>> 0; }
+function rmdF(j, x, y, z) {
+  if (j < 16) return (x ^ y ^ z) >>> 0;
+  if (j < 32) return ((x & y) | (~x & z)) >>> 0;
+  if (j < 48) return ((x | ~y) ^ z) >>> 0;
+  if (j < 64) return ((x & z) | (y & ~z)) >>> 0;
+  return (x ^ (y | ~z)) >>> 0;
+}
+function ripemd160Bytes(inputBytes) {
+  const bytes = Array.from(inputBytes);
+  const bitLen = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  for (let i = 0; i < 8; i++) bytes.push(Math.floor(bitLen / 2 ** (8 * i)) % 256);
+  const h = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0];
+  for (let off = 0; off < bytes.length; off += 64) {
+    const X = [];
+    for (let t = 0; t < 16; t++) {
+      X.push((bytes[off + 4 * t] | (bytes[off + 4 * t + 1] << 8) |
+              (bytes[off + 4 * t + 2] << 16) | (bytes[off + 4 * t + 3] << 24)) >>> 0);
+    }
+    let al = h[0], bl = h[1], cl = h[2], dl = h[3], el = h[4];
+    let ar = h[0], br = h[1], cr = h[2], dr = h[3], er = h[4];
+    for (let j = 0; j < 80; j++) {
+      const tl = (rmdRol((al + rmdF(j, bl, cl, dl) + X[RMD_RL[j]] + RMD_KL[j >> 4]) >>> 0, RMD_SL[j]) + el) >>> 0;
+      al = el; el = dl; dl = rmdRol(cl, 10); cl = bl; bl = tl;
+      const tr = (rmdRol((ar + rmdF(79 - j, br, cr, dr) + X[RMD_RR[j]] + RMD_KR[j >> 4]) >>> 0, RMD_SR[j]) + er) >>> 0;
+      ar = er; er = dr; dr = rmdRol(cr, 10); cr = br; br = tr;
+    }
+    const t = (h[1] + cl + dr) >>> 0;
+    h[1] = (h[2] + dl + er) >>> 0;
+    h[2] = (h[3] + el + ar) >>> 0;
+    h[3] = (h[4] + al + br) >>> 0;
+    h[4] = (h[0] + bl + cr) >>> 0;
+    h[0] = t;
+  }
+  const out = [];
+  for (const x of h) out.push(x & 255, (x >>> 8) & 255, (x >>> 16) & 255, (x >>> 24) & 255);
+  return out;
+}
+function origPrecompileCalc(nameStr, inputHex) {
+  if (typeof nameStr !== "string") return null;
+  const name = nameStr.trim();
+  if (name !== "sha256" && name !== "ripemd160" && name !== "identity") return null;
+  const bytes = parseHexBytes(inputHex);
+  if (bytes === null || bytes.length > ORIG_APPLIED_MAX_BYTES) return null;
+  const priced = precompileGasCalc(name, String(bytes.length));
+  if (priced === null) return null;
+  let outBytes;
+  if (name === "sha256") outBytes = sha256Bytes(bytes);
+  else if (name === "ripemd160") outBytes = [...new Array(12).fill(0), ...ripemd160Bytes(bytes)];
+  else outBytes = bytes;
+  return {
+    precompile: name, address: priced.address,
+    inputBytes: String(bytes.length), input: "0x" + bytesToHex(bytes),
+    output: "0x" + bytesToHex(outBytes), outputBytes: String(outBytes.length),
+    words: priced.words, baseGas: priced.baseGas, perWordGas: priced.perWordGas,
+    wordGas: priced.wordGas, totalGas: priced.totalGas
+  };
+}
+
 /* alt_bn128 (BN254) precompile gas — what the three elliptic-
    curve precompiles added for the Byzantium fork charge, at the
    prices current mainnet applies. EIP-196 defined ecAdd (0x06)
@@ -9492,6 +9624,20 @@ if (typeof document !== "undefined") {
       el.textContent = `${r.precompile} precompile (${r.address}) gas: ${r.totalGas} total — ${r.baseGas} base + ${r.wordGas} for ${r.words} word(s) of input at ${r.perWordGas} per word. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* Original precompiles applied (SHA-256 / RIPEMD-160 / identity) */
+    const opcBtn = document.getElementById("opc-btn");
+    if (opcBtn) opcBtn.addEventListener("click", () => {
+      const r = origPrecompileCalc(
+        document.getElementById("opc-name").value,
+        document.getElementById("opc-input").value);
+      const el = document.getElementById("opc-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the precompile is SHA-256, RIPEMD-160 or identity, and the input is hex bytes (0x prefix optional, empty allowed) of at most 4,096 bytes — this page's stated computation cap; the gas calculator above prices longer inputs.";
+        return;
+      }
+      el.textContent = `${r.precompile} precompile (${r.address}) result: ${r.output} — ${r.outputBytes} bytes of output from ${r.inputBytes} bytes of input${r.precompile === "ripemd160" ? " (the 20-byte RIPEMD-160 digest in the low 20 bytes of a 32-byte word: 12 leading zero bytes, then the hash)" : r.precompile === "identity" ? " (the input copied unchanged)" : " (the 32-byte SHA-256 digest)"}. Gas: ${r.totalGas} total — ${r.baseGas} base + ${r.wordGas} for ${r.words} word(s) at ${r.perWordGas} per word, from the gas calculator above. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* alt_bn128 precompile gas */
     const bnBtn = document.getElementById("bn-btn");
     if (bnBtn) bnBtn.addEventListener("click", () => {
@@ -10587,5 +10733,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, bn128Calc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

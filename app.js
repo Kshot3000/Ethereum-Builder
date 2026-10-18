@@ -7152,6 +7152,128 @@ function selfdestructCalc(gasAvailStr, selfAddrStr, selfBalStr, beneficiaryStr,
     beneficiaryHasCodeAfter: beneCodeAfter ? "true" : "false", halted: "false" };
 }
 
+/* LOG opcode calculator -- LOG0 (0xa0) through LOG4 (0xa4),
+   all Frontier, the semantics sibling of the hub's LOG gas
+   tool above and the last opcode family that had a gas tool
+   but no execution application. The opcode pops an offset, a
+   size and n topics (n is the opcode's digit) and appends ONE
+   log record to the transaction's receipt: the EXECUTING
+   account's address (the contract whose code is running --
+   for an ERC-20 Transfer that is the token contract, not the
+   sender), the n topics in the order they were popped, and
+   the data read from the frame's memory region
+   [offset, offset+size). Nothing is pushed. Memory is
+   zero-initialised: a region running past the supplied
+   memory's end reads zeros there and expands memory
+   (zero-filled) to the region end, while a zero-size region
+   touches no memory whatever its offset -- an offset of
+   2^255 with size 0 logs empty data at the flat base. Gas is
+   the hub's LOG gas tool's price, cross-checked against
+   logGasCalc exactly in tests: 375 base + 375 per topic +
+   8 per data BYTE + the memory-expansion increase. The
+   per-byte data term is the family's quiet trap: unlike
+   SHA3's 6 per WORD (which rounds 33 bytes up to 2 words),
+   log data is metered by the byte, so 33 bytes pay 264 of
+   data gas, never a rounded word price. Two failures are
+   EXCEPTIONAL halts, not soft failures: the frame cannot
+   pay the gas cost (reason oog, checked first -- the charge
+   precedes execution), and the frame is static (reason
+   static -- a log record is a state write, so write
+   protection forbids the opcode outright, where a
+   zero-value CALL in a static frame merely fails softly).
+   Each consumes the frame's whole remaining gas, appends
+   no record and leaves memory unchanged. Topic fields
+   beyond the opcode's own count are never read (lazily
+   parsed; garbage-field tests). One honest divergence from
+   the gas tool: that tool's byte-count parser refuses an
+   offset it cannot hold as a byte count, while this tool
+   accepts any 256-bit offset when the size is 0, because no
+   memory is touched and the price is the flat base either
+   way. Honest scope: the state is supplied, not read --
+   this page executes nothing and queries no chain; the
+   record built here is the record the opcode would append,
+   and whether the surrounding transaction later reverts
+   (discarding the record) is a transaction-level fact this
+   single application does not track. All words are single
+   256-bit values, refused rather than wrapped; the supplied
+   memory, the size and a non-empty region's end are capped
+   at 4,096 bytes as stated display caps. */
+const LOGOP_MAX_BYTES = 4096;
+function logCalc(opStr, gasAvailStr, selfAddrStr, offsetStr, sizeStr,
+    topic0Str, topic1Str, topic2Str, topic3Str, memoryStr, inStatic) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim().toLowerCase();
+  const OPS = { log0: 0, log1: 1, log2: 2, log3: 3, log4: 4 };
+  if (!(op in OPS)) return null;
+  if (typeof inStatic !== "boolean") return null;
+  if (typeof memoryStr !== "string") return null;
+  const n = OPS[op];
+  const parseAddr = s => {
+    if (typeof s !== "string") return null;
+    let h = s.trim();
+    if (/^0[xX]/.test(h)) h = h.slice(2);
+    if (!/^[0-9a-fA-F]{40}$/.test(h)) return null;
+    return "0x" + h.toLowerCase();
+  };
+  const gasAvail = sstoreParseWord(gasAvailStr);
+  const selfAddr = parseAddr(selfAddrStr);
+  const offset = sstoreParseWord(offsetStr);
+  const size = sstoreParseWord(sizeStr);
+  if (gasAvail === null || selfAddr === null || offset === null || size === null) return null;
+  if (size > BigInt(LOGOP_MAX_BYTES)) return null;
+  let mh = memoryStr.trim();
+  if (/^0[xX]/.test(mh)) mh = mh.slice(2);
+  if (mh !== "" && (!/^[0-9a-fA-F]+$/.test(mh) || mh.length % 2 !== 0)) return null;
+  if (mh.length / 2 > LOGOP_MAX_BYTES) return null;
+  const before = [];
+  for (let i = 0; i < mh.length; i += 2) before.push(parseInt(mh.slice(i, i + 2), 16));
+  const regionEnd = size === 0n ? 0n : offset + size;
+  if (size > 0n && regionEnd > BigInt(LOGOP_MAX_BYTES)) return null;
+  const topicStrs = [topic0Str, topic1Str, topic2Str, topic3Str];
+  const topics = [];
+  for (let i = 0; i < n; i++) {
+    const v = parseWord256(topicStrs[i]);
+    if (v === null) return null;
+    topics.push("0x" + v.toString(16).padStart(64, "0"));
+  }
+  const wordsBefore = BigInt(Math.ceil(before.length / 32));
+  const endNum = Number(regionEnd);
+  const wordsAfter = BigInt(Math.ceil(Math.max(before.length, endNum) / 32));
+  const expansion = wordsAfter > wordsBefore ? memTotalCost(wordsAfter) - memTotalCost(wordsBefore) : 0n;
+  const baseGas = 375n, topicGas = 375n * BigInt(n), dataGas = 8n * size;
+  const total = baseGas + topicGas + dataGas + expansion;
+  const toHex = arr => "0x" + arr.map(b => b.toString(16).padStart(2, "0")).join("");
+  const head = { opcode: op, opcodeByte: "0x" + (0xa0 + n).toString(16),
+    address: toChecksumAddress(selfAddr), topicCount: String(n),
+    baseGas: baseGas.toString(), topicGas: topicGas.toString(),
+    dataGas: dataGas.toString(), memoryGas: expansion.toString(), totalGas: total.toString() };
+  const unchanged = { topics: "", data: "0x", dataBytes: "0",
+    memoryBefore: toHex(before), memoryAfter: toHex(before),
+    memoryBeforeBytes: String(before.length), memoryAfterBytes: String(before.length),
+    msizeBefore: (wordsBefore * 32n).toString(), msizeAfter: (wordsBefore * 32n).toString(),
+    logged: "false", halted: "true" };
+  if (gasAvail < total) {
+    return { ...head, outcome: "halt", haltReason: "oog",
+      gasUsed: gasAvail.toString(), gasAfter: "0", ...unchanged };
+  }
+  if (inStatic) {
+    return { ...head, outcome: "halt", haltReason: "static",
+      gasUsed: gasAvail.toString(), gasAfter: "0", ...unchanged };
+  }
+  const off = Number(offset), sz = Number(size);
+  const region = [];
+  for (let i = 0; i < sz; i++) region.push(off + i < before.length ? before[off + i] : 0);
+  const after = before.slice();
+  while (after.length < endNum) after.push(0);
+  return { ...head, topics: topics.join(","), outcome: "logged", haltReason: "",
+    gasUsed: total.toString(), gasAfter: (gasAvail - total).toString(),
+    data: toHex(region), dataBytes: size.toString(),
+    memoryBefore: toHex(before), memoryAfter: toHex(after),
+    memoryBeforeBytes: String(before.length), memoryAfterBytes: String(after.length),
+    msizeBefore: (wordsBefore * 32n).toString(), msizeAfter: (wordsAfter * 32n).toString(),
+    logged: "true", halted: "false" };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -9181,6 +9303,39 @@ if (typeof document !== "undefined") {
       el.textContent = `${name}: the frame terminates and the account's whole balance moves to ${r.beneficiary} — balances after: executing account ${r.selfAfter}, beneficiary ${r.beneficiaryAfter} (its nonce stays ${r.beneficiaryNonceAfter}). ${r.deleted === "true" ? "The account was created in this transaction, so it IS deleted at the transaction's end — code, storage and nonce cleared then, not before." : "The account was NOT created in this transaction, so it is NOT deleted — only the balance moved and the account survives intact (EIP-6780)."} ${gasPart} ${tail}`;
     });
 
+    /* LOG opcode calculator */
+    const logopBtn = document.getElementById("logop-btn");
+    if (logopBtn) logopBtn.addEventListener("click", () => {
+      const r = logCalc(
+        document.getElementById("logop-op").value,
+        document.getElementById("logop-gas").value,
+        document.getElementById("logop-self").value,
+        document.getElementById("logop-offset").value,
+        document.getElementById("logop-size").value,
+        document.getElementById("logop-topic0").value,
+        document.getElementById("logop-topic1").value,
+        document.getElementById("logop-topic2").value,
+        document.getElementById("logop-topic3").value,
+        document.getElementById("logop-memory").value,
+        document.getElementById("logop-static").checked);
+      const el = document.getElementById("logop-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: gas, offset and size must each be one 256-bit word, decimal or 0x hex; the executing account must be exactly 40 hex characters; each topic the chosen opcode actually reads must be one 256-bit word; and the memory must be even-length hex — the memory, the size and a non-empty region's end are each capped at 4,096 bytes. Topics beyond the opcode's count are never read, so their contents cannot cause this refusal.";
+        return;
+      }
+      const tail = "Computed locally from the state you gave — nothing is executed and no chain is queried.";
+      const name = `${r.opcode.toUpperCase()} (${r.opcodeByte}, Frontier)`;
+      const gasPart = `Gas ${r.totalGas} in total (375 base + ${r.topicGas} for its ${r.topicCount} topic(s) + ${r.dataGas} for the data bytes + ${r.memoryGas} of memory expansion).`;
+      if (r.outcome === "halt") {
+        el.textContent = r.haltReason === "static"
+          ? `${name}: the frame is static and a log record is a state write, so the opcode halts exceptionally — the frame's whole remaining gas (${r.gasUsed}) is consumed, no record is appended and memory is unchanged. The opcode would have cost ${r.totalGas}. ${tail}`
+          : `${name}: the frame cannot pay the ${r.totalGas} this opcode costs, so it halts out of gas — the whole remaining ${r.gasUsed} is consumed, no record is appended and memory is unchanged. ${tail}`;
+        return;
+      }
+      const topicPart = r.topicCount === "0" ? "no topics" : `topic(s) ${r.topics.split(",").join(", ")}`;
+      el.textContent = `${name}: one log record is appended under the executing account ${r.address} with ${topicPart} and data ${r.data} (${r.dataBytes} byte(s) read from memory at offset ${document.getElementById("logop-offset").value.trim()}; memory now ${r.memoryAfterBytes} byte(s), size ${r.msizeAfter}). Gas used ${r.gasUsed} (gas after: ${r.gasAfter}). ${gasPart} ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -9194,5 +9349,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=95"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=96"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -5816,6 +5816,125 @@ check("sdop tool section present in index.html", html.includes("sdop-btn") && ht
 
 
 
+
+/* LOG0-LOG4 (0xa0-0xa4, Frontier): the opcode pops an offset,
+   a size and n topics and appends one log record -- the
+   EXECUTING account's address, the topics in pop order, and
+   the data read from the memory region -- pushing nothing.
+   Gas is the hub's LOG gas tool's price, cross-checked below
+   exactly (375 base + 375 per topic + 8 per data BYTE + the
+   memory-expansion increase). Memory is zero-initialised: a
+   region past the end reads zeros and expands memory; a
+   zero-size region touches nothing whatever its offset. Two
+   exceptional halts consume the whole remaining gas and
+   append no record: oog (checked first) and a static frame.
+   Topic fields beyond the opcode's count are never read.
+   Verified against an independent pure-Python oracle
+   (oracle-log-op.py) whose Keccak-f[1600] is anchored
+   in-script on the published empty / abc vectors, the
+   Transfer event topic, and the EIP-55 forms of WETH and the
+   Ethereum-work address, plus hand-computed gas anchors,
+   before generating. */
+const LOGOP_ROWS = [
+    [["log3", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "32", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826", "", "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000", false], "log3|0xa3|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|3|0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef,0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a,0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826|375|1125|256|0|1756|logged||1756|98244|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|32|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|32|32|32|32|true|false"],
+    [["log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "", "", "", "", "0x", false], "log0|0xa0|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|0||375|0|0|0|375|logged||375|99625|0x|0|0x|0x|0|0|0|0|true|false"],
+    [["log4", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826", "0x0000000000000000000000000000000000000000000000000000000000000001", "0x", false], "log4|0xa4|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|4|0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef,0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a,0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826,0x0000000000000000000000000000000000000000000000000000000000000001|375|1500|0|0|1875|logged||1875|98125|0x|0|0x|0x|0|0|0|0|true|false"],
+    [["log1", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "32", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "", "", "", "0x", false], "log1|0xa1|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|1|0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef|375|375|256|3|1009|logged||1009|98991|0x0000000000000000000000000000000000000000000000000000000000000000|32|0x|0x0000000000000000000000000000000000000000000000000000000000000000|0|32|0|32|true|false"],
+    [["log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "8", "", "", "", "", "0x616263", false], "log0|0xa0|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|0||375|0|64|0|439|logged||439|99561|0x6162630000000000|8|0x616263|0x6162630000000000|3|8|32|32|true|false"],
+    [["log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "64", "32", "", "", "", "", "0x616263", false], "log0|0xa0|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|0||375|0|256|6|637|logged||637|99363|0x0000000000000000000000000000000000000000000000000000000000000000|32|0x616263|0x616263000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000|3|96|32|96|true|false"],
+    [["log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "", "", "", "", "0x", false], "log0|0xa0|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|0||375|0|0|0|375|logged||375|99625|0x|0|0x|0x|0|0|0|0|true|false"],
+    [["log3", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "32", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826", "", "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000", true], "log3|0xa3|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|3||375|1125|256|0|1756|halt|static|100000|0|0x|0|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|32|32|32|32|false|true"],
+    [["log3", "1755", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "32", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826", "", "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000", false], "log3|0xa3|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|3||375|1125|256|0|1756|halt|oog|1755|0|0x|0|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|32|32|32|32|false|true"],
+    [["log3", "1756", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "32", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826", "", "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000", false], "log3|0xa3|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|3|0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef,0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a,0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826|375|1125|256|0|1756|logged||1756|0|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|32|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|32|32|32|32|true|false"],
+    [["log1", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826", "", "0x", false], "log1|0xa1|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|1|0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef|375|375|0|0|750|logged||750|99250|0x|0|0x|0x|0|0|0|0|true|false"],
+    [["log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "33", "", "", "", "", "0x", false], "log0|0xa0|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|0||375|0|264|6|645|logged||645|99355|0x000000000000000000000000000000000000000000000000000000000000000000|33|0x|0x000000000000000000000000000000000000000000000000000000000000000000|0|33|0|64|true|false"],
+    [["log1", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "", "", "", "0x", false], "log1|0xa1|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|1|0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff|375|375|0|0|750|logged||750|99250|0x|0|0x|0x|0|0|0|0|true|false"],
+    [["log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "32", "32", "", "", "", "", "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab", false], "log0|0xa0|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|0||375|0|256|0|631|logged||631|99369|0xabababababababababababababababababababababababababababababababab|32|0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab|0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab|64|64|64|64|true|false"],
+    [["log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "32", "1", "", "", "", "", "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000", false], "log0|0xa0|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|0||375|0|8|3|386|logged||386|99614|0x00|1|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|0x0000000000000000000000000000000000000000000000000de0b6b3a764000000|32|33|32|64|true|false"],
+    [["log3", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "16", "32", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826", "", "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000", false], "log3|0xa3|0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2|3|0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef,0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a,0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826|375|1125|256|3|1759|logged||1759|98241|0x00000000000000000de0b6b3a764000000000000000000000000000000000000|32|0x0000000000000000000000000000000000000000000000000de0b6b3a7640000|0x0000000000000000000000000000000000000000000000000de0b6b3a764000000000000000000000000000000000000|32|48|32|64|true|false"]
+];
+const logopJoin = r => [r.opcode, r.opcodeByte, r.address, r.topicCount, r.topics, r.baseGas, r.topicGas, r.dataGas, r.memoryGas, r.totalGas, r.outcome, r.haltReason, r.gasUsed, r.gasAfter, r.data, r.dataBytes, r.memoryBefore, r.memoryAfter, r.memoryBeforeBytes, r.memoryAfterBytes, r.msizeBefore, r.msizeAfter, r.logged, r.halted].join("|");
+check("logop controls labelled in index.html",
+  ["logop-op", "logop-gas", "logop-self", "logop-offset", "logop-size", "logop-topic0", "logop-topic1", "logop-topic2", "logop-topic3", "logop-memory", "logop-static"].every(id => html.includes(`for="${id}"`)));
+check("logop matches the Python oracle",
+  LOGOP_ROWS.every(([inp, exp]) => { const r = app.logCalc(...inp);
+    return r !== null && logopJoin(r) === exp; }));
+check("logop: gas agrees with the hub's LOG gas tool exactly on every oracle row that tool's byte-count parser can price",
+  (() => { let priced = 0, skipped = 0;
+    const ok = LOGOP_ROWS.every(([inp]) => { const r = app.logCalc(...inp);
+      const memBytes = String((inp[9].replace(/^0[xX]/, "").length) / 2);
+      const g = app.logGasCalc(inp[0].slice(3), inp[3], inp[4], memBytes);
+      if (g === null) { skipped++; return inp[3] === (2n ** 255n).toString(); }
+      priced++;
+      return r.baseGas === g.baseGas && r.topicGas === g.topicGas && r.dataGas === g.dataGas &&
+        r.memoryGas === g.memoryGas && r.totalGas === g.totalGas; });
+    return ok && priced === LOGOP_ROWS.length - 1 && skipped === 1; })());
+check("logop: prefilled page values \u2014 the WETH contract's Transfer log of 1 ETH costs 1,756 and its topic0 is the hub eventTopic tool's Transfer topic",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const r = app.logCalc("log3", g("logop-gas"), g("logop-self"), g("logop-offset"), g("logop-size"),
+      g("logop-topic0"), g("logop-topic1"), g("logop-topic2"), g("logop-topic3"), g("logop-memory"), false);
+    return r !== null && r.outcome === "logged" && r.totalGas === "1756" && r.gasAfter === "98244" &&
+      r.address === "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" &&
+      r.data === "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000" && r.dataBytes === "32" && r.memoryGas === "0" &&
+      r.topics.split(",")[0] === app.eventTopic("Transfer(address,address,uint256)") &&
+      html.includes('<option value="log3" selected>'); })());
+check("logop: the static split, paired \u2014 identical inputs log in a normal frame and halt in a static frame consuming the whole 100,000, appending nothing",
+  (() => { const inp = ["log3", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "32", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+      "0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a",
+      "0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826", "", "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000"];
+    const a = app.logCalc(...inp, false);
+    const b = app.logCalc(...inp, true);
+    return a.outcome === "logged" && a.logged === "true" &&
+      b.outcome === "halt" && b.haltReason === "static" && b.gasUsed === "100000" && b.gasAfter === "0" &&
+      b.logged === "false" && b.topics === "" && b.data === "0x" && b.memoryAfter === b.memoryBefore &&
+      a.totalGas === b.totalGas; })());
+check("logop: the oog pair \u2014 1,755 gas halts consuming all of it where 1,756 logs with nothing left",
+  (() => { const base = ["log3", null, "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "32", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+      "0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a",
+      "0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826", "", "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000", false];
+    const oog = app.logCalc(...base.map((x, i) => i === 1 ? "1755" : x));
+    const exact = app.logCalc(...base.map((x, i) => i === 1 ? "1756" : x));
+    return oog.outcome === "halt" && oog.haltReason === "oog" && oog.gasUsed === "1755" && oog.logged === "false" &&
+      exact.outcome === "logged" && exact.gasAfter === "0"; })());
+check("logop: a zero-size region touches no memory whatever its offset \u2014 2^255 with size 0 costs the flat 375, and the LOG gas tool refuses that offset while the opcode tool prices it",
+  (() => { const r = app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", (2n ** 255n).toString(), "0", "", "", "", "", "0x", false);
+    return r !== null && r.outcome === "logged" && r.totalGas === "375" && r.memoryGas === "0" &&
+      r.data === "0x" && r.memoryAfterBytes === "0" &&
+      app.logGasCalc("0", (2n ** 255n).toString(), "0", "0") === null; })());
+check("logop: memory is zero-initialised \u2014 a region wholly past the supplied end reads zeros and expands memory to the region end",
+  (() => { const r = app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "64", "32", "", "", "", "", "0x616263", false);
+    return r !== null && r.data === "0x" + "00".repeat(32) && r.memoryAfterBytes === "96" &&
+      r.msizeBefore === "32" && r.msizeAfter === "96" && r.memoryGas === "6" && r.totalGas === "637"; })());
+check("logop: data is priced per BYTE, not per word \u2014 33 bytes pay 264 of data gas where the SHA3 tool charges 12 of word gas for the same region",
+  (() => { const a = app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "33", "", "", "", "", "0x", false);
+    const b = app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "32", "", "", "", "", "0x", false);
+    const s = app.sha3GasCalc("0", "33", "0");
+    return a.dataGas === "264" && b.dataGas === "256" && s !== null && s.wordGas === "12"; })());
+check("logop: topic fields beyond the opcode's count are never read \u2014 garbage there cannot refuse a LOG0 or a LOG1, and filled slots beyond a LOG1 are ignored",
+  app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "garbage", "garbage", "garbage", "garbage", "0x", false) !== null &&
+  app.logCalc("log1", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "garbage", "garbage", "garbage", "0x", false) !== null &&
+  (() => { const r = app.logCalc("log1", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+      "0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a",
+      "0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826", "", "0x", false);
+    return r !== null && r.topics === "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" && r.topicCount === "1"; })());
+check("logop: the record is filed under the EXECUTING account, checksummed \u2014 a different executing account files under its own address",
+  (() => { const a = app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "", "", "", "", "0x", false);
+    const b = app.logCalc("log0", "100000", "0x4b48c98cd9d99d00dafe5cc4bb9e965345c5b15a", "0", "0", "", "", "", "", "0x", false);
+    return a.address === "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" &&
+      b.address === "0x4b48c98Cd9d99d00dAFe5cC4bb9E965345c5b15A"; })());
+check("logop refuses a bad opcode, a malformed topic the opcode reads, a topic at 2^256, a short address, odd-length memory, memory or size over the 4,096 cap, a region end over the cap, a non-boolean static flag and null inputs",
+  app.logCalc("log5", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "", "", "", "", "0x", false) === null &&
+  app.logCalc("log1", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "0xzz", "", "", "", "0x", false) === null &&
+  app.logCalc("log1", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", (2n ** 256n).toString(), "", "", "", "0x", false) === null &&
+  app.logCalc("log0", "100000", "0x123", "0", "0", "", "", "", "", "0x", false) === null &&
+  app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "", "", "", "", "0x0", false) === null &&
+  app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "", "", "", "", "0x" + "00".repeat(4097), false) === null &&
+  app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "4097", "", "", "", "", "0x", false) === null &&
+  app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "4096", "1", "", "", "", "", "0x", false) === null &&
+  app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "", "", "", "", "0x", "false") === null &&
+  app.logCalc(null, "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "", "", "", "", "0x", false) === null &&
+  app.logCalc("log0", "100000", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "0", "0", "", "", "", "", null, false) === null);
+check("logop tool section present in index.html", html.includes("logop-btn") && html.includes("LOG opcode calculator"));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

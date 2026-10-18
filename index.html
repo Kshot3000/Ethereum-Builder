@@ -1274,6 +1274,35 @@
     </div>
 
     <div class="tool">
+      <h3>LOG opcode calculator — event log record applied</h3>
+      <p><code>LOG0</code>–<code>LOG4</code> (<code>0xa0</code>–<code>0xa4</code>, Frontier) pop a memory offset, a size and as many topics as the opcode's digit names, and append one log record to the transaction's receipt: the <em>executing</em> account's address — the contract whose code is running, so for an ERC-20 <code>Transfer</code> that is the token contract, not the sender — the topics in the order they were popped, and the data read from the memory region. Nothing is pushed. Its price is the hub's LOG gas tool's: 375 base, +375 per topic, +8 per data <em>byte</em>, plus the memory-expansion increase — and the per-byte data term is the family's quiet trap, because the neighbouring <code>SHA3</code> opcode meters its region per <em>word</em> (6 per 32 bytes, rounding up) while log data is metered by the byte, so 33 bytes of log data pay 264 where a word price would round differently. Memory is zero-initialised: a region running past the supplied memory's end reads zeros there and expands memory to the region end, while a zero-size region touches no memory whatever its offset — an offset of 2<sup>255</sup> with size 0 logs empty data at the flat 375 alone. Two failures are <em>exceptional</em> halts, not soft failures: the frame cannot pay the gas cost, and the frame is static — a log record is a state write, so a static frame may not run the opcode at all, where a zero-value CALL in a static frame merely fails softly. Each consumes the frame's whole remaining gas, appends no record and leaves memory unchanged. Topic fields beyond the chosen opcode's count are never read: a <code>LOG1</code> ignores whatever sits in the topic 1–3 fields. The prefilled log is the shape every ERC-20 transfer emits: the WETH contract logging <code>Transfer</code> with the signature topic, the two indexed addresses as topics 1 and 2, and a 1 ETH amount as the 32 data bytes — it costs 1,756 gas (375 + 3×375 topics + 8×32 data + 0 expansion, the supplied memory already covering the region). Honest scope: the state is values <em>you</em> supply, the record built is the one the opcode would append, and whether the surrounding transaction later reverts — discarding the record — is a transaction-level fact a single opcode application does not track. Computed locally; nothing is logged on any chain and no chain is queried.</p>
+      <label for="logop-op">Opcode (its digit is its topic count)</label>
+      <select id="logop-op"><option value="log0">LOG0 — 0 topics</option><option value="log1">LOG1 — 1 topic</option><option value="log2">LOG2 — 2 topics</option><option value="log3" selected>LOG3 — 3 topics (an ERC-20 Transfer)</option><option value="log4">LOG4 — 4 topics</option></select>
+      <label for="logop-gas">Gas available (the frame's remaining gas when the opcode runs)</label>
+      <input id="logop-gas" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <label for="logop-self">Executing account (the contract running the opcode — the record is filed under this address)</label>
+      <input id="logop-self" type="text" spellcheck="false" value="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2">
+      <label for="logop-offset">Data offset (where in the frame's memory the log data starts)</label>
+      <input id="logop-offset" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="logop-size">Data size (bytes of memory copied into the record as its data)</label>
+      <input id="logop-size" type="text" inputmode="numeric" spellcheck="false" value="32">
+      <label for="logop-topic0">Topic 0 (for an event, its signature hash — the prefilled value is Transfer(address,address,uint256))</label>
+      <input id="logop-topic0" type="text" spellcheck="false" value="0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef">
+      <label for="logop-topic1">Topic 1 (read only by LOG1–LOG4)</label>
+      <input id="logop-topic1" type="text" spellcheck="false" value="0x0000000000000000000000004b48c98cd9d99d00dafe5cc4bb9e965345c5b15a">
+      <label for="logop-topic2">Topic 2 (read only by LOG2–LOG4)</label>
+      <input id="logop-topic2" type="text" spellcheck="false" value="0x000000000000000000000000cd2a3d9f938e13cd947ec05abc7fe734df8dd826">
+      <label for="logop-topic3">Topic 3 (read only by LOG4)</label>
+      <input id="logop-topic3" type="text" spellcheck="false" value="">
+      <label for="logop-memory">Frame memory (hex — the region is read from it; past its end reads zeros and expands it)</label>
+      <input id="logop-memory" type="text" spellcheck="false" value="0x0000000000000000000000000000000000000000000000000de0b6b3a7640000">
+      <label for="logop-static">Calling frame is static (the opcode then halts exceptionally — a log is a state write)</label>
+      <input id="logop-static" type="checkbox">
+      <button id="logop-btn" type="button">Apply LOG opcode</button>
+      <p id="logop-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1659,6 +1688,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=95"></script>
+<script src="app.js?v=96"></script>
 </body>
 </html>

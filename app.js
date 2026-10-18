@@ -3337,6 +3337,68 @@ function modexpGas(baseLenStr, expLenStr, modLenStr, expHeadHex) {
   };
 }
 
+/* ---------- MODEXP precompile calculator (EIP-198) ----------
+   The applied counterpart of the gas calculator above: that tool
+   prices a MODEXP call from the operand lengths alone and states
+   plainly that it does not compute the modular exponentiation
+   itself — this one does. The operands are the precompile's own
+   byte strings (EIP-198, CC0; semantics paraphrased): the result
+   is base^exponent mod modulus, returned as exactly as many bytes
+   as the modulus operand — left-padded with zeros — because that
+   padding is what a caller reads. Consequences pinned in tests:
+   leading zero bytes in an operand change nothing about the value
+   but DO count toward its length (and so toward the gas and the
+   output width); a modulus of 1 or 0 yields zero (the precompile
+   returns zero bytes of modulus width for a zero modulus rather
+   than failing); an empty modulus yields empty output; a zero
+   exponent yields 1 whenever the modulus exceeds 1, including
+   0^0. The price is the hub's own ModExp gas function fed the
+   operand lengths and the exponent's head, cross-checked against
+   it exactly in tests. Operands over 1,024 bytes are refused
+   outright as this tool's stated display cap — the same bound
+   EIP-7823 sets, past which a Fusaka chain's precompile errors
+   and returns nothing whatever the mathematics says — so every
+   call this tool computes is within the cap and both schedules'
+   prices always exist. Verified in the tests against
+   an independent pure-Python oracle (oracle-modexp-calc.py,
+   anchored on hand-computed 3^5 mod 7 = 5 and 2^10 mod 1000 = 24
+   and the RSA textbook pair 65^17 mod 3233 = 2790 /
+   2790^2753 mod 3233 = 65) before the vectors were emitted.
+   Computes locally; no call is made and no chain is queried. */
+function modexpCalc(baseHex, expHex, modHex) {
+  const baseBytes = parseHexBytes(baseHex);
+  const expBytes = parseHexBytes(expHex);
+  const modBytes = parseHexBytes(modHex);
+  if (baseBytes === null || expBytes === null || modBytes === null) return null;
+  if (baseBytes.length > 1024 || expBytes.length > 1024 || modBytes.length > 1024) return null;
+  const base = bytesToBigInt(baseBytes);
+  const exp = bytesToBigInt(expBytes);
+  const mod = bytesToBigInt(modBytes);
+  let result = 0n;
+  if (modBytes.length > 0 && mod > 1n) {
+    result = 1n % mod;
+    let b = base % mod;
+    let e = exp;
+    while (e > 0n) {
+      if (e & 1n) result = (result * b) % mod;
+      b = (b * b) % mod;
+      e >>= 1n;
+    }
+  }
+  const outBytes = [];
+  let v = result;
+  for (let i = modBytes.length - 1; i >= 0; i--) { outBytes[i] = Number(v & 0xffn); v >>= 8n; }
+  const headLen = Math.min(expBytes.length, 32);
+  const gas = modexpGas(String(baseBytes.length), String(expBytes.length), String(modBytes.length),
+    "0x" + bytesToHex(expBytes.slice(0, headLen)));
+  if (gas === null) return null;
+  return {
+    result: "0x" + bytesToHex(outBytes), resultDecimal: result.toString(),
+    baseLen: String(baseBytes.length), expLen: String(expBytes.length), modLen: String(modBytes.length),
+    gas2565: gas.gas2565, gas7883: gas.gas7883, capped7823: gas.capped7823
+  };
+}
+
 /* SSTORE gas — the cost and refund-counter change of one
    SSTORE under net gas metering (EIP-2200, CC0; formulas
    paraphrased) with the parameter values current mainnet
@@ -8483,6 +8545,22 @@ if (typeof document !== "undefined") {
         : `ModExp gas — under EIP-2565 (Berlin–Pectra): ${r.gas2565} gas (multiplication complexity ${r.complexity2565}, iteration count ${r.iteration2565}). Under EIP-7883 (Fusaka, the current mainnet schedule): ${r.gas7883} gas (complexity ${r.complexity7883}, iteration count ${r.iteration7883}). Every length is within EIP-7823's Fusaka cap of 1,024 bytes per length. Computed locally from the lengths and exponent head you gave — which schedule applies is the chain's fork state, and no chain is queried.`;
     });
 
+    /* MODEXP precompile calculator */
+    const mxcBtn = document.getElementById("mxc-btn");
+    if (mxcBtn) mxcBtn.addEventListener("click", () => {
+      const r = modexpCalc(
+        document.getElementById("mxc-base").value,
+        document.getElementById("mxc-exp").value,
+        document.getElementById("mxc-mod").value);
+      const el = document.getElementById("mxc-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the base, exponent and modulus are each hex byte strings (0x prefix optional, an even number of hex digits, at most 1,024 bytes each — the bound EIP-7823 sets; 0x alone is a zero-length operand).";
+        return;
+      }
+      const gasText = `Gas: ${r.gas2565} under EIP-2565 (Berlin–Pectra), ${r.gas7883} under EIP-7883 (Fusaka, the current mainnet schedule) — the gas tool above, fed these operands' lengths (${r.baseLen} / ${r.expLen} / ${r.modLen} bytes) and the exponent's head; every operand this tool accepts is within EIP-7823's cap, so both prices always exist.`;
+      el.textContent = `MODEXP result: ${r.result} — decimal ${r.resultDecimal}, returned as exactly ${r.modLen} byte(s), the modulus operand's width, left-padded with zeros as the precompile returns it. ${gasText} Computed locally from the operands you gave — no call is made and no chain is queried. The same precompile runs on Ethereum, Base, Unichain and Robinhood Chain.`;
+    });
+
     /* SSTORE gas */
     const sstBtn = document.getElementById("sst-btn");
     if (sstBtn) sstBtn.addEventListener("click", () => {
@@ -9750,5 +9828,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

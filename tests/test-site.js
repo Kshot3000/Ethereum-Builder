@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=101"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=102"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -6200,5 +6200,58 @@ check("mcopyop refuses a size over the 4,096 cap, a region end over the cap, a w
   app.mcopyCalc(null, "0", "0", "0", "0x") === null &&
   app.mcopyCalc("100000", "0", "0", "0", null) === null);
 check("mcopyop tool section present in index.html", html.includes("mcopyop-btn") && html.includes("MCOPY opcode calculator"));
+
+/* MODEXP precompile calculator — the applied counterpart of the ModExp
+   gas tool above (which prices a call from lengths alone and does not
+   compute the exponentiation). Vectors from the independent pure-Python
+   oracle (oracle-modexp-calc.py; anchored on hand-computed 3^5 mod 7 = 5
+   and 2^10 mod 1000 = 24 and the RSA textbook pair 65^17 mod 3233 = 2790,
+   2790^2753 mod 3233 = 65, all asserted in the oracle before emitting).
+   The result is returned at exactly the modulus operand's width. */
+const MXC_VECTORS = [
+  [["0x41", "0x11", "0x0ca1"], ["0x0ae6", "2790", "1", "1", "2"]],
+  [["0x0ae6", "0x0ac1", "0x0ca1"], ["0x0041", "65", "2", "2", "2"]],
+  [["0x03", "0x05", "0x07"], ["0x05", "5", "1", "1", "1"]],
+  [["0x02", "0x0a", "0x03e8"], ["0x0018", "24", "1", "1", "2"]],
+  [["0x00000041", "0x11", "0x0ca1"], ["0x0ae6", "2790", "4", "1", "2"]],
+  [["0x05", "0x", "0x07"], ["0x01", "1", "1", "0", "1"]],
+  [["0x00", "0x00", "0x0d"], ["0x01", "1", "1", "1", "1"]],
+  [["0x09", "0x09", "0x01"], ["0x00", "0", "1", "1", "1"]],
+  [["0x09", "0x09", "0x00"], ["0x00", "0", "1", "1", "1"]],
+  [["0x09", "0x09", "0x"], ["0x", "0", "1", "1", "0"]],
+  [["0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "0x010001", "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd"], ["0x8f5bdd701a9fff03fda48502bdee7770f0d2a86df7e7362965e2022826ff3b2d", "64843048738562532130634010900451515632313301971721926114969600559976544156461", "32", "3", "32"]],
+  [["0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", "0x0000000000000000000000000000000000000000000000000000000000000025", "0xfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"], ["0x1021d5ea66451ead1021d5ea66451ead1021d5ea66451ead1021d5ea66451ead1021d5ea66451ead1021d5ea66451ead1021d5ea66451ead1021d5ea66451ead", "844910318191424664705531559013368735101243944508205955265213992836821135543810752892083737559800799310589821173245787741925230442365987480333860682931885", "64", "32", "64"]]
+];
+check("modexp calculator reproduces the oracle results at modulus width (Python oracle)",
+  MXC_VECTORS.every(([inp, exp]) => { const r = app.modexpCalc(...inp); return r !== null &&
+    r.result === exp[0] && r.resultDecimal === exp[1] && r.baseLen === exp[2] && r.expLen === exp[3] && r.modLen === exp[4]; }));
+check("modexp calculator gas agrees with the hub's ModExp gas tool exactly, on every oracle row",
+  MXC_VECTORS.every(([inp]) => { const r = app.modexpCalc(...inp); if (r === null) return false;
+    const expBytes = app.parseHexBytes(inp[1]); const head = "0x" + expBytes.slice(0, 32).map(b => b.toString(16).padStart(2, "0")).join("");
+    const g = app.modexpGas(r.baseLen, r.expLen, r.modLen, head);
+    return g !== null && r.gas2565 === g.gas2565 && r.gas7883 === g.gas7883 && r.capped7823 === g.capped7823; }));
+check("modexp calculator: the RSA pair round-trips — encrypt 65, decrypt back to 65",
+  app.modexpCalc("0x41", "0x11", "0x0ca1")?.result === "0x0ae6" &&
+  app.modexpCalc("0x0ae6", "0x0ac1", "0x0ca1")?.result === "0x0041");
+check("modexp calculator: leading zero bytes keep the value — base padding past a word boundary moves the gas, modulus padding widens the output",
+  (() => { const a = app.modexpCalc("0x41", "0x11", "0x0ca1"); const b = app.modexpCalc("0x" + "00".repeat(63) + "41", "0x11", "0x0ca1");
+    const c = app.modexpCalc("0x41", "0x11", "0x00000ca1");
+    return a.resultDecimal === b.resultDecimal && b.baseLen === "64" && a.gas7883 !== b.gas7883 &&
+      c.result === "0x00000ae6" && c.modLen === "4"; })());
+check("modexp calculator accepts an operand of exactly 1,024 bytes (the EIP-7823 bound)",
+  app.modexpCalc("0x" + "00".repeat(1024), "0x02", "0x07")?.result === "0x00");
+check("modexp calculator refuses an operand over 1,024 bytes, odd-length or non-hex input and null inputs",
+  app.modexpCalc("0x" + "00".repeat(1025), "0x02", "0x07") === null &&
+  app.modexpCalc("0x4", "0x11", "0x0ca1") === null &&
+  app.modexpCalc("0xzz", "0x11", "0x0ca1") === null &&
+  app.modexpCalc(null, "0x11", "0x0ca1") === null &&
+  app.modexpCalc("0x41", "0x11", null) === null);
+check("modexp calculator: the index prefill is the RSA textbook example (65^17 mod 3233 = 2790)",
+  (() => { const g = id => { const m = new RegExp(`id="${id}"[^>]*value="([^"]*)"`).exec(html); return m && m[1]; };
+    return g("mxc-base") === "0x41" && g("mxc-exp") === "0x11" && g("mxc-mod") === "0x0ca1" &&
+      app.modexpCalc(g("mxc-base"), g("mxc-exp"), g("mxc-mod"))?.result === "0x0ae6"; })());
+check("modexp calculator tool section present in index.html", html.includes("mxc-btn") && html.includes("MODEXP precompile calculator"));
+check("modexp calculator controls labelled",
+  ["mxc-base", "mxc-exp", "mxc-mod"].every(id => html.includes(`for="${id}"`)));
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

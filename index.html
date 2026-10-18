@@ -456,6 +456,19 @@
     </div>
 
     <div class="tool">
+      <h3>MODEXP precompile calculator — modular exponentiation applied (EIP-198)</h3>
+      <p>The gas calculator above prices a MODEXP call and says plainly that it does not compute the modular exponentiation itself; this tool is the applied half of the pair — it computes <code>base^exponent mod modulus</code> at the precompile address <code>0x05</code> (<a href="https://eips.ethereum.org/EIPS/eip-198">EIP-198</a>) from the operand byte strings you supply, and prices the call with the hub's own gas function fed those operands' lengths and the exponent's head, so the two tools agree exactly. The result comes back as exactly as many bytes as the modulus operand — left-padded with zeros — because that padding is what a caller reads. The prefill is the RSA textbook example: <code>65^17 mod 3233 = 2790</code> (<code>0x41</code>, <code>0x11</code>, <code>0x0ca1</code> → <code>0x0ae6</code>), and swapping in <code>0x0ae6</code> with exponent <code>0x0ac1</code> (2753) decrypts back to <code>0x0041</code>. The traps are the width rules: leading zero bytes in an operand change nothing about its value but count toward its length — and so toward the gas and the output width; a modulus of 1 or 0 returns zeros of modulus width rather than failing, an empty modulus returns nothing at all, and a zero exponent returns 1 whenever the modulus exceeds 1, including <code>0^0</code>. Operands are capped at 1,024 bytes each — the bound <a href="https://eips.ethereum.org/EIPS/eip-7823">EIP-7823</a> sets, past which a Fusaka chain's precompile errors out entirely. Computed locally; no call is made and no chain is queried.</p>
+      <label for="mxc-base">Base (hex byte string)</label>
+      <input id="mxc-base" type="text" spellcheck="false" value="0x41">
+      <label for="mxc-exp">Exponent (hex byte string)</label>
+      <input id="mxc-exp" type="text" spellcheck="false" value="0x11">
+      <label for="mxc-mod">Modulus (hex byte string)</label>
+      <input id="mxc-mod" type="text" spellcheck="false" value="0x0ca1">
+      <button id="mxc-btn" type="button">Compute MODEXP</button>
+      <p id="mxc-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>SSTORE gas &amp; refund calculator (EIP-2200 / EIP-2929 / EIP-3529)</h3>
       <p>One <code>SSTORE</code> has no single price: under net gas metering (<a href="https://eips.ethereum.org/EIPS/eip-2200">EIP-2200</a>) its cost follows from three values of the slot — the <em>original</em> value when the transaction began, the <em>current</em> value before this write, and the <em>new</em> value being written — with the parameters current mainnet applies (<a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> raised first-touch state access; <a href="https://eips.ethereum.org/EIPS/eip-3529">EIP-3529</a> cut the refunds). Writing the value the slot already holds is a no-op at the 100-gas warm read cost. A first, <em>clean</em> write (current still equals original) costs 20,000 to set a zero slot and 2,900 to change a non-zero one — earning a 4,800 credit on the transaction's refund counter when it clears the slot to zero. A later, <em>dirty</em> write to an already-changed slot costs 100, and the refund counter absorbs the difference instead: it falls by 4,800 when a slot cleared earlier in the same transaction is written away from zero again, rises by 4,800 when this write clears it, and rises by 19,900 (zero original) or 2,800 (non-zero original) when the write restores the original value — which is why a set-then-restore pair nets out near the warm cost, and why a dirty refund change can be negative. On top of the branch cost, a slot touched for the first time in the transaction adds the 2,100 cold surcharge. The prefilled write clears a cold slot that still holds its original value 1: 5,000 gas (2,900 + 2,100) and a 4,800 refund-counter credit. Honest scope: this prices one write from values <em>you</em> supply — a real slot's original and current values are chain and transaction state this page does not read; the stipend guard (a write fails when the frame's remaining gas is at most 2,300) is a validity rule, not part of the price, and is not modelled; and the refund cap — at most a fifth of the transaction's gas used, applied when the transaction ends — is not applied to this one write's counter change. Computed locally; nothing is written and no chain is queried.</p>
       <label for="sst-original">Original value (the slot's value when the transaction began — decimal or 0x hex)</label>
@@ -1759,6 +1772,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=101"></script>
+<script src="app.js?v=102"></script>
 </body>
 </html>

@@ -4748,6 +4748,147 @@ function blsGasCalc(nameStr, pairsStr) {
   };
 }
 
+/* ---------- BLS12-381 G1 point arithmetic (G1ADD / one-pair G1MSM applied) ----------
+   The applied counterpart of the BLS gas calculator above, for
+   the G1 half of the family: that tool quotes G1ADD's flat 375
+   and the MSM schedule from the pair count alone and does not
+   read the points — this one takes the points (and, for the
+   MSM, the scalar) and runs the G1 arithmetic itself, exactly
+   as the precompiles at 0x0b and 0x0c do. Scope is stated
+   plainly: G1ADD in full, and G1MSM for ONE point/scalar pair
+   — the multiplication case, at the k = 1 price of exactly
+   12,000 (the EIP-2537 discount at k = 1 is 1000, so there is
+   no separate MUL precompile); a multi-pair MSM is a sum of
+   such multiplications under Pippenger's discount and stays
+   gas-only here, like G2 (extension-field arithmetic), the
+   pairing check and the two field-to-curve maps. The curve is
+   y^2 = x^3 + 4 over the field of prime order
+   p = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787:
+   the coefficient a is 0, so the doubling slope is 3x^2 / 2y,
+   as for alt_bn128 above (whose constant term is 3, not 4).
+   The EIP-2537 encoding differs from alt_bn128's and the trap
+   is the width: each coordinate is a 48-byte value carried in
+   a 64-byte field element whose top 16 bytes must be zero, so
+   a point is 128 bytes on the wire and the output below is
+   that full 128-byte encoding; this page takes each coordinate
+   as its 48-byte value and pads it back out on output. The
+   point at infinity is written (0, 0) on input and output
+   alike. The subgroup order is the prime
+   q = 52435875175126190479447740508185965837690552500527637822603658699938581184513
+   and — the deliberate contrast this tool pins — G1ADD
+   performs NO subgroup check (EIP-2537 says so outright), so
+   an on-curve point outside the subgroup adds like any other,
+   while the MSM MUST check the subgroup (a point is in it
+   exactly when q * P is infinity, computed here by the full
+   multiplication with no scalar reduction) and a point
+   outside it makes the MSM call FAIL. Validity otherwise
+   mirrors EIP-196's: a coordinate at or above p, or a
+   non-infinity point off the curve, in either position makes
+   the precompile call fail — no output, and a failing BLS
+   precompile call burns all the gas supplied to it, so the
+   totalGas reported here is the scheduled charge from
+   blsGasCalc (375 for G1ADD, the k = 1 MSM price of 12,000)
+   that a successful call pays, cross-checked against it in
+   tests on every row. The MSM scalar is any 256-bit word, not
+   required to be below q, and acts modulo q by the group law
+   alone (q * P is infinity, (q + 1) * P is P — both pinned).
+   Malformed input to THIS page is refused with null, as the
+   other calculators refuse unparseable input: the operation
+   must be g1add or g1msm and each field it reads must be
+   exactly 48 bytes of hex (32 for the MSM scalar). For the
+   MSM the second point's fields are never read at all,
+   exactly as the gas tool never reads the pair count for the
+   flat operations. Verified in the tests against an
+   independent pure-Python oracle (oracle-bls-g1-calc.py)
+   carrying TWO implementations (affine and Jacobian
+   coordinates) asserted to agree on every vector, anchored
+   in-script BEFORE emitting vectors on go-ethereum's official
+   precompile testdata — all 112 blsG1Add and 11 blsG1Mul rows
+   reproduce under both implementations, every G1Mul input is
+   verified in the subgroup, and the G1Add rows' one on-curve
+   off-subgroup point (the testdata's own "wrong order" point)
+   anchors the ADD/MSM subgroup contrast — and on the subgroup
+   order itself (q * G is infinity and (q - 1) * G is -G,
+   computed with NO scalar reduction). Computes locally; no
+   chain is queried. */
+const BLS_G1_P = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787n;
+const BLS_G1_Q = 52435875175126190479447740508185965837690552500527637822603658699938581184513n;
+function blsG1Mod(a) { const r = a % BLS_G1_P; return r < 0n ? r + BLS_G1_P : r; }
+function blsG1OnCurve(x, y) {
+  return blsG1Mod(y * y) === blsG1Mod(x * x * x + 4n);
+}
+function blsG1ValidPoint(x, y) {
+  if (x >= BLS_G1_P || y >= BLS_G1_P) return false;
+  if (x === 0n && y === 0n) return true; /* infinity encoding */
+  return blsG1OnCurve(x, y);
+}
+function blsG1Add(p1, p2) {
+  if (p1 === null) return p2;
+  if (p2 === null) return p1;
+  const [x1, y1] = p1, [x2, y2] = p2;
+  let lam;
+  if (x1 === x2) {
+    if (blsG1Mod(y1 + y2) === 0n) return null;
+    lam = blsG1Mod(3n * x1 * x1 * secpModPow(2n * y1, BLS_G1_P - 2n, BLS_G1_P));
+  } else {
+    lam = blsG1Mod((y2 - y1) * secpModPow(x2 - x1, BLS_G1_P - 2n, BLS_G1_P));
+  }
+  const x3 = blsG1Mod(lam * lam - x1 - x2);
+  return [x3, blsG1Mod(lam * (x1 - x3) - y1)];
+}
+function blsG1Mul(k, point) {
+  let result = null, addend = point, scalar = k;
+  while (scalar > 0n) {
+    if (scalar & 1n) result = blsG1Add(result, addend);
+    addend = blsG1Add(addend, addend);
+    scalar >>= 1n;
+  }
+  return result;
+}
+function blsG1Calc(opStr, x1Hex, y1Hex, aHex, bHex) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim();
+  if (op !== "g1add" && op !== "g1msm") return null;
+  const gas = op === "g1add" ? blsGasCalc("g1add", null) : blsGasCalc("g1msm", "1");
+  if (gas === null) return null;
+  const x1Bytes = parseHexBytes(x1Hex, 48);
+  const y1Bytes = parseHexBytes(y1Hex, 48);
+  const aBytes = parseHexBytes(aHex, op === "g1add" ? 48 : 32);
+  if (x1Bytes === null || y1Bytes === null || aBytes === null) return null;
+  let bBytes = null;
+  if (op === "g1add") {
+    bBytes = parseHexBytes(bHex, 48);
+    if (bBytes === null) return null;
+  }
+  const failed = {
+    precompile: op, address: gas.address, succeeded: "false",
+    output: "0x", outputBytes: "0", totalGas: gas.totalGas
+  };
+  const x1 = bytesToBigInt(x1Bytes), y1 = bytesToBigInt(y1Bytes);
+  if (!blsG1ValidPoint(x1, y1)) return failed;
+  const p1 = (x1 === 0n && y1 === 0n) ? null : [x1, y1];
+  let result;
+  if (op === "g1add") {
+    const x2 = bytesToBigInt(aBytes), y2 = bytesToBigInt(bBytes);
+    if (!blsG1ValidPoint(x2, y2)) return failed;
+    const p2 = (x2 === 0n && y2 === 0n) ? null : [x2, y2];
+    result = blsG1Add(p1, p2);
+  } else {
+    /* EIP-2537: MSM inputs must be in the correct subgroup —
+       q * P is infinity exactly for subgroup points. G1ADD
+       above performs no such check. */
+    if (p1 !== null && blsG1Mul(BLS_G1_Q, p1) !== null) return failed;
+    result = blsG1Mul(bytesToBigInt(aBytes), p1);
+  }
+  return {
+    precompile: op, address: gas.address, succeeded: "true",
+    output: result === null
+      ? "0x" + "00".repeat(128)
+      : "0x" + result[0].toString(16).padStart(128, "0") + result[1].toString(16).padStart(128, "0"),
+    outputBytes: "128", totalGas: gas.totalGas
+  };
+}
+
 /* secp256r1 precompile gas — P256VERIFY at address 0x0100,
    defined by EIP-7951 for checking an ECDSA signature over
    the secp256r1 curve (P-256 — the curve secure hardware
@@ -9289,6 +9430,26 @@ if (typeof document !== "undefined") {
       el.textContent = `BLS12-381 precompile ${r.precompile} (${r.address}) gas: ${r.totalGas} total — a flat charge over its fixed ${r.inputBytes}-byte input. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* BLS12-381 G1 point arithmetic (G1ADD / one-pair G1MSM applied) */
+    const blscBtn = document.getElementById("blsc-btn");
+    if (blscBtn) blscBtn.addEventListener("click", () => {
+      const op = document.getElementById("blsc-op").value;
+      const r = blsG1Calc(
+        op,
+        document.getElementById("blsc-x1").value,
+        document.getElementById("blsc-y1").value,
+        op === "g1add" ? document.getElementById("blsc-x2").value : document.getElementById("blsc-k").value,
+        document.getElementById("blsc-y2").value);
+      const el = document.getElementById("blsc-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the operation is G1ADD or a one-pair G1MSM, and each field it reads — the first point's x and y, plus the second point's x and y for G1ADD or the scalar for the MSM — is exactly 48 bytes of hex for a coordinate (32 for the scalar), with a 0x prefix.";
+        return;
+      }
+      el.textContent = r.succeeded === "true"
+        ? `${r.precompile} precompile (${r.address}) result: ${r.output} — the resulting point in the EIP-2537 encoding, ${r.outputBytes} bytes (x then y, each a 64-byte field element whose top 16 bytes are zero; all zeros is the point at infinity). Gas: ${r.totalGas} — ${r.precompile === "g1add" ? "the flat G1ADD charge" : "the G1MSM price at k = 1 (discount 1000, so exactly the single-multiplication cost)"} from the gas calculator above. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`
+        : `${r.precompile} precompile (${r.address}): the call FAILS — a coordinate at or above the field prime, a point that is not on the curve y² = x³ + 4${r.precompile === "g1msm" ? ", or a point outside the prime-order subgroup (the MSM checks it; G1ADD does not)" : ""}: no output, and a failing BLS precompile call burns all the gas supplied to it, so the caller's cost is whatever it forwarded (the scheduled charge is ${r.totalGas}). Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* secp256r1 (P256VERIFY) precompile gas */
     const p256Btn = document.getElementById("p256-btn");
     if (p256Btn) p256Btn.addEventListener("click", () => {
@@ -10239,5 +10400,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, bn128Calc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, bn128Calc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=97"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=98"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -6027,5 +6027,70 @@ check("haltop refuses a bad opcode, an offset at 2^256, a size over the 4,096 ca
   app.haltCalc("revert", "100000", "0", "0", null) === null);
 check("haltop tool section present in index.html", html.includes("haltop-btn") && html.includes("Halting opcode calculator"));
 
+/* ---------- MCOPY opcode (EIP-5656) ---------- */
+const MCOPYOP_ROWS = [
+    [["100000", "32", "0", "32", "0x00000000000000000000000000000000000000000000000000000000000f42400000000000000000000000000000000000000000000000000000000000000000"], "32|0|32|3|3|0|6|copied||6|99994|0x00000000000000000000000000000000000000000000000000000000000f4240|32|0x00000000000000000000000000000000000000000000000000000000000f42400000000000000000000000000000000000000000000000000000000000000000|0x00000000000000000000000000000000000000000000000000000000000f424000000000000000000000000000000000000000000000000000000000000f4240|64|64|64|64|false"],
+    [["100000", "0", "0", "32", "0x"], "0|0|32|3|3|3|9|copied||9|99991|0x0000000000000000000000000000000000000000000000000000000000000000|32|0x|0x0000000000000000000000000000000000000000000000000000000000000000|0|32|0|32|false"],
+    [["100000", "1", "0", "32", "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"], "1|0|32|3|3|0|6|copied||6|99994|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f|32|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|0x00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|64|64|64|64|false"],
+    [["100000", "0", "1", "32", "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"], "0|1|32|3|3|0|6|copied||6|99994|0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20|32|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|64|64|64|64|false"],
+    [["100000", "0", "0", "64", "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"], "0|0|64|3|6|0|9|copied||9|99991|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|64|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|64|64|64|64|false"],
+    [["100000", "40", "3", "5", "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"], "40|3|5|3|3|0|6|copied||6|99994|0x0304050607|5|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262703040506072d2e2f303132333435363738393a3b3c3d3e3f|64|64|64|64|false"],
+    [["100000", "0", "64", "32", "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"], "0|64|32|3|3|3|9|copied||9|99991|0x0000000000000000000000000000000000000000000000000000000000000000|32|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|0x0000000000000000000000000000000000000000000000000000000000000000202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0000000000000000000000000000000000000000000000000000000000000000|64|96|64|96|false"],
+    [["100000", "96", "0", "32", "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"], "96|0|32|3|3|6|12|copied||12|99988|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f|32|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0000000000000000000000000000000000000000000000000000000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f|64|128|64|128|false"],
+    [["500", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "57896044618658097711785492504343953926634992332820282019728792003956564819968", "0", "0x"], "57896044618658097711785492504343953926634992332820282019728792003956564819968|57896044618658097711785492504343953926634992332820282019728792003956564819968|0|3|0|0|3|copied||3|497|0x|0|0x|0x|0|0|0|0|false"],
+    [["100000", "100", "200", "0", "0x"], "100|200|0|3|0|0|3|copied||3|99997|0x|0|0x|0x|0|0|0|0|false"],
+    [["8", "0", "0", "32", "0x"], "0|0|32|3|3|3|9|halt|oog|8|0|0x|0|0x|0x|0|0|0|0|true"],
+    [["9", "0", "0", "32", "0x"], "0|0|32|3|3|3|9|copied||9|0|0x0000000000000000000000000000000000000000000000000000000000000000|32|0x|0x0000000000000000000000000000000000000000000000000000000000000000|0|32|0|32|false"],
+    [["100000", "17", "9", "30", "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"], "17|9|30|3|3|0|6|copied||6|99994|0x090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526|30|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|0x000102030405060708090a0b0c0d0e0f10090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262f303132333435363738393a3b3c3d3e3f|64|64|64|64|false"],
+    [["100000", "0", "63", "1", "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"], "0|63|1|3|3|0|6|copied||6|99994|0x3f|1|0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|0x3f0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f|64|64|64|64|false"]
+];
+const mcopyopJoin = r => [r.dst, r.src, r.size, r.baseGas, r.wordGas, r.expansionGas, r.totalGas, r.outcome, r.haltReason, r.gasUsed, r.gasAfter, r.copiedData, r.copiedBytes, r.memoryBefore, r.memoryAfter, r.memoryBeforeBytes, r.memoryAfterBytes, r.msizeBefore, r.msizeAfter, r.halted].join("|");
+check("mcopyop controls labelled in index.html",
+  ["mcopyop-gas", "mcopyop-dst", "mcopyop-src", "mcopyop-size", "mcopyop-memory"].every(id => html.includes(`for="${id}"`)));
+check("mcopyop matches the Python oracle",
+  MCOPYOP_ROWS.every(([inp, exp]) => { const r = app.mcopyCalc(...inp);
+    return r !== null && mcopyopJoin(r) === exp; }));
+check("mcopyop: gas agrees with the hub MCOPY gas tool exactly on every row that tool can price, and the one divergence is the 2^255 zero-size row its parser refuses",
+  (() => { let priced = 0, refused = 0;
+    const ok = MCOPYOP_ROWS.every(([inp]) => {
+      const r = app.mcopyCalc(...inp);
+      const g = app.mcopyGasCalc(inp[1], inp[2], inp[3], String((inp[4].replace(/^0[xX]/, "").length) / 2));
+      if (g === null) { refused++; return r.totalGas === "3" && r.outcome === "copied"; }
+      priced++;
+      return g.totalGas === r.totalGas && g.wordGas === r.wordGas && g.memoryGas === r.expansionGas; });
+    return ok && priced === 13 && refused === 1; })());
+check("mcopyop: prefilled page values \u2014 the 1,000,000 word copied over the zero word at 6 gas, the already-covered price",
+  (() => { const g = id => { const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)); return m && m[1]; };
+    const r = app.mcopyCalc(g("mcopyop-gas"), g("mcopyop-dst"), g("mcopyop-src"), g("mcopyop-size"), g("mcopyop-memory"));
+    return r !== null && r.outcome === "copied" && r.totalGas === "6" && r.gasAfter === "99994" &&
+      r.copiedData === "0x00000000000000000000000000000000000000000000000000000000000f4240" &&
+      r.memoryAfter === r.copiedData + r.copiedData.slice(2); })());
+check("mcopyop: the memmove trap \u2014 a forward overlap receives the original bytes, not the first byte smeared across the destination",
+  (() => { const seq = "0x" + Array.from({length: 64}, (_, i) => i.toString(16).padStart(2, "0")).join("");
+    const fwd = app.mcopyCalc("100000", "1", "0", "32", seq);
+    const bwd = app.mcopyCalc("100000", "0", "1", "32", seq);
+    const f = fwd.memoryAfter.slice(2), b = bwd.memoryAfter.slice(2);
+    const byteAt = (h, i) => parseInt(h.slice(i * 2, i * 2 + 2), 16);
+    return fwd.outcome === "copied" && byteAt(f, 1) === 0 && byteAt(f, 32) === 31 && byteAt(f, 33) === 33 &&
+      bwd.outcome === "copied" && byteAt(b, 0) === 1 && byteAt(b, 31) === 32 && byteAt(b, 32) === 32; })());
+check("mcopyop: a zero-size copy touches no memory whatever its offsets \u2014 2^255 offsets copy nothing at the flat 3",
+  (() => { const big = (2n ** 255n).toString();
+    const r = app.mcopyCalc("500", big, big, "0", "0x");
+    return r.outcome === "copied" && r.totalGas === "3" && r.copiedData === "0x" && r.memoryAfterBytes === "0"; })());
+check("mcopyop: the oog pair \u2014 8 gas halts exceptionally consuming all of it where 9 copies the word with nothing left",
+  (() => { const oog = app.mcopyCalc("8", "0", "0", "32", "0x");
+    const exact = app.mcopyCalc("9", "0", "0", "32", "0x");
+    return oog.outcome === "halt" && oog.haltReason === "oog" && oog.gasUsed === "8" && oog.memoryAfter === "0x" &&
+      exact.outcome === "copied" && exact.gasUsed === "9" && exact.gasAfter === "0"; })());
+check("mcopyop refuses a size over the 4,096 cap, a region end over the cap, a word at 2^256, odd-length memory, memory over the cap, malformed gas and null inputs",
+  app.mcopyCalc("100000", "0", "0", "4097", "0x") === null &&
+  app.mcopyCalc("100000", "4096", "0", "1", "0x") === null &&
+  app.mcopyCalc("100000", "0", (2n ** 256n).toString(), "0", "0x") === null &&
+  app.mcopyCalc("100000", "0", "0", "0", "0x0") === null &&
+  app.mcopyCalc("100000", "0", "0", "0", "0x" + "00".repeat(4097)) === null &&
+  app.mcopyCalc("-1", "0", "0", "0", "0x") === null &&
+  app.mcopyCalc(null, "0", "0", "0", "0x") === null &&
+  app.mcopyCalc("100000", "0", "0", "0", null) === null);
+check("mcopyop tool section present in index.html", html.includes("mcopyop-btn") && html.includes("MCOPY opcode calculator"));
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

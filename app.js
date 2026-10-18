@@ -7388,6 +7388,91 @@ function haltCalc(opStr, gasAvailStr, offsetStr, sizeStr, memoryStr) {
     msizeAfter: (wordsAfter * 32n).toString(), halted: "false" };
 }
 
+/* MCOPY opcode (EIP-5656, Cancun, 0x5e) -- the copy itself
+   applied. The hub already prices MCOPY in its MCOPY gas tool;
+   this applies it: the bytes at [src, src+size) of the frame's
+   memory are copied to [dst, dst+size) of the SAME memory, as
+   if through an intermediate buffer (the EIP's memmove
+   semantics), so overlapping regions copy the ORIGINAL bytes --
+   a forward overlap (dst inside the source region) does not
+   smear the first byte across the destination the way a naive
+   byte-at-a-time forward copy would; paired tests pin both
+   overlap directions against exactly that smear. Gas is the
+   hub MCOPY gas tool's price -- 3 base + 3 per 32-byte word
+   copied (size rounds up) + the memory-expansion increase --
+   cross-checked against mcopyGasCalc exactly in tests on every
+   row that tool's byte-count parser can price. Expansion is
+   priced on the LARGER of the two region ends, max(dst, src)
+   + size, because both regions are memory (the one pricing
+   difference from CALLDATACOPY/CODECOPY/RETURNDATACOPY, whose
+   sources are not memory). Memory is zero-initialised: either
+   region past the supplied end reads zeros, and memory expands
+   to the larger end even when only the SOURCE reaches it. A
+   zero-size copy touches no memory whatever its offsets --
+   offsets of 2^255 with size 0 copy nothing at the flat 3 --
+   and the one divergence from the gas tool is pinned too: its
+   parser refuses a 2^255 offset while this tool prices the
+   zero-size copy at 3. If the frame cannot pay the total it
+   halts exceptionally (reason oog), consuming the whole
+   remaining gas and leaving memory unchanged -- MCOPY writes
+   memory, not state, so it is not barred from a static frame
+   (unlike SSTORE or a log); it pops three words and pushes
+   nothing. Honest scope: the gas and memory are values you
+   supply -- this page executes nothing and reads no chain.
+   All words are single 256-bit values, refused rather than
+   wrapped; the supplied memory, the size and a non-empty
+   copy's larger region end are capped at 4,096 bytes as
+   stated display caps. */
+const MCOPYOP_MAX_BYTES = 4096;
+function mcopyCalc(gasAvailStr, dstStr, srcStr, sizeStr, memoryStr) {
+  if (typeof memoryStr !== "string") return null;
+  const gasAvail = sstoreParseWord(gasAvailStr);
+  const dst = sstoreParseWord(dstStr);
+  const src = sstoreParseWord(srcStr);
+  const size = sstoreParseWord(sizeStr);
+  if (gasAvail === null || dst === null || src === null || size === null) return null;
+  if (size > BigInt(MCOPYOP_MAX_BYTES)) return null;
+  let mh = memoryStr.trim();
+  if (/^0[xX]/.test(mh)) mh = mh.slice(2);
+  if (mh !== "" && (!/^[0-9a-fA-F]+$/.test(mh) || mh.length % 2 !== 0)) return null;
+  if (mh.length / 2 > MCOPYOP_MAX_BYTES) return null;
+  const before = [];
+  for (let i = 0; i < mh.length; i += 2) before.push(parseInt(mh.slice(i, i + 2), 16));
+  const maxEnd = size === 0n ? 0n : (dst > src ? dst : src) + size;
+  if (size > 0n && maxEnd > BigInt(MCOPYOP_MAX_BYTES)) return null;
+  const wordsBefore = BigInt(Math.ceil(before.length / 32));
+  const endNum = Number(maxEnd);
+  const wordsAfter = BigInt(Math.ceil(Math.max(before.length, endNum) / 32));
+  const expansion = wordsAfter > wordsBefore ? memTotalCost(wordsAfter) - memTotalCost(wordsBefore) : 0n;
+  const baseGas = 3n;
+  const wordGas = 3n * ((size + 31n) / 32n);
+  const total = baseGas + wordGas + expansion;
+  const toHex = arr => "0x" + arr.map(b => b.toString(16).padStart(2, "0")).join("");
+  const head = { dst: dst.toString(), src: src.toString(), size: size.toString(),
+    baseGas: baseGas.toString(), wordGas: wordGas.toString(),
+    expansionGas: expansion.toString(), totalGas: total.toString(),
+    memoryBefore: toHex(before), memoryBeforeBytes: String(before.length),
+    msizeBefore: (wordsBefore * 32n).toString() };
+  if (gasAvail < total) {
+    return { ...head, outcome: "halt", haltReason: "oog",
+      gasUsed: gasAvail.toString(), gasAfter: "0",
+      copiedData: "0x", copiedBytes: "0",
+      memoryAfter: toHex(before), memoryAfterBytes: String(before.length),
+      msizeAfter: (wordsBefore * 32n).toString(), halted: "true" };
+  }
+  const ext = before.slice();
+  while (ext.length < endNum) ext.push(0);
+  const d = Number(dst), s = Number(src), sz = Number(size);
+  const copied = ext.slice(s, s + sz);
+  const after = ext.slice();
+  for (let i = 0; i < sz; i++) after[d + i] = copied[i];
+  return { ...head, outcome: "copied", haltReason: "",
+    gasUsed: total.toString(), gasAfter: (gasAvail - total).toString(),
+    copiedData: toHex(copied), copiedBytes: size.toString(),
+    memoryAfter: toHex(after), memoryAfterBytes: String(after.length),
+    msizeAfter: (wordsAfter * 32n).toString(), halted: "false" };
+}
+
 /* ---------- browser wiring ---------- */
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
@@ -9483,6 +9568,28 @@ if (typeof document !== "undefined") {
         : `${name}: the frame halts and rolls its state changes back, but still returns ${r.returnedBytes} byte(s) from memory — ${r.returnedData} — as the revert data its caller reads, and its unused gas is returned: gas used ${r.gasUsed}, the memory-expansion increase alone (gas after: ${r.gasAfter}). ${tail}`;
     });
 
+    /* MCOPY opcode calculator */
+    const mcopyopBtn = document.getElementById("mcopyop-btn");
+    if (mcopyopBtn) mcopyopBtn.addEventListener("click", () => {
+      const r = mcopyCalc(
+        document.getElementById("mcopyop-gas").value,
+        document.getElementById("mcopyop-dst").value,
+        document.getElementById("mcopyop-src").value,
+        document.getElementById("mcopyop-size").value,
+        document.getElementById("mcopyop-memory").value);
+      const el = document.getElementById("mcopyop-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the gas, destination, source and size must each be one 256-bit word, decimal or 0x hex, and the memory even-length hex — the memory, the size and a non-empty copy's larger region end are each capped at 4,096 bytes.";
+        return;
+      }
+      const tail = "Computed locally from the state you gave — nothing is executed and no chain is queried.";
+      if (r.outcome === "halt") {
+        el.textContent = `MCOPY (0x5e, Cancun): the frame cannot pay the ${r.totalGas} this copy costs, so it halts out of gas — the whole remaining ${r.gasUsed} is consumed and memory is unchanged. ${tail}`;
+        return;
+      }
+      el.textContent = `MCOPY (0x5e, Cancun): ${r.copiedBytes} byte(s) copied from offset ${r.src} to offset ${r.dst} within the same memory — ${r.copiedData} — copied as if through an intermediate buffer, so an overlapping destination receives the original bytes. Memory is now ${r.memoryAfterBytes} byte(s) (size ${r.msizeAfter}): ${r.memoryAfter}. Gas used ${r.gasUsed} (3 base + ${r.wordGas} for the copied words + ${r.expansionGas} of memory expansion; gas after: ${r.gasAfter}). ${tail}`;
+    });
+
     /* EIP-4844 blob versioned hash */
     const vhashBtn = document.getElementById("vhash-btn");
     if (vhashBtn) vhashBtn.addEventListener("click", () => {
@@ -9496,5 +9603,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

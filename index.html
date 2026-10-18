@@ -1320,6 +1320,23 @@
     </div>
 
     <div class="tool">
+      <h3>MCOPY opcode calculator — copying memory within memory, applied (EIP-5656)</h3>
+      <p><code>MCOPY</code> (<code>0x5e</code>, Cancun, <a href="https://eips.ethereum.org/EIPS/eip-5656">EIP-5656</a>) copies a region of the frame's memory to another region of the <em>same</em> memory — the operation the hub's MCOPY gas tool prices. The copy behaves as if through an intermediate buffer (memmove semantics), and that is the trap: where the destination overlaps the source, the destination receives the <em>original</em> bytes — a naive byte-at-a-time forward copy would smear the first source byte across a forward overlap instead. Gas is the gas tool's price — 3 base + 3 per 32-byte word copied (the size rounds up) + the memory-expansion increase — and expansion is priced on the <em>larger</em> of the two region ends, because both regions are memory; that is the one pricing difference from <code>CALLDATACOPY</code> / <code>CODECOPY</code> / <code>RETURNDATACOPY</code>, whose sources are not memory. Memory is zero-initialised: either region past the supplied memory's end reads zeros, and memory expands to the larger end even when only the <em>source</em> reaches it. A zero-size copy touches no memory whatever its offsets — offsets of 2<sup>255</sup> with size 0 copy nothing at the flat 3. A frame that cannot pay the total halts exceptionally, consuming its whole remaining gas and leaving memory unchanged; MCOPY writes memory, not state, so it is not barred from a static frame. The prefilled copy moves the 32-byte word holding 1000000 over the zero word after it at 6 gas, because the supplied memory already covers both ends. Honest scope: the gas and memory are values <em>you</em> supply — this page executes nothing and reads no chain. Computed locally; nothing is executed and no chain is queried.</p>
+      <label for="mcopyop-gas">Gas available (the frame's remaining gas when MCOPY runs)</label>
+      <input id="mcopyop-gas" type="text" inputmode="numeric" spellcheck="false" value="100000">
+      <label for="mcopyop-dst">Destination offset (where in the frame's memory the copied data lands)</label>
+      <input id="mcopyop-dst" type="text" inputmode="numeric" spellcheck="false" value="32">
+      <label for="mcopyop-src">Source offset (where in the same memory the data is copied from)</label>
+      <input id="mcopyop-src" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="mcopyop-size">Copy size (bytes copied from source to destination)</label>
+      <input id="mcopyop-size" type="text" inputmode="numeric" spellcheck="false" value="32">
+      <label for="mcopyop-memory">Frame memory (hex — both regions are read from and written to it; past its end reads zeros and expands it)</label>
+      <input id="mcopyop-memory" type="text" spellcheck="false" value="0x00000000000000000000000000000000000000000000000000000000000f42400000000000000000000000000000000000000000000000000000000000000000">
+      <button id="mcopyop-btn" type="button">Apply MCOPY</button>
+      <p id="mcopyop-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Uniswap V3 tick ⇄ sqrtPriceX96 converter</h3>
       <p>A Uniswap V3 pool does not store a price directly: it stores <code>sqrtPriceX96</code> — the square root of the token1/token0 price in Q64.96 fixed point — and a <em>tick</em>, the same price placed on a 1.0001 grid: <code>sqrtPriceX96 = sqrt(1.0001<sup>tick</sup>) × 2<sup>96</sup></code>. This converter runs <a href="https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol">TickMath</a>'s exact integer math locally, in both directions: tick → sqrt ratio as the library's Q128.128 factor product, divided by 2<sup>32</sup> rounding up; and sqrt ratio → tick as the greatest tick whose ratio is at most the input, exactly as <code>getTickAtSqrtRatio</code> brackets and resolves it. Ticks run from −887272 to 887272 (the ticks of prices 2<sup>−128</sup> and 2<sup>128</sup>); in the reverse direction the maximum tick's own ratio is refused, as the library requires, because a pool price can never reach it. The raw price shown, <code>(sqrtPriceX96 / 2<sup>96</sup>)<sup>2</sup></code>, is truncated to 12 significant digits for display (the tick and sqrt ratio are exact) and ignores token decimals — a pool's human price additionally scales by 10<sup>(decimals of token0 − decimals of token1)</sup>. The prefilled tick 1000 reproduces sqrtPriceX96 83290069058676223003182343270 and raw price 1.10516539260. Honest scope: the value is one <em>you</em> supply — a real pool's tick and sqrtPriceX96 are its <code>slot0</code> chain state, which this page does not read, so this is TickMath applied to supplied values, not live pool data and not financial advice. Computed locally; nothing is swapped and no chain is queried.</p>
       <label for="v3t-mode">Direction</label>
@@ -1705,6 +1722,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=97"></script>
+<script src="app.js?v=98"></script>
 </body>
 </html>

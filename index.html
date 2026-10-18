@@ -1683,6 +1683,21 @@ dave</textarea>
     </div>
 
     <div class="tool">
+      <h3>EIP-7702 authorization signature verification</h3>
+      <p>An <a href="https://eips.ethereum.org/EIPS/eip-7702">EIP-7702</a> set code transaction carries authorization tuples, each signed on its own by the account delegating its code — over a digest that is <em>not</em> the transaction's signing hash: <code>keccak256(0x05 ‖ rlp([chain_id, address, nonce]))</code>, where the <code>0x05</code> magic byte keeps an authorization from ever being mistaken for a transaction. The transaction <em>sender</em> recovery tool above recovers a whole transaction's authorities; this tool verifies a single tuple the way a client checks it before applying the delegation: recompute the tuple's digest and recover the signer — the <em>authority</em>, the account whose code is delegated. The prefilled tuple is the first authorization of the type-4 oracle transaction the decoder tests carry: on Base (chain ID 8453) it delegates to <code>0x1111…1111</code> at nonce 3, and its authority is the published address of the EIP-155 example key (<code>0x9d8A…5A4F</code>) — change any field and the recovered authority changes with it, because every field is inside the hash; the same signature checked against chain ID 1 recovers to a different account entirely. A chain ID of 0 in a tuple means the authorization is valid on any chain. Honest scope: a client <em>also</em> requires the tuple nonce to equal the authority's current nonce and then increments it — chain state this page does not read — so a recovered authority here means the signature check passes, not that the tuple would still be applied now. Strict in the same way as the verifiers above: the signature must be exactly 65 bytes (<code>r ‖ s ‖ v</code>, with <code>v</code> the tuple's y-parity 0 or 1, or 27 / 28 in the form wallets return; an EIP-155-style <code>v</code> is refused, because an authorization carries no chain ID in its <code>v</code>) and <code>s</code> must be the canonical low-<code>s</code> form — the malleable high-<code>s</code> twin of this very signature recovers the same authority mathematically and is still refused, exactly as a client skips that tuple. Verifies a signature only: nothing is signed, no key is used or asked for, and no chain is queried.</p>
+      <label for="a7702-chain">Authorization chain ID (0 = valid on any chain)</label>
+      <input id="a7702-chain" type="text" inputmode="numeric" spellcheck="false" value="8453">
+      <label for="a7702-addr">Delegate address (the code being delegated to, 20 bytes)</label>
+      <input id="a7702-addr" type="text" spellcheck="false" value="0x1111111111111111111111111111111111111111">
+      <label for="a7702-nonce">Authority nonce (the signing account's nonce in the tuple)</label>
+      <input id="a7702-nonce" type="text" inputmode="numeric" spellcheck="false" value="3">
+      <label for="a7702-sig">Signature (65 bytes: r ‖ s ‖ v, 0x hex)</label>
+      <textarea id="a7702-sig" rows="3" spellcheck="false">0xecd286ae19eaf8f55a47fb2e6156cdb85fd63de22fefb8dce806acedcb1ea79706ad19fe8e587e1c554325d65703dc04ced6ec65f2a9af7dcda81080eab8b2f300</textarea>
+      <button id="a7702-btn" type="button">Verify authorization</button>
+      <p id="a7702-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Blob gas &amp; blob base fee calculator (EIP-4844 / EIP-7691)</h3>
       <p>The blob transactions the decoder above reads are priced in a second gas market of their own. <a href="https://eips.ethereum.org/EIPS/eip-4844">EIP-4844</a> gives every block an <code>excess_blob_gas</code> header field — a running total of blob gas consumed above the block target — and sets the base fee per blob gas to <code>fake_exponential(1, excess_blob_gas, update_fraction)</code>, a Taylor-series approximation of <code>e<sup>excess / fraction</sup></code> with a 1-wei floor, so the fee rises about 12.5% for each consecutive full Cancun block and falls when blocks run below target. Give this calculator the parent block's excess and blob gas used and it applies the EIP's own update rule (<code>calc_excess_blob_gas</code>) and pricing formula, then totals the blob fee for a transaction carrying your blob count — each blob is 131,072 blob gas, and the blob fee is burned, separate from the execution gas fee. Two schedules are offered because the numbers changed once already: Cancun as EIP-4844 launched it (target 3 blobs, max 6, fraction 3,338,477) and Prague as <a href="https://eips.ethereum.org/EIPS/eip-7691">EIP-7691</a> raised it (target 6 blobs, max 9, fraction 5,007,716 — fuller blocks now move the fee about 8.2%). The defaults are a full Prague parent block (9 blobs), which lifts the excess by exactly the 3 above-target blobs' worth of blob gas while the fee still sits at its floor. Honest scope: this is the protocol's pricing rule applied to values you supply, not live network data — read a real block's <code>excess_blob_gas</code> from your own node or an explorer to price the current fee. Computed locally — nothing is sent and no chain is queried.</p>
       <label for="blob-schedule">Blob schedule</label>
@@ -1722,6 +1737,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=98"></script>
+<script src="app.js?v=99"></script>
 </body>
 </html>

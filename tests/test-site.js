@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=98"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=99"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -611,6 +611,38 @@ check("EIP-7702 authorization digests (Python oracle)",
   app.eip7702AuthorizationDigest("-1", "0x1111111111111111111111111111111111111111", "3") === null &&
   app.eip7702AuthorizationDigest("8453", "0x1111", "3") === null &&
   app.eip7702AuthorizationDigest("8453", "0x1111111111111111111111111111111111111111", "x") === null);
+/* EIP-7702 authorization signature verification — the two authorization
+   tuples of the type-4 oracle transaction above, recovered by the
+   independent pure-Python oracle (oracle-auth7702.py: Keccak-f[1600] +
+   secp256k1 recovery anchored on the published addresses of private
+   key 1 and of the EIP-155 example key, a hand-derived RLP payload for
+   tuple 1, and the digest values the check above already carries).
+   Tuple 1's authority is the EIP-155 key's address, tuple 2's is key
+   1's; the oracle also emits tuple 1's signature checked against
+   chain ID 1, which recovers a different, pinned account. */
+const AUTH1_ADDR = app.toChecksumAddress("0x9d8a62f656a8d1615c1294fd71e9cfb3e4855a4f");
+const AUTH1_SIG = "0xecd286ae19eaf8f55a47fb2e6156cdb85fd63de22fefb8dce806acedcb1ea79706ad19fe8e587e1c554325d65703dc04ced6ec65f2a9af7dcda81080eab8b2f300";
+check("EIP-7702 authorization verification recovers both oracle tuples' authorities (Python oracle)",
+  (() => { const r = app.verify7702Authorization("8453", "0x1111111111111111111111111111111111111111", "3", AUTH1_SIG); return r !== null && r.authority === AUTH1_ADDR && r.digest === "0xa220321b87c7e2f32cd61ca94318a803d6b748661985c7e4e77f4d9a67eb048e"; })() &&
+  (() => { const r = app.verify7702Authorization("0", "0x2222222222222222222222222222222222222222", "0", "0xd43d780f5b5453c2f7764e99b203ce176e125b69bff96662f0d5f95032783801037051652f758859a9ffaffb0e085c18ad35fbdfa23e6d94d318c47a7742c2e100"); return r !== null && r.authority === app.toChecksumAddress("0x7e5f4552091a69125d5dfcb7b8c2659029395bdf") && r.digest === "0xfb6605641675aed59f0a3f2c102ac202312494431d767f683a450b845ff3a8cc"; })());
+check("EIP-7702 authorization verification: the index prefill is tuple 1 and verifies to its authority",
+  (() => { const m = /id="a7702-sig"[^>]*>([^<]+)</.exec(html); return m !== null && m[1] === AUTH1_SIG && app.verify7702Authorization("8453", "0x1111111111111111111111111111111111111111", "3", m[1])?.authority === AUTH1_ADDR; })());
+check("EIP-7702 authorization verification accepts the wallet v form (27) for the same authority",
+  app.verify7702Authorization("8453", "0x1111111111111111111111111111111111111111", "3", AUTH1_SIG.slice(0, -2) + "1b")?.authority === AUTH1_ADDR);
+check("EIP-7702 authorization verification: tuple 1's signature against chain ID 1 recovers the oracle's different account",
+  (() => { const r = app.verify7702Authorization("1", "0x1111111111111111111111111111111111111111", "3", AUTH1_SIG); return r !== null && r.authority === "0x1C86883E49E8338dF19201895f3364a45c3C84A7" && r.authority !== AUTH1_ADDR && r.digest === "0x55b2ed5bb8d7c96cbf9625913efd07ad6dd6d24b1d1e866c371e081f49b27bb2"; })());
+check("EIP-7702 authorization verification refuses the high-s twin, an EIP-155 v, and malformed input",
+  app.verify7702Authorization("8453", "0x1111111111111111111111111111111111111111", "3", "0xecd286ae19eaf8f55a47fb2e6156cdb85fd63de22fefb8dce806acedcb1ea797f952e60171a781e3aabcda29a8fc23f9ebd7f080bc9ef0bdf22a4e0be57d8e4e01") === null &&
+  app.verify7702Authorization("8453", "0x1111111111111111111111111111111111111111", "3", AUTH1_SIG.slice(0, -2) + "25") === null &&
+  app.verify7702Authorization("8453", "0x1111111111111111111111111111111111111111", "3", AUTH1_SIG.slice(0, -2)) === null &&
+  app.verify7702Authorization("8453", "0x1111111111111111111111111111111111111111", "3", "0x" + "00".repeat(32) + AUTH1_SIG.slice(66)) === null &&
+  app.verify7702Authorization("-1", "0x1111111111111111111111111111111111111111", "3", AUTH1_SIG) === null &&
+  app.verify7702Authorization("8453", "0x1111", "3", AUTH1_SIG) === null &&
+  app.verify7702Authorization("8453", "0x1111111111111111111111111111111111111111", "x", AUTH1_SIG) === null &&
+  app.verify7702Authorization("8453", "0x1111111111111111111111111111111111111111", "3", null) === null);
+check("EIP-7702 authorization verify tool section present in index.html", html.includes("a7702-btn") && html.includes("EIP-7702 authorization signature verification"));
+check("EIP-7702 authorization verify controls labelled",
+  ["a7702-chain", "a7702-addr", "a7702-nonce", "a7702-sig"].every(id => html.includes(`for="${id}"`)));
 check("transaction decoder rejects malformed and non-canonical input",
   app.decodeRawTransaction("") === null &&
   app.decodeRawTransaction("0x") === null &&

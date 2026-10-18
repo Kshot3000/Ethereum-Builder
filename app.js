@@ -2395,6 +2395,45 @@ function eip7702AuthorizationDigest(chainIdStr, address, nonceStr) {
   return "0x" + keccak256Bytes([0x05, ...payload]);
 }
 
+/* ---------- EIP-7702 authorization signature verification ----------
+   The digest above is what an account signs to delegate its code in
+   an EIP-7702 set code transaction; this tool performs the check a
+   client performs on each authorization tuple before applying it:
+   recompute the tuple's digest keccak256(0x05 ‖ rlp([chain_id,
+   address, nonce])) and recover the signer — the authority — from
+   the tuple's signature. A client applies the delegation only for
+   a tuple whose authority's nonce matches the tuple nonce (chain
+   state this page does not read) and whose chain ID is 0 or the
+   current chain's; the signature mathematics is what is verified
+   here. The signature is the 65-byte r ‖ s ‖ v form, where v is
+   the tuple's y-parity (0 or 1); the wallet form 27 / 28 is
+   accepted and normalised, but an EIP-155-style v (35 and up) is
+   refused — an authorization carries no chain ID in its v. Strict
+   in the same way as the verifiers above: s must be the canonical
+   low-s form, so the malleable high-s twin of a valid signature —
+   which recovers the same authority mathematically — is refused
+   rather than verified, exactly as a client skips that tuple.
+   Verified in the tests against the two authorization tuples of
+   the published type-4 oracle transaction, recovered independently
+   by a pure-Python Keccak-256 + secp256k1 oracle anchored on the
+   published addresses of private key 1 and of the EIP-155 example
+   key, on a hand-derived RLP payload, and on the digest values the
+   digest tests above already carry. It verifies a signature
+   locally; it never asks for a key and signs nothing. */
+function verify7702Authorization(chainIdStr, address, nonceStr, signature) {
+  const digest = eip7702AuthorizationDigest(chainIdStr, address, nonceStr);
+  if (digest === null || typeof signature !== "string") return null;
+  const sigBytes = parseHexBytes(signature, 65);
+  if (sigBytes === null) return null;
+  const v = sigBytes[64];
+  if (v !== 0 && v !== 1 && v !== 27 && v !== 28) return null;
+  const r = "0x" + bytesToHex(sigBytes.slice(0, 32));
+  const s = "0x" + bytesToHex(sigBytes.slice(32, 64));
+  const authority = recoverAddress(digest, String(v), r, s);
+  if (authority === null) return null;
+  return { digest, authority };
+}
+
 /* ---------- Transaction sender recovery ----------
    The decoder above deliberately stops at decoding, and the ecrecover
    tool above recovers a signer from a digest handed to it — this tool
@@ -7978,6 +8017,24 @@ if (typeof document !== "undefined") {
       el.textContent = msg;
     });
 
+    /* EIP-7702 authorization signature verification */
+    const a7702Btn = document.getElementById("a7702-btn");
+    if (a7702Btn) a7702Btn.addEventListener("click", () => {
+      const el = document.getElementById("a7702-out");
+      const chainRaw = document.getElementById("a7702-chain").value.trim();
+      const r = verify7702Authorization(
+        chainRaw,
+        document.getElementById("a7702-addr").value,
+        document.getElementById("a7702-nonce").value,
+        document.getElementById("a7702-sig").value
+      );
+      if (r === null) {
+        el.textContent = "That does not verify — check the authorization fields are exactly what was signed (chain ID and nonce whole numbers of 0 or more, delegate a 20-byte address) and the signature is the complete 65-byte hex value (0x + 130 hex characters: r, s, then v), with v the y-parity 0 or 1 (or 27 / 28 as wallets return it — an EIP-155-style v is not an authorization v) and s in the lower half of the curve order.";
+        return;
+      }
+      el.textContent = `Authority: ${r.authority} · Authorization digest signed: ${r.digest}. This account delegated its code to the address in the tuple${chainRaw === "0" ? ", and because the tuple's chain ID is 0 the authorization is valid on any chain" : `, on chain ID ${chainRaw} only`}. A client also requires the tuple nonce to equal the authority's current nonce before applying it — chain state this page does not read. Verified locally — no key involved, nothing signed, and no chain queried.`;
+    });
+
     /* Transaction sender recovery */
     const txsBtn = document.getElementById("txs-btn");
     if (txsBtn) txsBtn.addEventListener("click", () => {
@@ -9603,5 +9660,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

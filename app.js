@@ -4760,8 +4760,9 @@ function blsGasCalc(nameStr, pairsStr) {
    12,000 (the EIP-2537 discount at k = 1 is 1000, so there is
    no separate MUL precompile); a multi-pair MSM is a sum of
    such multiplications under Pippenger's discount and stays
-   gas-only here, like G2 (extension-field arithmetic), the
-   pairing check and the two field-to-curve maps. The curve is
+   gas-only here, like the pairing check and the two
+   field-to-curve maps (G2 arithmetic is run by the G2 tool
+   below). The curve is
    y^2 = x^3 + 4 over the field of prime order
    p = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787:
    the coefficient a is 0, so the doubling slope is 3x^2 / 2y,
@@ -4886,6 +4887,168 @@ function blsG1Calc(opStr, x1Hex, y1Hex, aHex, bHex) {
       ? "0x" + "00".repeat(128)
       : "0x" + result[0].toString(16).padStart(128, "0") + result[1].toString(16).padStart(128, "0"),
     outputBytes: "128", totalGas: gas.totalGas
+  };
+}
+
+/* ---------- BLS12-381 G2 point arithmetic (G2ADD / one-pair G2MSM applied) ----------
+   The applied counterpart of the BLS gas calculator above, for
+   the G2 half of the family: that tool quotes G2ADD's flat 600
+   and the MSM schedule from the pair count alone and does not
+   read the points — this one takes the points (and, for the
+   MSM, the scalar) and runs the G2 arithmetic itself, exactly
+   as the precompiles at 0x0d and 0x0e do. Scope is stated
+   plainly: G2ADD in full, and G2MSM for ONE point/scalar pair
+   — the multiplication case, at the k = 1 price of exactly
+   22,500 (the EIP-2537 G2 discount at k = 1 is 1000, so there
+   is no separate MUL precompile); a multi-pair MSM is a sum of
+   such multiplications under Pippenger's discount and stays
+   gas-only here, like the pairing check and the two
+   field-to-curve maps. The arithmetic lives in the quadratic
+   extension field Fp2 = Fp[u] / (u^2 + 1): an element is the
+   pair (c0, c1) read as c0 + c1*u, with multiplication
+   (a0*b0 - a1*b1, a0*b1 + a1*b0) and inversion through the
+   norm a0^2 + a1^2. G2 is the twist curve y^2 = x^3 + 4 + 4u
+   over Fp2: the coefficient a is again 0, so the doubling
+   slope is 3x^2 / 2y, as for G1 above — but the constant term
+   is the Fp2 element (4, 4), not G1's plain 4. The encoding
+   doubles G1's width: each Fp2 coordinate is two field
+   elements, so a point is four 48-byte values carried in four
+   64-byte field elements (top 16 bytes zero) — 256 bytes on
+   the wire, in the order x.c0, x.c1, y.c0, y.c1; this page
+   takes each component as its 48-byte value and returns the
+   full 256-byte encoding. The point at infinity is written
+   (0, 0, 0, 0) on input and output alike. The subgroup is the
+   same prime order q as G1's, the twist's cofactor is not 1,
+   and EIP-2537 splits the two operations exactly as it did
+   for G1 — G2ADD performs NO subgroup check, so an on-curve
+   point outside the subgroup adds like any other, while the
+   MSM MUST check the subgroup (a point is in it exactly when
+   q * P is infinity, computed here by the full multiplication
+   with no scalar reduction) and a point outside it makes the
+   MSM call FAIL. Validity otherwise mirrors G1's: a component
+   at or above p, or a non-infinity point off the twist, in
+   either position makes the precompile call fail — no output,
+   and a failing BLS precompile call burns all the gas supplied
+   to it, so the totalGas reported here is the scheduled charge
+   from blsGasCalc (600 for G2ADD, the k = 1 MSM price of
+   22,500) that a successful call pays, cross-checked against
+   it in tests on every row. The MSM scalar is any 256-bit
+   word, not required to be below q, and acts modulo q by the
+   group law alone (q * P is infinity, (q + 1) * P is P — both
+   pinned). Malformed input to THIS page is refused with null,
+   as the other calculators refuse unparseable input: the
+   operation must be g2add or g2msm and each field it reads
+   must be exactly 48 bytes of hex (32 for the MSM scalar).
+   For the MSM the second point's fields are never read at
+   all, exactly as the gas tool never reads the pair count for
+   the flat operations. Verified in the tests against an
+   independent pure-Python oracle (oracle-bls-g2-calc.py)
+   carrying TWO implementations over Fp2 (affine and Jacobian
+   coordinates) asserted to agree on every vector, anchored
+   in-script BEFORE emitting vectors on go-ethereum's official
+   precompile testdata — all 112 blsG2Add and 11 blsG2Mul rows
+   reproduce under both implementations, every G2Mul input is
+   verified in the prime-order subgroup, and the G2Add rows
+   are mined for an on-curve off-subgroup point that anchors
+   the ADD/MSM subgroup contrast — and on the subgroup order
+   itself (q * G is infinity and (q - 1) * G is -G, computed
+   with NO scalar reduction). Computes locally; no chain is
+   queried. */
+const BLS_G2_P = BLS_G1_P;
+const BLS_G2_Q = BLS_G1_Q;
+function blsG2Mod(a) { const r = a % BLS_G2_P; return r < 0n ? r + BLS_G2_P : r; }
+function blsG2FAdd(u, v) { return [blsG2Mod(u[0] + v[0]), blsG2Mod(u[1] + v[1])]; }
+function blsG2FSub(u, v) { return [blsG2Mod(u[0] - v[0]), blsG2Mod(u[1] - v[1])]; }
+function blsG2FMul(u, v) {
+  return [blsG2Mod(u[0] * v[0] - u[1] * v[1]), blsG2Mod(u[0] * v[1] + u[1] * v[0])];
+}
+function blsG2FScal(u, k) { return [blsG2Mod(u[0] * k), blsG2Mod(u[1] * k)]; }
+function blsG2FInv(u) {
+  const norm = blsG2Mod(u[0] * u[0] + u[1] * u[1]);
+  const ni = secpModPow(norm, BLS_G2_P - 2n, BLS_G2_P);
+  return [blsG2Mod(u[0] * ni), blsG2Mod(-u[1] * ni)];
+}
+function blsG2FEq(u, v) { return u[0] === v[0] && u[1] === v[1]; }
+function blsG2OnCurve(x, y) {
+  const lhs = blsG2FMul(y, y);
+  const rhs = blsG2FAdd(blsG2FMul(blsG2FMul(x, x), x), [4n, 4n]);
+  return blsG2FEq(lhs, rhs);
+}
+function blsG2ValidPoint(x, y) {
+  if (x[0] >= BLS_G2_P || x[1] >= BLS_G2_P || y[0] >= BLS_G2_P || y[1] >= BLS_G2_P) return false;
+  if (x[0] === 0n && x[1] === 0n && y[0] === 0n && y[1] === 0n) return true; /* infinity encoding */
+  return blsG2OnCurve(x, y);
+}
+function blsG2Add(p1, p2) {
+  if (p1 === null) return p2;
+  if (p2 === null) return p1;
+  const [x1, y1] = p1, [x2, y2] = p2;
+  let lam;
+  if (blsG2FEq(x1, x2)) {
+    if (blsG2FEq(blsG2FAdd(y1, y2), [0n, 0n])) return null;
+    lam = blsG2FMul(blsG2FScal(blsG2FMul(x1, x1), 3n), blsG2FInv(blsG2FScal(y1, 2n)));
+  } else {
+    lam = blsG2FMul(blsG2FSub(y2, y1), blsG2FInv(blsG2FSub(x2, x1)));
+  }
+  const x3 = blsG2FSub(blsG2FSub(blsG2FMul(lam, lam), x1), x2);
+  return [x3, blsG2FSub(blsG2FMul(lam, blsG2FSub(x1, x3)), y1)];
+}
+function blsG2Mul(k, point) {
+  let result = null, addend = point, scalar = k;
+  while (scalar > 0n) {
+    if (scalar & 1n) result = blsG2Add(result, addend);
+    addend = blsG2Add(addend, addend);
+    scalar >>= 1n;
+  }
+  return result;
+}
+function blsG2Calc(opStr, x1aHex, x1bHex, y1aHex, y1bHex, aHex, bHex, cHex, dHex) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim();
+  if (op !== "g2add" && op !== "g2msm") return null;
+  const gas = op === "g2add" ? blsGasCalc("g2add", null) : blsGasCalc("g2msm", "1");
+  if (gas === null) return null;
+  const x1aBytes = parseHexBytes(x1aHex, 48);
+  const x1bBytes = parseHexBytes(x1bHex, 48);
+  const y1aBytes = parseHexBytes(y1aHex, 48);
+  const y1bBytes = parseHexBytes(y1bHex, 48);
+  const aBytes = parseHexBytes(aHex, op === "g2add" ? 48 : 32);
+  if (x1aBytes === null || x1bBytes === null || y1aBytes === null || y1bBytes === null || aBytes === null) return null;
+  let bBytes = null, cBytes = null, dBytes = null;
+  if (op === "g2add") {
+    bBytes = parseHexBytes(bHex, 48);
+    cBytes = parseHexBytes(cHex, 48);
+    dBytes = parseHexBytes(dHex, 48);
+    if (bBytes === null || cBytes === null || dBytes === null) return null;
+  }
+  const failed = {
+    precompile: op, address: gas.address, succeeded: "false",
+    output: "0x", outputBytes: "0", totalGas: gas.totalGas
+  };
+  const x1 = [bytesToBigInt(x1aBytes), bytesToBigInt(x1bBytes)];
+  const y1 = [bytesToBigInt(y1aBytes), bytesToBigInt(y1bBytes)];
+  if (!blsG2ValidPoint(x1, y1)) return failed;
+  const p1 = (x1[0] === 0n && x1[1] === 0n && y1[0] === 0n && y1[1] === 0n) ? null : [x1, y1];
+  let result;
+  if (op === "g2add") {
+    const x2 = [bytesToBigInt(aBytes), bytesToBigInt(bBytes)];
+    const y2 = [bytesToBigInt(cBytes), bytesToBigInt(dBytes)];
+    if (!blsG2ValidPoint(x2, y2)) return failed;
+    const p2 = (x2[0] === 0n && x2[1] === 0n && y2[0] === 0n && y2[1] === 0n) ? null : [x2, y2];
+    result = blsG2Add(p1, p2);
+  } else {
+    /* EIP-2537: MSM inputs must be in the correct subgroup —
+       q * P is infinity exactly for subgroup points. G2ADD
+       above performs no such check. */
+    if (p1 !== null && blsG2Mul(BLS_G2_Q, p1) !== null) return failed;
+    result = blsG2Mul(bytesToBigInt(aBytes), p1);
+  }
+  return {
+    precompile: op, address: gas.address, succeeded: "true",
+    output: result === null
+      ? "0x" + "00".repeat(256)
+      : "0x" + result[0][0].toString(16).padStart(128, "0") + result[0][1].toString(16).padStart(128, "0") + result[1][0].toString(16).padStart(128, "0") + result[1][1].toString(16).padStart(128, "0"),
+    outputBytes: "256", totalGas: gas.totalGas
   };
 }
 
@@ -9450,6 +9613,30 @@ if (typeof document !== "undefined") {
         : `${r.precompile} precompile (${r.address}): the call FAILS — a coordinate at or above the field prime, a point that is not on the curve y² = x³ + 4${r.precompile === "g1msm" ? ", or a point outside the prime-order subgroup (the MSM checks it; G1ADD does not)" : ""}: no output, and a failing BLS precompile call burns all the gas supplied to it, so the caller's cost is whatever it forwarded (the scheduled charge is ${r.totalGas}). Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* BLS12-381 G2 point arithmetic (G2ADD / one-pair G2MSM applied) */
+    const blsgBtn = document.getElementById("blsg-btn");
+    if (blsgBtn) blsgBtn.addEventListener("click", () => {
+      const op = document.getElementById("blsg-op").value;
+      const r = blsG2Calc(
+        op,
+        document.getElementById("blsg-x1a").value,
+        document.getElementById("blsg-x1b").value,
+        document.getElementById("blsg-y1a").value,
+        document.getElementById("blsg-y1b").value,
+        op === "g2add" ? document.getElementById("blsg-x2a").value : document.getElementById("blsg-k").value,
+        document.getElementById("blsg-x2b").value,
+        document.getElementById("blsg-y2a").value,
+        document.getElementById("blsg-y2b").value);
+      const el = document.getElementById("blsg-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the operation is G2ADD or a one-pair G2MSM, and each field it reads — the first point's four components, plus the second point's four components for G2ADD or the scalar for the MSM — is exactly 48 bytes of hex for a component (32 for the scalar), with a 0x prefix.";
+        return;
+      }
+      el.textContent = r.succeeded === "true"
+        ? `${r.precompile} precompile (${r.address}) result: ${r.output} — the resulting point in the EIP-2537 encoding, ${r.outputBytes} bytes (x.c0, x.c1, y.c0, y.c1, each a 64-byte field element whose top 16 bytes are zero; all zeros is the point at infinity). Gas: ${r.totalGas} — ${r.precompile === "g2add" ? "the flat G2ADD charge" : "the G2MSM price at k = 1 (discount 1000, so exactly the single-multiplication cost)"} from the gas calculator above. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`
+        : `${r.precompile} precompile (${r.address}): the call FAILS — a component at or above the field prime, a point that is not on the twist y² = x³ + 4 + 4i${r.precompile === "g2msm" ? ", or a point outside the prime-order subgroup (the MSM checks it; G2ADD does not)" : ""}: no output, and a failing BLS precompile call burns all the gas supplied to it, so the caller's cost is whatever it forwarded (the scheduled charge is ${r.totalGas}). Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* secp256r1 (P256VERIFY) precompile gas */
     const p256Btn = document.getElementById("p256-btn");
     if (p256Btn) p256Btn.addEventListener("click", () => {
@@ -10400,5 +10587,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, bn128Calc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, bn128Calc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

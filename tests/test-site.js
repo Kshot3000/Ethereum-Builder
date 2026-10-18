@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=103"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=104"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -6315,5 +6315,79 @@ check("blake2f calculator: the index prefill is the EIP-152 abc compression at 1
 check("blake2f calculator tool section present in index.html", html.includes("b2c-btn") && html.includes("BLAKE2f precompile calculator"));
 check("blake2f calculator controls labelled",
   ["b2c-rounds", "b2c-h", "b2c-m", "b2c-t", "b2c-f"].every(id => html.includes(`for="${id}"`)));
+/* P256VERIFY precompile verification — the applied counterpart of
+   the P256 gas tool above (which quotes 6,900 from the length alone
+   and does not read the input). Vectors from the independent
+   pure-Python oracle (oracle-p256-verify.py; anchored in-script,
+   before emitting, on the published curve arithmetic — n*G is
+   infinity, (n-1)*G is -G, 2*G at its published coordinates — and
+   on RFC 6979 Appendix A.2.5: its private key multiplies to its
+   published public key, its deterministic nonce reproduces, and
+   its published (r, s) for SHA-256 of "sample", the first vector
+   and the index prefill, verifies). */
+const P256V_VECTORS = [
+  [["0xaf2bdbe1aa9b6ec1e2ade1d694f41fc71a831d0268e9891562113d8a62add1bf", "0xefd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716", "0xf7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8", "0x60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6", "0x7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299"], ["true", "0x0000000000000000000000000000000000000000000000000000000000000001", "6900"]],  // prefill: RFC 6979 sample
+  [["0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0x471c3e758c4904285bba7e53118ed0f524adeb0757d25bd2f8e7b0d76dfa714c", "0xd66a6baa986e3bb659fa8934215dbc28d251f5236cd15a310a1b32ab85da0dec", "0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"], ["true", "0x0000000000000000000000000000000000000000000000000000000000000001", "6900"]],  // d=1 signing
+  [["0xb94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9", "0x471c3e758c4904285bba7e53118ed0f524adeb0757d25bd2f8e7b0d76dfa714c", "0xd34307c2ea7005566c0a1301acd7417d5cd14457474703df4acc4c34d598f79f", "0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"], ["true", "0x0000000000000000000000000000000000000000000000000000000000000001", "6900"]],  // d=1 signing
+  [["0x616e7482d25c969b5cd7e05fce8c9562f0c8ac70e09b7523e0529e4c2d6434e8", "0x471c3e758c4904285bba7e53118ed0f524adeb0757d25bd2f8e7b0d76dfa714c", "0x8a8535a974223f2505888294291b0b04495faba26214975f711a1ffea3fc3a93", "0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"], ["true", "0x0000000000000000000000000000000000000000000000000000000000000001", "6900"]],  // d=1 signing
+  [["0x0000000000000000000000000000000000000000000000000000000000000000", "0x58893cc65cc5c0da46a14c5a42878d877003623cdceec62cb9a9069fa2c02ea4", "0x9c3324e5b907cc6827be30af145ceca923987226f1b85a14dc3388894f42ccf6", "0x7cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc47669978", "0x07775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1"], ["true", "0x0000000000000000000000000000000000000000000000000000000000000001", "6900"]],  // d=2 zero digest
+  [["0xaf2bdbe1aa9b6ec1e2ade1d694f41fc71a831d0268e9891562113d8a62add1bf", "0xefd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716", "0x0834e36ad29a83bf2bc9385e491d6099c8fdf9d1ed67aa7ea5f51f93782857a9", "0x60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6", "0x7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299"], ["true", "0x0000000000000000000000000000000000000000000000000000000000000001", "6900"]],  // high-s twin
+  [["0xb94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9", "0x471c3e758c4904285bba7e53118ed0f524adeb0757d25bd2f8e7b0d76dfa714c", "0xd34307c2ea7005566c0a1301acd7417d5cd14457474703df4acc4c34d598f79e", "0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"], ["false", "0x", "6900"]],  // tampered s
+  [["0x0fc30e735a0228a31cbbb969988b4f50e02e737f979f091d7d224b765443f5d4", "0x471c3e758c4904285bba7e53118ed0f524adeb0757d25bd2f8e7b0d76dfa714c", "0xd34307c2ea7005566c0a1301acd7417d5cd14457474703df4acc4c34d598f79f", "0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"], ["false", "0x", "6900"]],  // wrong hash
+  [["0xb94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9", "0x471c3e758c4904285bba7e53118ed0f524adeb0757d25bd2f8e7b0d76dfa714c", "0xd34307c2ea7005566c0a1301acd7417d5cd14457474703df4acc4c34d598f79f", "0x60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6", "0x7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299"], ["false", "0x", "6900"]],  // wrong public key
+  [["0xb94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9", "0x0000000000000000000000000000000000000000000000000000000000000000", "0xd34307c2ea7005566c0a1301acd7417d5cd14457474703df4acc4c34d598f79f", "0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"], ["false", "0x", "6900"]],  // r = 0
+  [["0xb94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9", "0x471c3e758c4904285bba7e53118ed0f524adeb0757d25bd2f8e7b0d76dfa714c", "0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", "0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"], ["false", "0x", "6900"]],  // s = n
+  [["0xb94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9", "0x471c3e758c4904285bba7e53118ed0f524adeb0757d25bd2f8e7b0d76dfa714c", "0xd34307c2ea7005566c0a1301acd7417d5cd14457474703df4acc4c34d598f79f", "0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f6"], ["false", "0x", "6900"]],  // off-curve public key (Gy + 1)
+  [["0xb94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9", "0x471c3e758c4904285bba7e53118ed0f524adeb0757d25bd2f8e7b0d76dfa714c", "0xd34307c2ea7005566c0a1301acd7417d5cd14457474703df4acc4c34d598f79f", "0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff", "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"], ["false", "0x", "6900"]],  // x coordinate = p (at/above modulus)
+];
+check("p256verify verification reproduces the oracle verdicts (Python oracle)",
+  P256V_VECTORS.every(([inp, exp]) => { const r = app.p256VerifyCalc(...inp); return r !== null &&
+    r.valid === exp[0] && r.output === exp[1] && r.totalGas === exp[2]; }));
+check("p256verify verification gas agrees with the hub's P256 gas tool at the exact 160-byte length, on every oracle row",
+  P256V_VECTORS.every(([inp]) => { const r = app.p256VerifyCalc(...inp); const g = app.p256GasCalc("160");
+    return r !== null && g !== null && r.totalGas === g.totalGas && g.exactLength === "yes"; }));
+check("p256verify verification: the prefill is RFC 6979 A.2.5's published sample vector and verifies to the 32-byte word holding 1",
+  (() => { const r = app.p256VerifyCalc(
+    "0xaf2bdbe1aa9b6ec1e2ade1d694f41fc71a831d0268e9891562113d8a62add1bf",
+    "0xefd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716",
+    "0xf7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8",
+    "0x60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6",
+    "0x7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299");
+    return r !== null && r.valid === "true" && r.output === "0x" + "00".repeat(31) + "01" && r.outputBytes === "32"; })());
+check("p256verify verification: the high-s twin verifies — there is no low-s rule in ECDSA verification (contrast with the hub's ecrecover tools)",
+  (() => { const r = app.p256VerifyCalc(
+    "0xaf2bdbe1aa9b6ec1e2ade1d694f41fc71a831d0268e9891562113d8a62add1bf",
+    "0xefd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716",
+    "0x0834e36ad29a83bf2bc9385e491d6099c8fdf9d1ed67aa7ea5f51f93782857a9",
+    "0x60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6",
+    "0x7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299");
+    return r !== null && r.valid === "true"; })());
+check("p256verify verification: a failed check returns empty output at the same 6,900 — r = 0, s = n, an off-curve key and a tampered s all land there, never a refusal",
+  (() => { const H = "0xb94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+    const R = "0x471c3e758c4904285bba7e53118ed0f524adeb0757d25bd2f8e7b0d76dfa714c";
+    const S = "0xd34307c2ea7005566c0a1301acd7417d5cd14457474703df4acc4c34d598f79f";
+    const GX = "0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296";
+    const GY = "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
+    const bad = [
+      app.p256VerifyCalc(H, "0x" + "00".repeat(32), S, GX, GY),
+      app.p256VerifyCalc(H, R, "0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", GX, GY),
+      app.p256VerifyCalc(H, R, S, GX, "0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f6"),
+      app.p256VerifyCalc(H, R, "0xd34307c2ea7005566c0a1301acd7417d5cd14457474703df4acc4c34d598f79e", GX, GY)];
+    return bad.every(r => r !== null && r.valid === "false" && r.output === "0x" && r.outputBytes === "0" && r.totalGas === "6900"); })());
+check("p256verify verification refuses a field that is not exactly 32 bytes, odd-length or non-hex input and null inputs",
+  app.p256VerifyCalc("0x" + "00".repeat(31), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32)) === null &&
+  app.p256VerifyCalc("0x" + "00".repeat(32), "0x" + "00".repeat(33), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32)) === null &&
+  app.p256VerifyCalc("0x0", "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32)) === null &&
+  app.p256VerifyCalc("0xzz" + "00".repeat(31), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32)) === null &&
+  app.p256VerifyCalc(null, "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32)) === null &&
+  app.p256VerifyCalc("0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32), null) === null);
+check("p256verify verification: the index prefill is the RFC 6979 sample vector",
+  (() => { const g = id => { const m = new RegExp(`id="${id}"[^>]*value="([^"]*)"`).exec(html); return m && m[1]; };
+    const r = app.p256VerifyCalc(g("p256v-hash"), g("p256v-r"), g("p256v-s"), g("p256v-x"), g("p256v-y"));
+    return r !== null && r.valid === "true" && r.output === "0x" + "00".repeat(31) + "01"; })());
+check("p256verify verification tool section present in index.html", html.includes("p256v-btn") && html.includes("P256VERIFY precompile verification"));
+check("p256verify verification controls labelled",
+  ["p256v-hash", "p256v-r", "p256v-s", "p256v-x", "p256v-y"].every(id => html.includes(`for="${id}"`)));
+
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

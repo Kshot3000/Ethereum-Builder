@@ -4689,6 +4689,111 @@ function p256GasCalc(inputLenStr) {
   };
 }
 
+/* ---------- P256VERIFY precompile verification (EIP-7951) ----------
+   The applied counterpart of the gas calculator above: that tool
+   quotes the flat 6,900 from the input length alone and does not
+   read the input — this one takes the precompile's five fields
+   (the 32-byte message hash, the signature's r and s, and the
+   public key's x and y) and runs the verification itself, exactly
+   as the precompile at 0x0100 does: it returns the 32-byte word
+   holding 1 when the signature verifies and nothing (empty
+   output) on any failure, at the same flat 6,900 either way.
+   The curve is secp256r1 (P-256), NOT the secp256k1 of
+   ecrecover above: the field prime, the curve coefficient
+   (a = p − 3, where k1's doubling shortcut 3x² does not apply —
+   the doubling slope here is (3x² + a) / 2y), the base point
+   and the group order all differ, so the point arithmetic is
+   written out for this curve rather than reused. Verification
+   is the textbook ECDSA check: with e the hash as an integer
+   and w = s⁻¹ mod n, the point u1·G + u2·Q with u1 = e·w and
+   u2 = r·w must be non-infinity with x ≡ r (mod n). Failure
+   modes, all returning empty at the same price, never a
+   refusal: r or s outside [1, n − 1]; a public-key coordinate
+   at or above the field prime; a public key off the curve
+   (the point at infinity cannot be written in this input
+   shape at all — x and y are always two field-width words);
+   or a signature that simply does not verify. One deliberate
+   contrast with the hub's ecrecover-family verifiers: there is
+   NO low-s rule here — ECDSA verification accepts the high-s
+   twin, which mathematically verifies, and so does the
+   precompile (the EIP-2 low-s rule binds transaction
+   signatures, not this check); a test pins the twin verifying.
+   P-256 has cofactor 1, so an on-curve public key is
+   automatically in the prime-order group and no separate
+   subgroup check exists. Malformed input to THIS page (a
+   field that is not exactly 32 bytes of hex) is refused with
+   null, as the other calculators refuse unparseable input —
+   the precompile itself only ever sees the 160 assembled
+   bytes. The price is the hub's own P256 gas function fed the
+   exact 160-byte length, cross-checked against it in tests.
+   Verified in the tests against an independent pure-Python
+   oracle (oracle-p256-verify.py) anchored in-script BEFORE
+   emitting vectors on the published curve arithmetic (n·G is
+   infinity, (n−1)·G is −G, 2·G at its published coordinates)
+   and on RFC 6979 Appendix A.2.5: that appendix's private key
+   multiplies to its published public key, its deterministic
+   nonce reproduces, and its published (r, s) for SHA-256 of
+   "sample" — the prefill below — verifies. Verifies locally;
+   it never asks for a private key, signs nothing, and no
+   chain is queried. */
+const P256_P = 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffffn;
+const P256_N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+const P256_B = 0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604bn;
+const P256_G = [
+  0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296n,
+  0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5n
+];
+function p256Mod(a) { const r = a % P256_P; return r < 0n ? r + P256_P : r; }
+function p256Add(p1, p2) {
+  if (p1 === null) return p2;
+  if (p2 === null) return p1;
+  const [x1, y1] = p1, [x2, y2] = p2;
+  let lam;
+  if (x1 === x2) {
+    if (p256Mod(y1 + y2) === 0n) return null;
+    lam = p256Mod((3n * x1 * x1 + (P256_P - 3n)) * secpModPow(2n * y1, P256_P - 2n, P256_P));
+  } else {
+    lam = p256Mod((y2 - y1) * secpModPow(x2 - x1, P256_P - 2n, P256_P));
+  }
+  const x3 = p256Mod(lam * lam - x1 - x2);
+  return [x3, p256Mod(lam * (x1 - x3) - y1)];
+}
+function p256Mul(k, point) {
+  let result = null, addend = point, scalar = k;
+  while (scalar > 0n) {
+    if (scalar & 1n) result = p256Add(result, addend);
+    addend = p256Add(addend, addend);
+    scalar >>= 1n;
+  }
+  return result;
+}
+function p256VerifyCalc(hashHex, rHex, sHex, xHex, yHex) {
+  const hashBytes = parseHexBytes(hashHex, 32);
+  const rBytes = parseHexBytes(rHex, 32);
+  const sBytes = parseHexBytes(sHex, 32);
+  const xBytes = parseHexBytes(xHex, 32);
+  const yBytes = parseHexBytes(yHex, 32);
+  if (hashBytes === null || rBytes === null || sBytes === null || xBytes === null || yBytes === null) return null;
+  const gas = p256GasCalc("160");
+  if (gas === null) return null;
+  const r = bytesToBigInt(rBytes), s = bytesToBigInt(sBytes);
+  const qx = bytesToBigInt(xBytes), qy = bytesToBigInt(yBytes);
+  let valid = false;
+  if (r >= 1n && r < P256_N && s >= 1n && s < P256_N && qx < P256_P && qy < P256_P &&
+      p256Mod(qy * qy) === p256Mod(qx * qx * qx + (P256_P - 3n) * qx + P256_B)) {
+    const e = bytesToBigInt(hashBytes);
+    const w = secpModPow(s, P256_N - 2n, P256_N);
+    const pt = p256Add(p256Mul((e * w) % P256_N, P256_G), p256Mul((r * w) % P256_N, [qx, qy]));
+    valid = pt !== null && pt[0] % P256_N === r;
+  }
+  return {
+    valid: valid ? "true" : "false",
+    output: valid ? "0x" + "00".repeat(31) + "01" : "0x",
+    outputBytes: valid ? "32" : "0",
+    totalGas: gas.totalGas
+  };
+}
+
 /* CLZ opcode — count leading zeros, defined by EIP-7939.
    The EIP is Final and CC0; the semantics are restated here
    in my own words, and the constants were cross-verified
@@ -9053,6 +9158,25 @@ if (typeof document !== "undefined") {
         : `P256VERIFY precompile (${r.address}) gas: ${r.totalGas} total — the flat charge is taken at any input length, and this precompile never reverts: at ${r.inputBytes} bytes (not the exact ${r.requiredInputBytes}) it returns nothing and still burns the same ${r.totalGas}. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* secp256r1 (P256VERIFY) precompile verification */
+    const p256vBtn = document.getElementById("p256v-btn");
+    if (p256vBtn) p256vBtn.addEventListener("click", () => {
+      const r = p256VerifyCalc(
+        document.getElementById("p256v-hash").value,
+        document.getElementById("p256v-r").value,
+        document.getElementById("p256v-s").value,
+        document.getElementById("p256v-x").value,
+        document.getElementById("p256v-y").value);
+      const el = document.getElementById("p256v-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the message hash, r, s and the public key's x and y are each exactly 32 bytes of hex (with a 0x prefix).";
+        return;
+      }
+      el.textContent = r.valid === "true"
+        ? `P256VERIFY precompile (0x0000000000000000000000000000000000000100): the signature VERIFIES — the precompile returns ${r.output} (${r.outputBytes} bytes holding 1). Gas: ${r.totalGas} total — the flat charge, taken the same whether the signature verifies or not. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Verified locally from the values you gave — nothing is called and no chain is queried.`
+        : `P256VERIFY precompile (0x0000000000000000000000000000000000000100): the signature does NOT verify — the precompile returns nothing (0 bytes) and never reverts: an r or s outside [1, n − 1], a public-key coordinate at or above the field prime, an off-curve public key, or a signature that simply does not verify all land here. Gas: ${r.totalGas} total — the flat charge is taken anyway, exactly as it is on success. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Verified locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* CLZ opcode (count leading zeros, EIP-7939) */
     const clzBtn = document.getElementById("clz-btn");
     if (clzBtn) clzBtn.addEventListener("click", () => {
@@ -9969,5 +10093,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

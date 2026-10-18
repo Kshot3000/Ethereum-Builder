@@ -4429,9 +4429,9 @@ function bn128GasCalc(nameStr, pairsStr) {
    the points (and, for ecMul, the scalar) and runs the G1
    arithmetic itself, exactly as the precompiles at 0x06 and
    0x07 do. The pairing check (0x08) is NOT applied here: its
-   arithmetic lives in the quadratic extension field and the
-   pairing itself, work of a different order, so it stays
-   gas-only like the BLS and KZG checks. The curve is y^2 = x^3 + 3
+   arithmetic lives in the twelve-degree extension field and
+   the Miller loop, and it is run by the pairing tool further
+   below. The curve is y^2 = x^3 + 3
    over the field of prime order
    p = 21888242871839275222246405745257275088696311157297823662689037894645226208583:
    the coefficient a is 0, so the doubling slope is 3x^2 / 2y —
@@ -4545,6 +4545,425 @@ function bn128Calc(opStr, x1Hex, y1Hex, aHex, bHex) {
       ? "0x" + "00".repeat(64)
       : "0x" + result[0].toString(16).padStart(64, "0") + result[1].toString(16).padStart(64, "0"),
     outputBytes: "64", totalGas: gas.totalGas
+  };
+}
+
+/* ---------- alt_bn128 pairing check (EIP-197, applied) ----------
+   The applied half of the last alt_bn128 precompile: bn128GasCalc
+   quotes the pairing check's 45,000 + 34,000 per pair from the
+   pair count alone and never reads a point; bn128Calc runs
+   ecAdd / ecMul and leaves the pairing check out, because its
+   arithmetic is of a different order — Fp12 extension-field
+   work and a Miller loop. This tool runs it. It takes the
+   precompile's own input — k repetitions of (G1 point, G2
+   point), 192 bytes per pair — and decides the EIP-197
+   statement: the product of e(ai, bi) over the pairs is the
+   identity, equivalently the sum of the discrete-log products
+   is 0 in Fq — returning the 32-byte word holding 1 when it
+   holds and 0 when it does not. Empty input is the empty
+   product and returns 1.
+   Validation, per EIP-197 (not merely the curve equations):
+   a G1 coordinate at or above p, or a non-infinity G1 point
+   off y^2 = x^3 + 3, fails the call; for G2, in the EIP's own
+   words, "the order of the element has to be checked to be
+   equal to the group order q" — so a G2 element must have
+   every component below p, lie on the twist y^2 = x^3 +
+   3/(9 + i) over Fp2 = Fp[i] / (i^2 + 1), AND satisfy
+   q * P = infinity (checked here by the full multiplication,
+   no scalar reduction); an on-twist point outside the
+   subgroup fails the call, it does not merely score 0. That
+   subgroup trap is pinned in tests with a mined example: the
+   twist point at x = 1 + 0i is on the twist and fails. G1
+   needs no such check — its cofactor is 1. Any bad pair fails
+   the WHOLE call at the scheduled charge cross-checked
+   against bn128GasCalc exactly on every row (a failing
+   precompile call burns all gas supplied to it, so the
+   scheduled charge is what a successful call pays). A pair
+   with an infinity in either position contributes the
+   identity and is skipped. The encoding trap is the Fp2 word
+   order: an element a*i + b is written (a, b), imaginary
+   coefficient FIRST, so a G2 point arrives as x_imag, x_real,
+   y_imag, y_real — reading the pairs as (real, imag) puts a
+   different point on the twist (the generator's own
+   coordinates only satisfy the twist equation in the EIP's
+   order, which the oracle's anchors assert).
+   The arithmetic: Fp12 is the degree-12 polynomial extension
+   with w^12 = 18 w^6 - 82; the twist point is carried into
+   Fp12 by the field isomorphism (c0 + c1 i maps to
+   (c0 - 9 c1) + c1 w^6, then x scales by w^2 and y by w^3),
+   under which the twist's equation becomes y^2 = x^3 + 3
+   itself — asserted on the generator in the oracle before any
+   vector was trusted. The Miller loop runs the optimal ate
+   loop count 6x + 2 = 29793968203157093288 (x the BN
+   parameter 4965661367192848881) in its pseudo-binary
+   (signed-digit) encoding, tracking the line functions'
+   numerators and denominators separately so exactly one Fp12
+   inversion — by the polynomial extended Euclidean algorithm
+   — is needed, then the two Frobenius correction steps
+   (lines at Q1 = Q^p and -Q2 = -(Q1^p conjugated)) close the
+   loop. Frobenius powers are computed as coefficient
+   combinations of the precomputed powers of w^p, since the
+   coefficients live in Fp and are fixed by Frobenius. The
+   final exponentiation splits into the easy part
+   f^((p^6 - 1)(p^2 + 1)), evaluated with Frobenius powers and
+   one inversion, and the hard part f^((p^4 - p^2 + 1) / q) by
+   square-and-multiply; the oracle asserts the split form
+   equals the naive f^((p^12 - 1) / q) on a Miller value
+   before any vector was emitted. Pairs are capped at 16 as a
+   stated page computation cap — the precompile accepts any
+   count a caller's gas can pay for and the gas calculator
+   above still prices beyond it; a client fails the call
+   itself on a length that is not a multiple of 192, where
+   this page refuses it as malformed, as on every tool.
+   Verified against an independent oracle (oracle-bn128-
+   pairing.py) in two parts asserted to agree on every row:
+   py_ecc, the Ethereum Foundation's bn128 library, with the
+   EIP-197 subgroup check added explicitly, and a pure-Python
+   prototype of this exact algorithm — both reproduce all 14
+   rows of go-ethereum's official bn256Pairing testdata,
+   results and Istanbul prices, with the anchors above
+   asserted in-script before emitting. Computes locally; no
+   chain is queried, nothing is called. */
+const BN128_Q = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+const BN128_PAIRING_MAX_PAIRS = 16;
+const BN128_ATE_PSEUDO = [
+  0, 0, 0, 1, 0, 1, 0, -1, 0, 0, 1, -1, 0, 0, 1, 0,
+  0, 1, 1, 0, -1, 0, 0, 1, 0, -1, 0, 0, 0, 0, 1, 1,
+  1, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, -1, 0, 0, 1,
+  1, 0, 0, -1, 0, 0, 0, 1, 1, 0, -1, 0, 0, 1, 0, 1, 1
+];
+/* Fp2 helpers: an element is [c0, c1] = c0 + c1 * i, i^2 = -1 */
+function bn128F2Add(a, b) { return [bn128Mod(a[0] + b[0]), bn128Mod(a[1] + b[1])]; }
+function bn128F2Sub(a, b) { return [bn128Mod(a[0] - b[0]), bn128Mod(a[1] - b[1])]; }
+function bn128F2Neg(a) { return [bn128Mod(-a[0]), bn128Mod(-a[1])]; }
+function bn128F2Mul(a, b) {
+  return [bn128Mod(a[0] * b[0] - a[1] * b[1]), bn128Mod(a[0] * b[1] + a[1] * b[0])];
+}
+function bn128F2Inv(a) {
+  const d = secpModPow(bn128Mod(a[0] * a[0] + a[1] * a[1]), BN128_P - 2n, BN128_P);
+  return [bn128Mod(a[0] * d), bn128Mod(-a[1] * d)];
+}
+const BN128_B2 = bn128F2Mul([3n, 0n], bn128F2Inv([9n, 1n])); /* twist constant 3 / (9 + i) */
+function bn128TwistOnCurve(x, y) {
+  const lhs = bn128F2Mul(y, y);
+  const rhs = bn128F2Add(bn128F2Mul(bn128F2Mul(x, x), x), BN128_B2);
+  return lhs[0] === rhs[0] && lhs[1] === rhs[1];
+}
+/* Affine twist point arithmetic; a point is [x, y] of Fp2
+   elements, and null is the point at infinity. */
+function bn128TAdd(p1, p2) {
+  if (p1 === null) return p2;
+  if (p2 === null) return p1;
+  const [x1, y1] = p1, [x2, y2] = p2;
+  let lam;
+  if (x1[0] === x2[0] && x1[1] === x2[1]) {
+    if (bn128Mod(y1[0] + y2[0]) === 0n && bn128Mod(y1[1] + y2[1]) === 0n) return null;
+    lam = bn128F2Mul(bn128F2Mul([3n, 0n], bn128F2Mul(x1, x1)), bn128F2Inv(bn128F2Mul([2n, 0n], y1)));
+  } else {
+    lam = bn128F2Mul(bn128F2Sub(y2, y1), bn128F2Inv(bn128F2Sub(x2, x1)));
+  }
+  const lamSq = bn128F2Mul(lam, lam);
+  const x3 = bn128F2Sub(bn128F2Sub(lamSq, x1), x2);
+  const y3 = bn128F2Sub(bn128F2Mul(lam, bn128F2Sub(x1, x3)), y1);
+  return [x3, y3];
+}
+function bn128TMul(k, point) {
+  let result = null, addend = point, scalar = k;
+  while (scalar > 0n) {
+    if (scalar & 1n) result = bn128TAdd(result, addend);
+    addend = bn128TAdd(addend, addend);
+    scalar >>= 1n;
+  }
+  return result;
+}
+/* Fp12 helpers: an element is 12 coefficients [c0..c11] of
+   1, w, ..., w^11 with w^12 = 18 w^6 - 82 */
+function bn128F12Zero() { return [0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n]; }
+function bn128F12One() { const o = bn128F12Zero(); o[0] = 1n; return o; }
+function bn128F12Add(a, b) { return a.map((v, i) => bn128Mod(v + b[i])); }
+function bn128F12Sub(a, b) { return a.map((v, i) => bn128Mod(v - b[i])); }
+function bn128F12Neg(a) { return a.map((v) => bn128Mod(-v)); }
+function bn128F12Smul(a, s) { return a.map((v) => bn128Mod(v * s)); }
+function bn128F12Eq(a, b) { return a.every((v, i) => bn128Mod(v - b[i]) === 0n); }
+function bn128F12IsZero(a) { return a.every((v) => bn128Mod(v) === 0n); }
+function bn128F12Mul(a, b) {
+  const t = new Array(23).fill(0n);
+  for (let i = 0; i < 12; i++) {
+    if (a[i] === 0n) continue;
+    for (let j = 0; j < 12; j++) {
+      if (b[j] === 0n) continue;
+      t[i + j] = bn128Mod(t[i + j] + a[i] * b[j]);
+    }
+  }
+  for (let k = 22; k >= 12; k--) {
+    const c = bn128Mod(t[k]);
+    if (c === 0n) continue;
+    t[k - 6] = bn128Mod(t[k - 6] + 18n * c);
+    t[k - 12] = bn128Mod(t[k - 12] - 82n * c);
+  }
+  return t.slice(0, 12);
+}
+function bn128F12Pow(a, e) {
+  let result = bn128F12One(), base = a, exp = e;
+  while (exp > 0n) {
+    if (exp & 1n) result = bn128F12Mul(result, base);
+    base = bn128F12Mul(base, base);
+    exp >>= 1n;
+  }
+  return result;
+}
+/* Polynomial helpers over Fp (coefficient lists, low to high)
+   for the Fp12 inverse: the modulus is w^12 - 18 w^6 + 82 */
+const BN128_MOD12 = [82n, 0n, 0n, 0n, 0n, 0n, BN128_P - 18n, 0n, 0n, 0n, 0n, 0n, 1n];
+function bn128PolyTrim(a) {
+  const out = a.map((v) => bn128Mod(v));
+  while (out.length > 1 && out[out.length - 1] === 0n) out.pop();
+  return out;
+}
+function bn128PolyDivmod(aIn, bIn) {
+  let a = bn128PolyTrim(aIn.slice());
+  const b = bn128PolyTrim(bIn.slice());
+  if (a.length < b.length) return [[0n], a];
+  const q = new Array(a.length - b.length + 1).fill(0n);
+  const invLead = secpModPow(b[b.length - 1], BN128_P - 2n, BN128_P);
+  while (a.length >= b.length && !(a.length === 1 && a[0] === 0n)) {
+    const d = a.length - b.length;
+    const c = bn128Mod(a[a.length - 1] * invLead);
+    q[d] = c;
+    for (let j = 0; j < b.length; j++) a[d + j] = bn128Mod(a[d + j] - c * b[j]);
+    a = bn128PolyTrim(a);
+  }
+  return [bn128PolyTrim(q), a];
+}
+function bn128PolyMod(a) {
+  const t = bn128PolyTrim(a.slice());
+  if (t.length < 13) {
+    const out = t.slice();
+    while (out.length < 12) out.push(0n);
+    return out;
+  }
+  const r = bn128PolyDivmod(t, BN128_MOD12)[1];
+  const out = r.slice();
+  while (out.length < 12) out.push(0n);
+  return out;
+}
+function bn128PolyMulMod(a, b) {
+  const t = new Array(a.length + b.length - 1).fill(0n);
+  for (let i = 0; i < a.length; i++) {
+    if (bn128Mod(a[i]) === 0n) continue;
+    for (let j = 0; j < b.length; j++) {
+      t[i + j] = bn128Mod(t[i + j] + a[i] * b[j]);
+    }
+  }
+  return bn128PolyMod(t);
+}
+function bn128F12Inv(a) {
+  /* extended Euclid: the coefficient s with s * a = gcd(a,
+     MOD12); MOD12 is irreducible and a != 0, so the gcd is a
+     nonzero constant and a^-1 = s / gcd */
+  let oldR = BN128_MOD12.slice(), r = bn128PolyTrim(a.slice());
+  let oldS = [0n], s = [1n];
+  while (r.length > 1) {
+    const dm = bn128PolyDivmod(oldR, r);
+    oldR = r; r = dm[1];
+    const qs = bn128PolyMulMod(dm[0], s);
+    const newS = [];
+    for (let i = 0; i < 12; i++) {
+      newS.push(bn128Mod((i < oldS.length ? oldS[i] : 0n) - (i < qs.length ? qs[i] : 0n)));
+    }
+    oldS = s; s = bn128PolyMod(newS);
+  }
+  const invC = secpModPow(r[0], BN128_P - 2n, BN128_P);
+  return bn128PolyMod(s).map((v) => bn128Mod(v * invC));
+}
+/* Frobenius: (sum ci w^i)^p = sum ci (w^p)^i, the ci being in
+   Fp and so fixed. Powers of w^p are computed once, lazily. */
+let BN128_WPOW = null;
+function bn128F12FrobInit() {
+  if (BN128_WPOW !== null) return;
+  const W = bn128F12Zero(); W[1] = 1n;
+  const WP = bn128F12Pow(W, BN128_P);
+  BN128_WPOW = [bn128F12One()];
+  for (let i = 0; i < 11; i++) BN128_WPOW.push(bn128F12Mul(BN128_WPOW[i], WP));
+}
+function bn128F12Frob(a) {
+  bn128F12FrobInit();
+  let out = bn128F12Zero();
+  for (let i = 0; i < 12; i++) {
+    if (a[i] !== 0n) out = bn128F12Add(out, bn128F12Smul(BN128_WPOW[i], a[i]));
+  }
+  return out;
+}
+function bn128F12FrobPow(a, k) {
+  let wk = bn128F12Zero(); wk[1] = 1n;
+  for (let j = 0; j < k; j++) wk = bn128F12Frob(wk);
+  const powers = [bn128F12One()];
+  for (let i = 0; i < 11; i++) powers.push(bn128F12Mul(powers[i], wk));
+  let out = bn128F12Zero();
+  for (let i = 0; i < 12; i++) {
+    if (a[i] !== 0n) out = bn128F12Add(out, bn128F12Smul(powers[i], a[i]));
+  }
+  return out;
+}
+/* Projective point arithmetic over Fp12 (py_ecc's add-2007 / 
+   dbl formulas for a = 0, in homogeneous (x/z, y/z) form);
+   a point is [x, y, z] of Fp12 elements, z = 0 is infinity. */
+function bn128P12Double(pt) {
+  const [x, y, z] = pt;
+  const W = bn128F12Smul(bn128F12Mul(x, x), 3n);
+  const S = bn128F12Mul(y, z);
+  const B = bn128F12Mul(bn128F12Mul(x, y), S);
+  const H = bn128F12Sub(bn128F12Mul(W, W), bn128F12Smul(B, 8n));
+  const S2 = bn128F12Mul(S, S);
+  const nx = bn128F12Smul(bn128F12Mul(H, S), 2n);
+  const ny = bn128F12Sub(
+    bn128F12Mul(W, bn128F12Sub(bn128F12Smul(B, 4n), H)),
+    bn128F12Smul(bn128F12Mul(bn128F12Mul(y, y), S2), 8n));
+  const nz = bn128F12Smul(bn128F12Mul(S, S2), 8n);
+  return [nx, ny, nz];
+}
+function bn128P12Add(p1, p2) {
+  if (bn128F12IsZero(p1[2])) return p2;
+  if (bn128F12IsZero(p2[2])) return p1;
+  const [x1, y1, z1] = p1, [x2, y2, z2] = p2;
+  const U1 = bn128F12Mul(y2, z1), U2 = bn128F12Mul(y1, z2);
+  const V1 = bn128F12Mul(x2, z1), V2 = bn128F12Mul(x1, z2);
+  if (bn128F12Eq(V1, V2)) {
+    if (bn128F12Eq(U1, U2)) return bn128P12Double(p1);
+    return [bn128F12One(), bn128F12One(), bn128F12Zero()];
+  }
+  const U = bn128F12Sub(U1, U2), V = bn128F12Sub(V1, V2);
+  const Vsq = bn128F12Mul(V, V);
+  const VsqV2 = bn128F12Mul(Vsq, V2);
+  const Vcube = bn128F12Mul(V, Vsq);
+  const W = bn128F12Mul(z1, z2);
+  const A = bn128F12Sub(bn128F12Sub(bn128F12Mul(bn128F12Mul(U, U), W), Vcube), bn128F12Smul(VsqV2, 2n));
+  const nx = bn128F12Mul(V, A);
+  const ny = bn128F12Sub(bn128F12Mul(U, bn128F12Sub(VsqV2, A)), bn128F12Mul(Vcube, U2));
+  const nz = bn128F12Mul(Vcube, W);
+  return [nx, ny, nz];
+}
+function bn128P12Neg(pt) { return [pt[0], bn128F12Neg(pt[1]), pt[2]]; }
+/* The twist isomorphism into Fp12: c0 + c1 i is carried to
+   (c0 - 9 c1) + c1 w^6, then x scales by w^2, y by w^3, under
+   which y^2 = x^3 + 3/(9 + i) becomes y^2 = x^3 + 3 */
+function bn128TwistToF12(x, y) {
+  const embed = (c) => {
+    const e = bn128F12Zero();
+    e[0] = bn128Mod(c[0] - 9n * c[1]);
+    e[6] = bn128Mod(c[1]);
+    return e;
+  };
+  const w2 = bn128F12Zero(); w2[2] = 1n;
+  const w3 = bn128F12Zero(); w3[3] = 1n;
+  return [bn128F12Mul(embed(x), w2), bn128F12Mul(embed(y), w3), embed([1n, 0n])];
+}
+/* The line through P1 and P2 evaluated at T, returned as a
+   (numerator, denominator) pair so the loop needs no
+   inversions until the very end */
+function bn128Linefunc(P1, P2, T) {
+  const [x1, y1, z1] = P1, [x2, y2, z2] = P2, [xt, yt, zt] = T;
+  const mn = bn128F12Sub(bn128F12Mul(y2, z1), bn128F12Mul(y1, z2));
+  const md = bn128F12Sub(bn128F12Mul(x2, z1), bn128F12Mul(x1, z2));
+  if (!bn128F12IsZero(md)) {
+    const num = bn128F12Sub(
+      bn128F12Mul(mn, bn128F12Sub(bn128F12Mul(xt, z1), bn128F12Mul(x1, zt))),
+      bn128F12Mul(md, bn128F12Sub(bn128F12Mul(yt, z1), bn128F12Mul(y1, zt))));
+    return [num, bn128F12Mul(bn128F12Mul(md, zt), z1)];
+  }
+  if (bn128F12IsZero(mn)) {
+    const mn2 = bn128F12Smul(bn128F12Mul(x1, x1), 3n);
+    const md2 = bn128F12Smul(bn128F12Mul(y1, z1), 2n);
+    const num = bn128F12Sub(
+      bn128F12Mul(mn2, bn128F12Sub(bn128F12Mul(xt, z1), bn128F12Mul(x1, zt))),
+      bn128F12Mul(md2, bn128F12Sub(bn128F12Mul(yt, z1), bn128F12Mul(y1, zt))));
+    return [num, bn128F12Mul(bn128F12Mul(md2, zt), z1)];
+  }
+  return [bn128F12Sub(bn128F12Mul(xt, z1), bn128F12Mul(x1, zt)), bn128F12Mul(z1, zt)];
+}
+function bn128MillerRaw(Q12, P12) {
+  let R = Q12;
+  let fNum = bn128F12One(), fDen = bn128F12One();
+  for (let idx = 63; idx >= 0; idx--) {
+    const v = BN128_ATE_PSEUDO[idx];
+    const ld = bn128Linefunc(R, R, P12);
+    fNum = bn128F12Mul(bn128F12Mul(fNum, fNum), ld[0]);
+    fDen = bn128F12Mul(bn128F12Mul(fDen, fDen), ld[1]);
+    R = bn128P12Double(R);
+    if (v === 1) {
+      const la = bn128Linefunc(R, Q12, P12);
+      fNum = bn128F12Mul(fNum, la[0]);
+      fDen = bn128F12Mul(fDen, la[1]);
+      R = bn128P12Add(R, Q12);
+    } else if (v === -1) {
+      const nQ = bn128P12Neg(Q12);
+      const la = bn128Linefunc(R, nQ, P12);
+      fNum = bn128F12Mul(fNum, la[0]);
+      fDen = bn128F12Mul(fDen, la[1]);
+      R = bn128P12Add(R, nQ);
+    }
+  }
+  const Q1 = [bn128F12Frob(Q12[0]), bn128F12Frob(Q12[1]), bn128F12Frob(Q12[2])];
+  const nQ2 = [bn128F12Frob(Q1[0]), bn128F12Neg(bn128F12Frob(Q1[1])), bn128F12Frob(Q1[2])];
+  const l1 = bn128Linefunc(R, Q1, P12);
+  R = bn128P12Add(R, Q1);
+  const l2 = bn128Linefunc(R, nQ2, P12);
+  const num = bn128F12Mul(bn128F12Mul(fNum, l1[0]), l2[0]);
+  const den = bn128F12Mul(bn128F12Mul(fDen, l1[1]), l2[1]);
+  return bn128F12Mul(num, bn128F12Inv(den));
+}
+function bn128FinalExp(f) {
+  const f1 = bn128F12Mul(bn128F12FrobPow(f, 6), bn128F12Inv(f)); /* f^(p^6 - 1) */
+  const f2 = bn128F12Mul(bn128F12FrobPow(f1, 2), f1); /* ^(p^2 + 1) */
+  return bn128F12Pow(f2, (BN128_P ** 4n - BN128_P ** 2n + 1n) / BN128_Q);
+}
+function bn128PairingCalc(inputHex) {
+  const bytes = parseHexBytes(inputHex);
+  if (bytes === null) return null;
+  if (bytes.length % 192 !== 0) return null;
+  const pairs = bytes.length / 192;
+  if (pairs > BN128_PAIRING_MAX_PAIRS) return null;
+  const gas = bn128GasCalc("pairing", String(pairs));
+  if (gas === null) return null;
+  const failed = {
+    precompile: "pairing", address: gas.address, pairs: String(pairs),
+    succeeded: "false", output: "0x", outputBytes: "0", totalGas: gas.totalGas
+  };
+  const parsed = [];
+  for (let i = 0; i < pairs; i++) {
+    const off = i * 192;
+    const w = [];
+    for (let j = 0; j < 6; j++) w.push(bytesToBigInt(bytes.slice(off + 32 * j, off + 32 * j + 32)));
+    const gx = w[0], gy = w[1];
+    if (!bn128ValidPoint(gx, gy)) return failed;
+    const xc1 = w[2], xc0 = w[3], yc1 = w[4], yc0 = w[5];
+    if (xc1 >= BN128_P || xc0 >= BN128_P || yc1 >= BN128_P || yc0 >= BN128_P) return failed;
+    let q12 = null;
+    if (!(xc1 === 0n && xc0 === 0n && yc1 === 0n && yc0 === 0n)) {
+      const x = [xc0, xc1], y = [yc0, yc1];
+      if (!bn128TwistOnCurve(x, y)) return failed;
+      if (bn128TMul(BN128_Q, [x, y]) !== null) return failed; /* EIP-197 order check */
+      q12 = bn128TwistToF12(x, y);
+    }
+    let p12 = null;
+    if (!(gx === 0n && gy === 0n)) {
+      const ex = bn128F12Zero(); ex[0] = gx;
+      const ey = bn128F12Zero(); ey[0] = gy;
+      p12 = [ex, ey, bn128F12One()];
+    }
+    parsed.push([p12, q12]);
+  }
+  let acc = bn128F12One();
+  for (const [p12, q12] of parsed) {
+    if (p12 === null || q12 === null) continue;
+    acc = bn128F12Mul(acc, bn128MillerRaw(q12, p12));
+  }
+  const ok = bn128F12Eq(bn128FinalExp(acc), bn128F12One());
+  return {
+    precompile: "pairing", address: gas.address, pairs: String(pairs),
+    succeeded: "true",
+    output: "0x" + (ok ? "0".repeat(63) + "1" : "0".repeat(64)),
+    outputBytes: "32", totalGas: gas.totalGas
   };
 }
 
@@ -10076,6 +10495,21 @@ if (typeof document !== "undefined") {
         : `${r.precompile} precompile (${r.address}): the call FAILS — a coordinate at or above the field prime, or a point that is not on the curve y² = x³ + 3: no output, and a failing precompile call consumes all the gas supplied to it, so the caller's cost is whatever it forwarded (the scheduled charge is ${r.totalGas}). Unlike P256VERIFY below, this precompile does not return empty and carry on — the call itself fails. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* alt_bn128 pairing check (applied) */
+    const bnpBtn = document.getElementById("bnp-btn");
+    if (bnpBtn) bnpBtn.addEventListener("click", () => {
+      const r = bn128PairingCalc(
+        document.getElementById("bnp-input").value);
+      const el = document.getElementById("bnp-out");
+      if (r === null) {
+        el.textContent = "Check the input: the pairing input is hex bytes whose length is a multiple of 192 (one G1 point and one G2 point per pair), at most 16 pairs on this page — the gas calculator above prices any count.";
+        return;
+      }
+      el.textContent = r.succeeded === "true"
+        ? `pairing precompile (${r.address}) result: ${r.output} — the 32-byte word holding ${r.output.endsWith("1") ? "1: the product of the pairings is the identity, so the check passes" : "0: the product of the pairings is not the identity, so the check does not pass"}, over ${r.pairs} pair(s). Gas: ${r.totalGas} — 45,000 base + 34,000 per pair, from the gas calculator above. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`
+        : `pairing precompile (${r.address}): the call FAILS — a G1 point off the curve or with a coordinate at or above the field prime, or a G2 point off the twist, outside the prime-order subgroup, or with a component at or above the field prime, in one of the ${r.pairs} pair(s): no output, and a failing precompile call consumes all the gas supplied to it, so the caller's cost is whatever it forwarded (the scheduled charge is ${r.totalGas}). Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* BLAKE2f precompile gas */
     const b2Btn = document.getElementById("b2-btn");
     if (b2Btn) b2Btn.addEventListener("click", () => {
@@ -11182,5 +11616,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

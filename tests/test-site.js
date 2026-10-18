@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=100"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=101"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -785,6 +785,43 @@ check("personal_sign rejects malformed signatures and non-canonical forms",
   app.eip191Digest(null) === null);
 check("signed message tool section present in index.html", html.includes("msg-btn") && html.includes("Signed message verification"));
 check("EIP-191 source linked from index.html", html.includes("https://eips.ethereum.org/EIPS/eip-191"));
+/* EIP-191 personal_sign digest calculator — the standalone tool for the
+   digest function above (its construction half; the verifier is the
+   checking half, as the permit digest / verify tools pair up). Vectors
+   from the independent pure-Python oracle (oracle-personal-digest.py,
+   reusing oracle-auth7702.py's Keccak-256 code; anchored on the three
+   digest values the checks above already carry, the hand-written
+   prefill payload 0x19 ‖ "Ethereum Signed Message:\n11Hello, Bob!",
+   and the byte-length anchors: 'héllo wörld' is 11 characters but 13
+   UTF-8 bytes, and the decimal length field widens at 10 bytes). */
+const PDIG_VECTORS = [
+  ["Hello, Bob!", "0x19457468657265756d205369676e6564204d6573736167653a0a313148656c6c6f2c20426f6221", "0xaf0a369c7440ada5f06e224551e765ad1acc4ec60aa08944e72415249fa9213e"],
+  ["", "0x19457468657265756d205369676e6564204d6573736167653a0a30", "0x5f35dce98ba4fba25530a026ed80b2cecdaa31091ba4958b99b52ea1d068adad"],
+  ["héllo wörld", "0x19457468657265756d205369676e6564204d6573736167653a0a313368c3a96c6c6f2077c3b6726c64", "0xc0e106c473d00fbb6310fe337d41489c46889c4cc6ca39b76702ce7d90d62983"],
+  ["123456789", "0x19457468657265756d205369676e6564204d6573736167653a0a39313233343536373839", "0x5e275fae17e242926c01a96878c42e32848ab37e3bcdda430bb9f501e2f8051a"],
+  ["1234567890", "0x19457468657265756d205369676e6564204d6573736167653a0a313031323334353637383930", "0x9a35ecfdc7084bef44284c01666b2cb83e83e399db140f387883dfe61fea42dd"],
+  ["line one\nline two", "0x19457468657265756d205369676e6564204d6573736167653a0a31376c696e65206f6e650a6c696e652074776f", "0xd12b847245840f68e885e544efa0ebee0cffa24b745e3fb9c71e9ca57f223def"],
+  ["gm ✅", "0x19457468657265756d205369676e6564204d6573736167653a0a36676d20e29c85", "0xac0e4c6640b1b80f00e8612ab8e0b602d37fa8b225bb2bd339ffa77639815179"]
+];
+check("EIP-191 personal_sign digest calculator reproduces the oracle payloads and digests (Python oracle)",
+  PDIG_VECTORS.every(([m, p, d]) => { const r = app.personalDigestCalc(m); return r !== null && r.payload === p && r.digest === d; }));
+check("EIP-191 personal_sign digest calculator agrees with the digest function the verifier uses, on every oracle row",
+  PDIG_VECTORS.every(([m, , d]) => app.personalDigestCalc(m)?.digest === app.eip191Digest(m) && d === app.eip191Digest(m)));
+check("EIP-191 personal_sign digest calculator: the payload length counts bytes and widens at 10 bytes",
+  app.personalDigestCalc("héllo wörld").payload.startsWith("0x19457468657265756d205369676e6564204d6573736167653a0a3133") &&
+  (app.personalDigestCalc("1234567890").payload.length - app.personalDigestCalc("123456789").payload.length) === 4);
+check("EIP-191 personal_sign digest calculator: the prefill signature verifies over the calculator's digest",
+  (() => { const r = app.personalDigestCalc("Hello, Bob!"); return r !== null && app.verifyPersonalSignature("Hello, Bob!", SIG_HELLO)?.digest === r.digest; })());
+check("EIP-191 personal_sign digest calculator refuses non-string input",
+  app.personalDigestCalc(null) === null &&
+  app.personalDigestCalc(42) === null &&
+  app.personalDigestCalc(undefined) === null);
+check("EIP-191 personal_sign digest calculator: the index prefill is the verifier's worked example ('Hello, Bob!')",
+  (() => { const m = /id="pdig-message"[^>]*>([^<]*)</.exec(html); return m !== null && m[1] === "Hello, Bob!" &&
+    app.personalDigestCalc(m[1])?.digest === "0xaf0a369c7440ada5f06e224551e765ad1acc4ec60aa08944e72415249fa9213e"; })());
+check("EIP-191 personal_sign digest tool section present in index.html", html.includes("pdig-btn") && html.includes("EIP-191 personal_sign digest calculator"));
+check("EIP-191 personal_sign digest controls labelled",
+  ["pdig-message"].every(id => html.includes(`for="${id}"`)));
 check("EIP-712 verify controls labelled",
   ["v712-dname", "v712-dversion", "v712-dchain", "v712-dcontract", "v712-from-name", "v712-from-wallet", "v712-to-name", "v712-to-wallet", "v712-contents", "v712-sig", "v712-expect"].every(id => html.includes(`for="${id}"`)));
 

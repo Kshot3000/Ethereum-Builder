@@ -1605,6 +1605,15 @@ dave</textarea>
     </div>
 
     <div class="tool">
+      <h3>EIP-191 personal_sign digest calculator</h3>
+      <p>Before a signed message can be verified (the tool below), someone has to <em>produce</em> the signature — and what a wallet's <code>personal_sign</code> actually signs is not the message but this digest: <code>keccak256("\x19Ethereum Signed Message:\n" ‖ length ‖ message)</code> under <a href="https://eips.ethereum.org/EIPS/eip-191">EIP-191</a>. This calculator is the construction half of the pair, the way the EIP-2612 permit digest calculator above pairs with its verifier: give it the message and it returns the digest to sign and the exact payload bytes that were hashed, so a hand-built signing payload can be checked byte for byte. The prefill is the verification tool's worked example, “Hello, Bob!”, whose digest is <code>0xaf0a…9213e</code> and whose signature below recovers to the widely published address of private key 1. The detail that bites is visible in the payload: the length is the length in <em>bytes</em>, written as decimal text — type “héllo wörld” (11 characters) and the payload carries the length <code>13</code>, because <code>é</code> and <code>ö</code> are two UTF-8 bytes each; at 10 bytes the length field itself widens from one character to two. The <code>0x19</code> prefix guarantees the payload can never double as a transaction. Computes a digest only: nothing is signed here, no key is used or asked for, and no chain is queried.</p>
+      <label for="pdig-message">Message (exactly as it will be signed)</label>
+      <textarea id="pdig-message" rows="2" spellcheck="false">Hello, Bob!</textarea>
+      <button id="pdig-btn" type="button">Calculate message digest</button>
+      <p id="pdig-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Signed message verification (EIP-191 personal_sign)</h3>
       <p>When a wallet pops up “sign this message”, it does not sign the message itself: <a href="https://eips.ethereum.org/EIPS/eip-191">EIP-191</a>'s <code>personal_sign</code> signs the digest <code>keccak256("\x19Ethereum Signed Message:\n" ‖ length ‖ message)</code> — the prefix guarantees the payload can never double as a transaction, and the length is the length in <em>bytes</em>, so a multibyte character counts more than once. Paste a message and the 65-byte signature a wallet returned and this tool rebuilds that digest and recovers the signer — the check behind “prove you control this address”, done with no key and no chain query. The defaults are a worked example whose signer (<code>0x7E5F…5Bdf</code>, the widely published address of private key 1) you can check the recovery against. Strict in the same way as the recovery tool above: the signature must be exactly 65 bytes and <code>s</code> must be the canonical low-<code>s</code> form, or it is refused rather than half-verified. Verifies a signature only: nothing is signed, no key is used or asked for.</p>
       <label for="msg-message">Message (exactly as signed)</label>
@@ -1750,6 +1759,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=100"></script>
+<script src="app.js?v=101"></script>
 </body>
 </html>

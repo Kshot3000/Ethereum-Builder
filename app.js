@@ -2289,6 +2289,34 @@ function eip191Digest(message) {
   for (let i = 0; i < prefix.length; i++) prefixBytes.push(prefix.charCodeAt(i) & 0xff);
   return "0x" + keccak256Bytes([...prefixBytes, ...msgBytes]);
 }
+/* ---------- EIP-191 personal_sign digest calculator ----------
+   The digest function above is what the verifier below uses
+   internally, but until now it had no tool of its own — the
+   EIP-2612 permit digest, the EIP-712 mail digest and the EIP-7702
+   authorization digest all have standalone calculators, and a
+   developer constructing a message to sign needs exactly this
+   digest (and the exact payload bytes that are hashed) without
+   first supplying a signature to the verifier. This calculator
+   returns both: the payload 0x19 ‖ "Ethereum Signed Message:\n" ‖
+   <decimal byte length> ‖ <message UTF-8 bytes> and its
+   Keccak-256. The length is the length in BYTES written as decimal
+   text, so a multibyte character counts more than once — visible
+   in the payload, where "héllo wörld" (11 characters) carries the
+   length "13". Verified in the tests against an independent
+   pure-Python oracle (oracle-personal-digest.py, reusing
+   oracle-auth7702.py's Keccak-256 code, anchored on the three
+   digest values the digest tests already carry, the hand-written
+   prefill payload, and the byte-length anchors).
+   Computes a digest only — nothing is signed. */
+function personalDigestCalc(message) {
+  if (typeof message !== "string") return null;
+  const msgBytes = utf8Bytes(message);
+  const prefix = "\x19Ethereum Signed Message:\n" + String(msgBytes.length);
+  const prefixBytes = [];
+  for (let i = 0; i < prefix.length; i++) prefixBytes.push(prefix.charCodeAt(i) & 0xff);
+  const payloadBytes = [...prefixBytes, ...msgBytes];
+  return { digest: "0x" + keccak256Bytes(payloadBytes), payload: "0x" + bytesToHex(payloadBytes) };
+}
 function verifyPersonalSignature(message, signature) {
   const digest = eip191Digest(message);
   if (digest === null || typeof signature !== "string") return null;
@@ -7963,6 +7991,20 @@ if (typeof document !== "undefined") {
         : `Signer address: ${addr}. Recovered locally from the digest and signature alone — no private key involved, nothing signed, and no chain queried. The same recovery applies on Ethereum, Base, Unichain and Robinhood Chain.`;
     });
 
+    /* EIP-191 personal_sign digest calculator */
+    const pdigBtn = document.getElementById("pdig-btn");
+    if (pdigBtn) pdigBtn.addEventListener("click", () => {
+      const el = document.getElementById("pdig-out");
+      const message = document.getElementById("pdig-message").value;
+      const r = personalDigestCalc(message);
+      if (r === null) {
+        el.textContent = "That message could not be read — the field should hold the message text exactly as it will be signed.";
+        return;
+      }
+      const byteLen = utf8Bytes(message).length;
+      el.textContent = `EIP-191 digest (what the wallet signs): ${r.digest} · Payload hashed: ${r.payload} — 0x19, the words "Ethereum Signed Message:", a newline, the message length in bytes as decimal text, then the message itself. Your message is ${byteLen} byte${byteLen === 1 ? "" : "s"}${message.length !== byteLen ? ` but only ${message.length} character${message.length === 1 ? "" : "s"} — the length in the payload counts bytes, so multibyte characters count more than once` : ""}. Sign this digest with your key (a wallet's personal_sign does exactly this), then check the result with the verification tool below. Computed locally — nothing is signed, no key is used or asked for, and no chain is queried.`;
+    });
+
     /* Signed message verification (EIP-191 personal_sign) */
     const msgBtn = document.getElementById("msg-btn");
     if (msgBtn) msgBtn.addEventListener("click", () => {
@@ -9708,5 +9750,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

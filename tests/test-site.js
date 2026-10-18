@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=104"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=105"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -6388,6 +6388,85 @@ check("p256verify verification: the index prefill is the RFC 6979 sample vector"
 check("p256verify verification tool section present in index.html", html.includes("p256v-btn") && html.includes("P256VERIFY precompile verification"));
 check("p256verify verification controls labelled",
   ["p256v-hash", "p256v-r", "p256v-s", "p256v-x", "p256v-y"].every(id => html.includes(`for="${id}"`)));
+
+/* alt_bn128 point arithmetic (ecAdd / ecMul applied) — the applied
+   counterpart of the alt_bn128 gas tool above (which quotes the
+   flat 150 / 6,000 and does not read the points). Vectors from the
+   independent pure-Python oracle (oracle-bn128-calc.py; TWO
+   implementations — affine and Jacobian — asserted to agree on
+   every row, anchored in-script BEFORE emitting on go-ethereum's
+   official precompile testdata: all 16 bn256Add and 19
+   bn256ScalarMul rows of the ethereum/tests vectors reproduce,
+   and on the group order — r * G is infinity and (r - 1) * G is
+   -G computed with no scalar reduction. The anchors caught two
+   from-memory constants — the published 2 * G coordinates and a
+   wrong group order — before any vector was trusted.) */
+const BN128_VECTORS = [
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002"], ["ecadd", "true", "0x030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd315ed738c0e0a7c92e7845f96b2ae9c0a68a6a449e3538fc7ff3ebf7a5a18a2c4", "150"]],  // prefill: G + G = 2G (computed doubling, anchors above)
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000000000000000000000000000"], ["ecadd", "true", "0x00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002", "150"]],  // G + infinity = G
+  [["0x0000000000000000000000000000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000000000000000000000000000"], ["ecadd", "true", "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "150"]],  // infinity + infinity = infinity
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000000000000000000000000000001", "0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45"], ["ecadd", "true", "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "150"]],  // G + (-G) = infinity
+  [["0x030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd3", "0x15ed738c0e0a7c92e7845f96b2ae9c0a68a6a449e3538fc7ff3ebf7a5a18a2c4", "0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002"], ["ecadd", "true", "0x0769bf9ac56bea3ff40232bcb1b6bd159315d84715b8e679f2d355961915abf02ab799bee0489429554fdb7c8d086475319e63b40b9c5b57cdf1ff3dd9fe2261", "150"]],  // 2G + G = 3G
+  [["0x0000000000000000000000000000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000000000000000000000000000", "0x030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd3", "0x15ed738c0e0a7c92e7845f96b2ae9c0a68a6a449e3538fc7ff3ebf7a5a18a2c4"], ["ecadd", "true", "0x030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd315ed738c0e0a7c92e7845f96b2ae9c0a68a6a449e3538fc7ff3ebf7a5a18a2c4", "150"]],  // infinity + 2G = 2G
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000003", "0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002"], ["ecadd", "false", "0x", "150"]],  // first point off curve (1, 3): 9 != 1 + 3 — call fails
+  [["0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002"], ["ecadd", "false", "0x", "150"]],  // first point x = p (at the modulus) — call fails
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000000000000000000000000000005", "0x0000000000000000000000000000000000000000000000000000000000000005"], ["ecadd", "false", "0x", "150"]],  // second point off curve (5, 5): 25 != 125 + 3 — call fails
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000000000000000000000000000002", null], ["ecmul", "true", "0x030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd315ed738c0e0a7c92e7845f96b2ae9c0a68a6a449e3538fc7ff3ebf7a5a18a2c4", "6000"]],  // prefill twin: G * 2 = 2G, the ecAdd prefill's sum
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000000000000000000000000000000", null], ["ecmul", "true", "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "6000"]],  // G * 0 = infinity
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000000000000000000000000000001", null], ["ecmul", "true", "0x00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002", "6000"]],  // G * 1 = G
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000000000000000000000000000003", null], ["ecmul", "true", "0x0769bf9ac56bea3ff40232bcb1b6bd159315d84715b8e679f2d355961915abf02ab799bee0489429554fdb7c8d086475319e63b40b9c5b57cdf1ff3dd9fe2261", "6000"]],  // G * 3 = 3G — equals the ecAdd 2G + G row
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001", null], ["ecmul", "true", "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "6000"]],  // G * r = infinity (r is the group order)
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000002", null], ["ecmul", "true", "0x00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002", "6000"]],  // G * (r + 1) = G — the scalar acts modulo r
+  [["0x17c139df0efee0f766bc0204762b774362e4ded88953a39ce849a8a7fa163fa9", "0x01e0559bacb160664764a357af8a9fe70baa9258e0b959273ffc5718c6d4cc7c", "0xdeadbeef1234567890abcdef00112233445566778899aabbccddeeff00112233", null], ["ecmul", "true", "0x285afd23919feb25ba83f4e2391506a4a4310fef78b95e37916d46145fec34d611f791902cd92236994ad3957930c2ce8e0e07622b5a28b3a3d2c0d57c8fb9ea", "6000"]],  // 5G * 0xdeadbeef...2233 — full-width scalar
+  [["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000003", "0x0000000000000000000000000000000000000000000000000000000000000002", null], ["ecmul", "false", "0x", "6000"]],  // point off curve (1, 3) — call fails
+  [["0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd46", "0x0000000000000000000000000000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000000000000000000000000000002", null], ["ecmul", "false", "0x", "6000"]],  // x = p - 1 canonical but off curve — call fails
+  [["0x0000000000000000000000000000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000000000000000000000000007", null], ["ecmul", "true", "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "6000"]],  // infinity * 7 = infinity
+];
+check("bn128 arithmetic reproduces the oracle results (Python oracle)",
+  BN128_VECTORS.every(([inp, exp]) => { const r = app.bn128Calc(exp[0], ...inp); return r !== null &&
+    r.precompile === exp[0] && r.succeeded === exp[1] && r.output === exp[2] && r.totalGas === exp[3]; }));
+check("bn128 arithmetic gas agrees with the hub's alt_bn128 gas tool on every oracle row",
+  BN128_VECTORS.every(([inp, exp]) => { const r = app.bn128Calc(exp[0], ...inp); const g = app.bn128GasCalc(exp[0], null);
+    return r !== null && g !== null && r.totalGas === g.totalGas && r.address === g.address; }));
+check("bn128 arithmetic: the prefills meet — G + G by ecAdd and G * 2 by ecMul both return 2G",
+  (() => { const G1 = "0x" + "00".repeat(31) + "01", G2 = "0x" + "00".repeat(31) + "02";
+    const TWO_G = "0x030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd315ed738c0e0a7c92e7845f96b2ae9c0a68a6a449e3538fc7ff3ebf7a5a18a2c4";
+    const a = app.bn128Calc("ecadd", G1, G2, G1, G2), m = app.bn128Calc("ecmul", G1, G2, G2, null);
+    return a !== null && m !== null && a.output === TWO_G && m.output === TWO_G && a.totalGas === "150" && m.totalGas === "6000"; })());
+check("bn128 arithmetic: an invalid point is a FAILED CALL, not a refusal — coordinate at p, off-curve points in either position land there with no output",
+  (() => { const G1 = "0x" + "00".repeat(31) + "01", G2 = "0x" + "00".repeat(31) + "02";
+    const P = "0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47";
+    const bad = [
+      app.bn128Calc("ecadd", P, G2, G1, G2),
+      app.bn128Calc("ecadd", G1, "0x" + "00".repeat(31) + "03", G1, G2),
+      app.bn128Calc("ecadd", G1, G2, "0x" + "00".repeat(31) + "05", "0x" + "00".repeat(31) + "05"),
+      app.bn128Calc("ecmul", G1, "0x" + "00".repeat(31) + "03", G2, null)];
+    return bad.every(r => r !== null && r.succeeded === "false" && r.output === "0x" && r.outputBytes === "0"); })());
+check("bn128 arithmetic: ecMul never reads the second point's fields — garbage there still computes (the gas tool's flat-op pair-count behaviour)",
+  (() => { const G1 = "0x" + "00".repeat(31) + "01", G2 = "0x" + "00".repeat(31) + "02";
+    const r = app.bn128Calc("ecmul", G1, G2, G2, "not hex at all");
+    return r !== null && r.succeeded === "true" &&
+      r.output === "0x030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd315ed738c0e0a7c92e7845f96b2ae9c0a68a6a449e3538fc7ff3ebf7a5a18a2c4"; })());
+check("bn128 arithmetic refuses an unknown operation (pairing included), a field that is not exactly 32 bytes, odd-length or non-hex input and null inputs",
+  app.bn128Calc("pairing", "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32)) === null &&
+  app.bn128Calc("ECADD", "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32)) === null &&
+  app.bn128Calc("ecadd", "0x" + "00".repeat(31), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32)) === null &&
+  app.bn128Calc("ecadd", "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(33), "0x" + "00".repeat(32)) === null &&
+  app.bn128Calc("ecmul", "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x0", null) === null &&
+  app.bn128Calc("ecmul", "0xzz" + "00".repeat(31), "0x" + "00".repeat(32), "0x" + "00".repeat(32), null) === null &&
+  app.bn128Calc(null, "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32)) === null &&
+  app.bn128Calc("ecadd", null, "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32)) === null &&
+  app.bn128Calc("ecadd", "0x" + "00".repeat(32), "0x" + "00".repeat(32), "0x" + "00".repeat(32), null) === null);
+check("bn128 arithmetic: the index prefill is G with G and scalar 2 — ecAdd returns 2G",
+  (() => { const g = id => { const m = new RegExp(`id="${id}"[^>]*value="([^"]*)"`).exec(html); return m && m[1]; };
+    const sel = /id="bnc-op"[^>]*>[\s\S]*?<option value="([^"]*)" selected/.exec(html);
+    const r = app.bn128Calc(sel && sel[1], g("bnc-x1"), g("bnc-y1"), g("bnc-x2"), g("bnc-y2"));
+    const m = app.bn128Calc("ecmul", g("bnc-x1"), g("bnc-y1"), g("bnc-k"), null);
+    return r !== null && m !== null && r.output === m.output &&
+      r.output === "0x030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd315ed738c0e0a7c92e7845f96b2ae9c0a68a6a449e3538fc7ff3ebf7a5a18a2c4"; })());
+check("bn128 arithmetic tool section present in index.html", html.includes("bnc-btn") && html.includes("alt_bn128 precompile calculator"));
+check("bn128 arithmetic controls labelled",
+  ["bnc-op", "bnc-x1", "bnc-y1", "bnc-x2", "bnc-y2", "bnc-k"].every(id => html.includes(`for="${id}"`)));
 
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

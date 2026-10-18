@@ -705,6 +705,25 @@
     </div>
 
     <div class="tool">
+      <h3>alt_bn128 precompile calculator — ecAdd and ecMul applied (EIP-196)</h3>
+      <p>The gas calculator above prices <code>ecAdd</code> (0x06) and <code>ecMul</code> (0x07) from the operation alone; this one runs them — G1 point arithmetic on the alt_bn128 curve, <code>y² = x³ + 3</code> over the field of prime order 21888242871839275222246405745257275088696311157297823662689037894645226208583. The curve coefficient is 0, so the doubling slope is 3x² / 2y — the shortcut that does <em>not</em> carry to secp256r1 further down (there the coefficient is p − 3 and the slope is (3x² + a) / 2y). The point at infinity is written (0, 0) on input and output alike. The group order is the prime 21888242871839275222246405745257275088548364400416034343698204186575808495617 and the cofactor is 1, so every on-curve point is in the group and there is no subgroup check to run — unlike the pairing check's G2 elements, which need one; the pairing check itself stays gas-only here, because its arithmetic lives in the quadratic extension field, work of a different order. Validity is strict, per <a href="https://eips.ethereum.org/EIPS/eip-196">EIP-196</a>: a coordinate at or above the field prime, or a non-infinity point off the curve, makes the precompile call <em>fail</em> — no output, and a failing precompile call consumes all the gas supplied to it, so the price shown is the scheduled flat charge (150 / 6,000, from the gas calculator above) that a successful call pays. That failure mode is a deliberate contrast with <code>P256VERIFY</code> below, which returns empty and never reverts. The ecMul scalar is any 256-bit word and acts modulo the group order by the group law alone: the order itself times a point is infinity, and one more than the order gives the point back. The prefilled fields make the two operations meet: the generator G = (1, 2) added to itself, and the same point times the scalar 2, both return 2·G = (0x030644e7…87cfd3, 0x15ed738c…5a18a2c4) — at 150 by addition and 6,000 by multiplication, which is what those prices buy. Verified against go-ethereum's official precompile testdata (all 16 ecAdd and 19 ecMul rows of the ethereum/tests vectors) before the values on this page were trusted. Honest scope: this runs the precompiles' own arithmetic only — the <code>CALL</code> or <code>STATICCALL</code> that invokes them charges its own terms separately (see the CALL calculator). Computed locally; nothing is called and no chain is queried.</p>
+      <label for="bnc-op">Precompile</label>
+      <select id="bnc-op"><option value="ecadd" selected>ecAdd — address 0x06 (flat 150)</option><option value="ecmul">ecMul — address 0x07 (flat 6,000)</option></select>
+      <label for="bnc-x1">First point x (exactly 32 bytes, hex — (0, 0) is the point at infinity)</label>
+      <input id="bnc-x1" type="text" spellcheck="false" value="0x0000000000000000000000000000000000000000000000000000000000000001">
+      <label for="bnc-y1">First point y (exactly 32 bytes, hex)</label>
+      <input id="bnc-y1" type="text" spellcheck="false" value="0x0000000000000000000000000000000000000000000000000000000000000002">
+      <label for="bnc-x2">Second point x (ecAdd only — exactly 32 bytes, hex; ecMul never reads this)</label>
+      <input id="bnc-x2" type="text" spellcheck="false" value="0x0000000000000000000000000000000000000000000000000000000000000001">
+      <label for="bnc-y2">Second point y (ecAdd only — exactly 32 bytes, hex; ecMul never reads this)</label>
+      <input id="bnc-y2" type="text" spellcheck="false" value="0x0000000000000000000000000000000000000000000000000000000000000002">
+      <label for="bnc-k">Scalar (ecMul only — exactly 32 bytes, hex; ecAdd never reads this; acts modulo the group order)</label>
+      <input id="bnc-k" type="text" spellcheck="false" value="0x0000000000000000000000000000000000000000000000000000000000000002">
+      <button id="bnc-btn" type="button">Compute alt_bn128 point arithmetic</button>
+      <p id="bnc-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>BLAKE2f precompile gas calculator (EIP-152)</h3>
       <p>The last of the pre-Istanbul-era precompiled contracts the hub had not priced sits at address 0x09: the compression function F of the BLAKE2b hash, added by <a href="https://eips.ethereum.org/EIPS/eip-152">EIP-152</a> at Istanbul so contracts can run one BLAKE2b compression natively (the building block Zcash interoperability work needed). Its input is fixed-width — exactly 213 bytes: a 4-byte big-endian rounds count, the 64-byte state, the 128-byte message block, the 16-byte offset counters, and a 1-byte final-block flag. Its price is unlike every other precompile on this page: there is no base and no per-word or per-pair term — the charge is the rounds value itself, 1 gas per round, so the total is simply the number in the input's first four bytes. Zero rounds charges zero for the precompile's own cost, and 12 rounds — the round count BLAKE2b itself performs for one compression — charges exactly 12. Because those four bytes are a uint32, the count runs from 0 to 4,294,967,295 and nothing wider can occur in a real input. As with the precompiles above, there is no <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> access term: the precompiles start warm. The prefilled compression — 12 rounds — costs exactly 12. Honest scope: this prices the precompile's own charge only — the <code>CALL</code> or <code>STATICCALL</code> that invokes it charges its own terms separately (see the CALL calculator); an input that is not exactly 213 bytes, or whose final flag is not 0 or 1, fails for a non-gas reason that is not modelled, and the rounds count is a value <em>you</em> supply, not execution state this page reads. Computed locally; nothing is called and no chain is queried.</p>
       <label for="b2-rounds">Rounds (the uint32 in the input's first 4 bytes — the gas is this count, at 1 per round)</label>
@@ -1806,6 +1825,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=104"></script>
+<script src="app.js?v=105"></script>
 </body>
 </html>

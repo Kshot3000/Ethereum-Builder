@@ -4290,6 +4290,132 @@ function bn128GasCalc(nameStr, pairsStr) {
   };
 }
 
+/* ---------- alt_bn128 point arithmetic (ecAdd / ecMul applied) ----------
+   The applied counterpart of the gas calculator above: that tool
+   quotes ecAdd's flat 150 and ecMul's flat 6,000 from the
+   operation alone and does not read the points — this one takes
+   the points (and, for ecMul, the scalar) and runs the G1
+   arithmetic itself, exactly as the precompiles at 0x06 and
+   0x07 do. The pairing check (0x08) is NOT applied here: its
+   arithmetic lives in the quadratic extension field and the
+   pairing itself, work of a different order, so it stays
+   gas-only like the BLS and KZG checks. The curve is y^2 = x^3 + 3
+   over the field of prime order
+   p = 21888242871839275222246405745257275088696311157297823662689037894645226208583:
+   the coefficient a is 0, so the doubling slope is 3x^2 / 2y —
+   the shortcut that does NOT carry to secp256r1 below (there
+   a = p - 3 and the slope is (3x^2 + a) / 2y). The point at
+   infinity is written (0, 0) on input and output alike. The
+   group order is the prime
+   r = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+   and the cofactor is 1, so every on-curve point is in the
+   prime-order group and NO subgroup check exists for G1 —
+   unlike the pairing check's G2 elements, which need one.
+   Validity, per EIP-196: a coordinate at or above p, or a
+   non-infinity point off the curve, makes the precompile call
+   FAIL — the caller sees a failed call with no output, a
+   deliberate contrast with P256VERIFY below, which returns
+   empty and never reverts. A failed precompile call consumes
+   all the gas supplied to it (as the BLS section notes for its
+   family), so the totalGas reported here is the scheduled flat
+   charge from bn128GasCalc — what a successful call pays —
+   cross-checked against it in tests on every row. The ecMul
+   scalar is any 256-bit word and acts modulo r by the group
+   law alone (r * P is infinity, (r + 1) * P is P — both pinned
+   in tests); the multiplication is a full double-and-add over
+   the scalar as given, with no explicit reduction. Malformed
+   input to THIS page is refused with null, as the other
+   calculators refuse unparseable input: the operation must be
+   ecadd or ecmul and each field it reads must be exactly 32
+   bytes of hex. For ecMul the second point's fields are never
+   read at all, exactly as the gas tool never reads the pair
+   count for the flat operations. Verified in the tests against
+   an independent pure-Python oracle (oracle-bn128-calc.py)
+   carrying TWO implementations (affine and Jacobian coordinates)
+   asserted to agree on every vector, anchored in-script BEFORE
+   emitting vectors on go-ethereum's official precompile testdata
+   — all 16 bn256Add and 19 bn256ScalarMul rows of the
+   ethereum/tests vectors reproduce under both implementations —
+   and on the group order itself (r * G is infinity and
+   (r - 1) * G is -G, computed with NO scalar reduction, so the
+   check is not vacuous). The anchors earned their keep: a
+   from-memory transcription of the published 2 * G coordinates
+   failed the on-curve check and a wrong group-order constant
+   failed the testdata rows; both were discarded before any
+   vector was trusted. Computes locally; no chain is queried. */
+const BN128_P = 21888242871839275222246405745257275088696311157297823662689037894645226208583n;
+function bn128Mod(a) { const r = a % BN128_P; return r < 0n ? r + BN128_P : r; }
+function bn128OnCurve(x, y) {
+  return bn128Mod(y * y) === bn128Mod(x * x * x + 3n);
+}
+function bn128ValidPoint(x, y) {
+  if (x >= BN128_P || y >= BN128_P) return false;
+  if (x === 0n && y === 0n) return true; /* infinity encoding */
+  return bn128OnCurve(x, y);
+}
+function bn128Add(p1, p2) {
+  if (p1 === null) return p2;
+  if (p2 === null) return p1;
+  const [x1, y1] = p1, [x2, y2] = p2;
+  let lam;
+  if (x1 === x2) {
+    if (bn128Mod(y1 + y2) === 0n) return null;
+    lam = bn128Mod(3n * x1 * x1 * secpModPow(2n * y1, BN128_P - 2n, BN128_P));
+  } else {
+    lam = bn128Mod((y2 - y1) * secpModPow(x2 - x1, BN128_P - 2n, BN128_P));
+  }
+  const x3 = bn128Mod(lam * lam - x1 - x2);
+  return [x3, bn128Mod(lam * (x1 - x3) - y1)];
+}
+function bn128Mul(k, point) {
+  let result = null, addend = point, scalar = k;
+  while (scalar > 0n) {
+    if (scalar & 1n) result = bn128Add(result, addend);
+    addend = bn128Add(addend, addend);
+    scalar >>= 1n;
+  }
+  return result;
+}
+function bn128Calc(opStr, x1Hex, y1Hex, aHex, bHex) {
+  if (typeof opStr !== "string") return null;
+  const op = opStr.trim();
+  if (op !== "ecadd" && op !== "ecmul") return null;
+  const gas = bn128GasCalc(op, null);
+  if (gas === null) return null;
+  const x1Bytes = parseHexBytes(x1Hex, 32);
+  const y1Bytes = parseHexBytes(y1Hex, 32);
+  const aBytes = parseHexBytes(aHex, 32);
+  if (x1Bytes === null || y1Bytes === null || aBytes === null) return null;
+  let bBytes = null;
+  if (op === "ecadd") {
+    bBytes = parseHexBytes(bHex, 32);
+    if (bBytes === null) return null;
+  }
+  const failed = {
+    precompile: op, address: gas.address, succeeded: "false",
+    output: "0x", outputBytes: "0", totalGas: gas.totalGas
+  };
+  const x1 = bytesToBigInt(x1Bytes), y1 = bytesToBigInt(y1Bytes);
+  if (!bn128ValidPoint(x1, y1)) return failed;
+  const p1 = (x1 === 0n && y1 === 0n) ? null : [x1, y1];
+  let result;
+  if (op === "ecadd") {
+    const x2 = bytesToBigInt(aBytes), y2 = bytesToBigInt(bBytes);
+    if (!bn128ValidPoint(x2, y2)) return failed;
+    const p2 = (x2 === 0n && y2 === 0n) ? null : [x2, y2];
+    result = bn128Add(p1, p2);
+  } else {
+    result = bn128Mul(bytesToBigInt(aBytes), p1);
+  }
+  return {
+    precompile: op, address: gas.address, succeeded: "true",
+    output: result === null
+      ? "0x" + "00".repeat(64)
+      : "0x" + result[0].toString(16).padStart(64, "0") + result[1].toString(16).padStart(64, "0"),
+    outputBytes: "64", totalGas: gas.totalGas
+  };
+}
+
 /* BLAKE2f precompile gas — the BLAKE2b compression function F
    at address 0x09, added by EIP-152 at Istanbul (the EIP is
    CC0; the schedule is restated here in my own words, and the
@@ -9078,6 +9204,26 @@ if (typeof document !== "undefined") {
         : `${r.precompile} precompile (${r.address}) gas: ${r.totalGas} total — a flat charge at any input: the defined input is ${r.inputBytes} bytes, read as zero-padded if short, and the pair count is never read. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* alt_bn128 point arithmetic (ecAdd / ecMul applied) */
+    const bncBtn = document.getElementById("bnc-btn");
+    if (bncBtn) bncBtn.addEventListener("click", () => {
+      const op = document.getElementById("bnc-op").value;
+      const r = bn128Calc(
+        op,
+        document.getElementById("bnc-x1").value,
+        document.getElementById("bnc-y1").value,
+        op === "ecadd" ? document.getElementById("bnc-x2").value : document.getElementById("bnc-k").value,
+        document.getElementById("bnc-y2").value);
+      const el = document.getElementById("bnc-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the operation is ecAdd or ecMul, and each field it reads — the first point's x and y, plus the second point's x and y for ecAdd or the scalar for ecMul — is exactly 32 bytes of hex (with a 0x prefix).";
+        return;
+      }
+      el.textContent = r.succeeded === "true"
+        ? `${r.precompile} precompile (${r.address}) result: ${r.output} — the resulting point as ${r.outputBytes} bytes (x then y, each a 32-byte word; all zeros is the point at infinity). Gas: ${r.totalGas} — the flat scheduled charge from the gas calculator above. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`
+        : `${r.precompile} precompile (${r.address}): the call FAILS — a coordinate at or above the field prime, or a point that is not on the curve y² = x³ + 3: no output, and a failing precompile call consumes all the gas supplied to it, so the caller's cost is whatever it forwarded (the scheduled charge is ${r.totalGas}). Unlike P256VERIFY below, this precompile does not return empty and carry on — the call itself fails. Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* BLAKE2f precompile gas */
     const b2Btn = document.getElementById("b2-btn");
     if (b2Btn) b2Btn.addEventListener("click", () => {
@@ -10093,5 +10239,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, bn128Calc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

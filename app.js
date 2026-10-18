@@ -4337,6 +4337,130 @@ function blake2fGasCalc(roundsStr) {
   };
 }
 
+/* ---------- BLAKE2f precompile calculator (EIP-152) ----------
+   The applied counterpart of the gas calculator above: that tool
+   prices a BLAKE2f call from its rounds count alone and does not
+   run the compression — this one does. The inputs are the
+   precompile's own fields (EIP-152, Final; the compression is
+   RFC 7693 section 3.2, semantics paraphrased): the rounds count,
+   the 64-byte state h, the 128-byte message block m, the 16-byte
+   offset counters t and the final-block flag f. The trap is the
+   byte order: almost everything else on this page reads words
+   big-endian, but h, m and both counters are LITTLE-endian words
+   — the state the page prefilled is stored in the block's own
+   order, and reading it big-endian would silently compress a
+   different state. The working vector is h followed by the IV,
+   with t0 folded into word 12, t1 into word 13 and, when f is
+   set, every bit of word 14 flipped; each round mixes the
+   message words in one sigma row's order (round r uses row
+   r mod 10) through the G function, down the columns then along
+   the diagonals; the result is h ^ v_low ^ v_high, returned as
+   64 little-endian bytes, exactly what the precompile returns.
+   Consequences pinned in tests: zero rounds runs no mixing at
+   all, so h cancels itself and the output is the IV words as
+   modified by the counters and flag alone (EIP-152's vector 4);
+   the flag matters — the same inputs with f unset land on a
+   different state (vector 6 against vector 5). The price is the
+   hub's own BLAKE2f gas function fed the rounds count,
+   cross-checked against it exactly in tests. A flag other than
+   0 or 1 is refused, as the precompile errors on it. Rounds
+   above 100,000 are refused outright as this tool's stated
+   computation cap: the precompile itself accepts any uint32
+   (EIP-152's vector 8 runs 4,294,967,295 rounds and a caller
+   pays 1 gas for each), but this page computes locally in the
+   browser, and 100,000 rounds is more than eighty times the
+   1,200-round case the EIP's own benchmark appendix uses —
+   the gas tool above still prices any uint32 count. Verified
+   in the tests against an independent pure-Python oracle
+   (oracle-blake2f-calc.py) whose anchors, asserted before it
+   emitted vectors, are EIP-152's published vectors 4-7 and
+   Python hashlib's BLAKE2b-512 digest of "abc", which the
+   prefilled compression (the parameter-mixed IV state, the
+   "abc" block, t = 3, final flag set) must reproduce word for
+   word. Computes locally; no call is made and no chain is
+   queried. */
+const BLAKE2F_CALC_MAX_ROUNDS = 100000n;
+const BLAKE2B_IV = [
+  0x6a09e667f3bcc908n, 0xbb67ae8584caa73bn, 0x3c6ef372fe94f82bn, 0xa54ff53a5f1d36f1n,
+  0x510e527fade682d1n, 0x9b05688c2b3e6c1fn, 0x1f83d9abfb41bd6bn, 0x5be0cd19137e2179n
+];
+const BLAKE2B_SIGMA = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+  [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4],
+  [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
+  [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13],
+  [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
+  [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11],
+  [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
+  [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5],
+  [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0]
+];
+const BLAKE2B_MASK64 = (1n << 64n) - 1n;
+function blake2bRotr(x, n) { return ((x >> n) | (x << (64n - n))) & BLAKE2B_MASK64; }
+function blake2bLeWords(bytes) {
+  const words = [];
+  for (let i = 0; i < bytes.length; i += 8) {
+    let w = 0n;
+    for (let j = 7; j >= 0; j--) w = (w << 8n) | BigInt(bytes[i + j]);
+    words.push(w);
+  }
+  return words;
+}
+function blake2fCalc(roundsStr, hHex, mHex, tHex, fStr) {
+  if (typeof roundsStr !== "string" || typeof fStr !== "string") return null;
+  const rs = roundsStr.trim();
+  if (!/^\d+$/.test(rs)) return null;
+  const rounds = BigInt(rs);
+  if (rounds > BLAKE2F_CALC_MAX_ROUNDS) return null;
+  if (fStr.trim() !== "0" && fStr.trim() !== "1") return null;
+  const hBytes = parseHexBytes(hHex, 64);
+  const mBytes = parseHexBytes(mHex, 128);
+  const tBytes = parseHexBytes(tHex, 16);
+  if (hBytes === null || mBytes === null || tBytes === null) return null;
+  const h = blake2bLeWords(hBytes);
+  const m = blake2bLeWords(mBytes);
+  const t = blake2bLeWords(tBytes);
+  const v = [...h, ...BLAKE2B_IV];
+  v[12] ^= t[0];
+  v[13] ^= t[1];
+  if (fStr.trim() === "1") v[14] ^= BLAKE2B_MASK64;
+  const G = (a, b, c, d, x, y) => {
+    v[a] = (v[a] + v[b] + x) & BLAKE2B_MASK64;
+    v[d] = blake2bRotr(v[d] ^ v[a], 32n);
+    v[c] = (v[c] + v[d]) & BLAKE2B_MASK64;
+    v[b] = blake2bRotr(v[b] ^ v[c], 24n);
+    v[a] = (v[a] + v[b] + y) & BLAKE2B_MASK64;
+    v[d] = blake2bRotr(v[d] ^ v[a], 16n);
+    v[c] = (v[c] + v[d]) & BLAKE2B_MASK64;
+    v[b] = blake2bRotr(v[b] ^ v[c], 63n);
+  };
+  const nRounds = Number(rounds);
+  for (let r = 0; r < nRounds; r++) {
+    const s = BLAKE2B_SIGMA[r % 10];
+    G(0, 4, 8, 12, m[s[0]], m[s[1]]);
+    G(1, 5, 9, 13, m[s[2]], m[s[3]]);
+    G(2, 6, 10, 14, m[s[4]], m[s[5]]);
+    G(3, 7, 11, 15, m[s[6]], m[s[7]]);
+    G(0, 5, 10, 15, m[s[8]], m[s[9]]);
+    G(1, 6, 11, 12, m[s[10]], m[s[11]]);
+    G(2, 7, 8, 13, m[s[12]], m[s[13]]);
+    G(3, 4, 9, 14, m[s[14]], m[s[15]]);
+  }
+  const outBytes = [];
+  for (let i = 0; i < 8; i++) {
+    let w = h[i] ^ v[i] ^ v[i + 8];
+    for (let j = 0; j < 8; j++) { outBytes.push(Number(w & 0xffn)); w >>= 8n; }
+  }
+  const gas = blake2fGasCalc(rs);
+  if (gas === null) return null;
+  return {
+    output: "0x" + bytesToHex(outBytes),
+    rounds: rounds.toString(), finalBlock: fStr.trim() === "1" ? "true" : "false",
+    totalGas: gas.totalGas
+  };
+}
+
 /* KZG point evaluation precompile gas — the precompile at
    address 0x0a added by EIP-4844 at Cancun (Deneb) so a
    contract can verify that a blob's polynomial evaluates to
@@ -8862,6 +8986,23 @@ if (typeof document !== "undefined") {
       el.textContent = `BLAKE2f precompile (${r.address}) gas: ${r.totalGas} total — ${r.rounds} round(s) at ${r.perRoundGas} gas per round, over its fixed ${r.inputBytes}-byte input. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* BLAKE2f precompile calculator */
+    const b2cBtn = document.getElementById("b2c-btn");
+    if (b2cBtn) b2cBtn.addEventListener("click", () => {
+      const r = blake2fCalc(
+        document.getElementById("b2c-rounds").value,
+        document.getElementById("b2c-h").value,
+        document.getElementById("b2c-m").value,
+        document.getElementById("b2c-t").value,
+        document.getElementById("b2c-f").value);
+      const el = document.getElementById("b2c-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the rounds count is a whole number from 0 to 100,000 (this tool's computation cap — the precompile itself accepts any uint32), the state is exactly 64 bytes of hex, the message block exactly 128 bytes, the counters exactly 16 bytes, and the final-block flag is 0 or 1.";
+        return;
+      }
+      el.textContent = `BLAKE2f result: ${r.output} — the updated 64-byte state, each word little-endian as the precompile returns it, after ${r.rounds} round(s) with the final-block flag ${r.finalBlock}. Gas: ${r.totalGas} — the gas tool above, fed this rounds count (1 gas per round). Computed locally from the values you gave — no call is made and no chain is queried. The same precompile runs on Ethereum, Base, Unichain and Robinhood Chain.`;
+    });
+
     /* KZG point evaluation precompile gas */
     const kzgBtn = document.getElementById("kzg-btn");
     if (kzgBtn) kzgBtn.addEventListener("click", () => {
@@ -9828,5 +9969,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, bn128GasCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, p256GasCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

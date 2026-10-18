@@ -714,6 +714,23 @@
     </div>
 
     <div class="tool">
+      <h3>BLAKE2f precompile calculator — compression function F applied (EIP-152)</h3>
+      <p>The gas calculator above prices a BLAKE2f call from its rounds count alone; this one runs the compression itself, on the precompile's own fields (the compression is <a href="https://www.rfc-editor.org/rfc/rfc7693">RFC 7693</a> §3.2). The trap is the byte order: almost everything else on this page reads words big-endian, but the 64-byte state, the 128-byte message block and the two 8-byte offset counters here are <em>little-endian</em> words — read them the other way and you silently compress a different state. The working vector is the state followed by the BLAKE2b IV, with the first counter folded into word 12, the second into word 13 and, when the final-block flag is set, every bit of word 14 flipped; each round mixes the message words in one sigma row's order through the G function, and the result is state ⊕ working-low ⊕ working-high, returned as 64 little-endian bytes. Zero rounds runs no mixing at all, so the state cancels itself and the output is the IV words as modified by the counters and flag alone — <a href="https://eips.ethereum.org/EIPS/eip-152">EIP-152</a>'s test vector 4. The prefilled compression is that EIP's worked example — and BLAKE2b-512's compression of <code>abc</code>: the parameter-mixed IV state, the block <code>abc</code> zero-padded, counter 3, final flag set, 12 rounds — returning <code>0xba80a53f…4009923</code> at 12 gas. A flag other than 0 or 1 is refused, as the precompile errors on it. Honest scope: rounds above 100,000 are refused as this tool's own computation cap — the precompile itself accepts any uint32 (the EIP's vector 8 runs 4,294,967,295 rounds, and a caller pays 1 gas for each), but this page computes locally in your browser, and 100,000 rounds is more than eighty times the 1,200-round case in the EIP's benchmark appendix; the gas calculator above still prices any uint32 count. Computed locally; no call is made and no chain is queried.</p>
+      <label for="b2c-rounds">Rounds (decimal — BLAKE2b itself uses 12)</label>
+      <input id="b2c-rounds" type="text" inputmode="numeric" spellcheck="false" value="12">
+      <label for="b2c-h">State h (exactly 64 bytes, hex — 8 little-endian words)</label>
+      <input id="b2c-h" type="text" spellcheck="false" value="0x48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b">
+      <label for="b2c-m">Message block m (exactly 128 bytes, hex — 16 little-endian words)</label>
+      <input id="b2c-m" type="text" spellcheck="false" value="0x6162630000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000">
+      <label for="b2c-t">Offset counters t (exactly 16 bytes, hex — t0 then t1, each little-endian)</label>
+      <input id="b2c-t" type="text" spellcheck="false" value="0x03000000000000000000000000000000">
+      <label for="b2c-f">Final-block flag f (0 or 1)</label>
+      <input id="b2c-f" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <button id="b2c-btn" type="button">Compute BLAKE2f</button>
+      <p id="b2c-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>KZG point evaluation precompile gas calculator (EIP-4844)</h3>
       <p>One precompile remains from Cancun: at address 0x0a sits the KZG point evaluation precompile, added by <a href="https://eips.ethereum.org/EIPS/eip-4844">EIP-4844</a> so a contract can check a blob claim — that the polynomial committed to by a blob's KZG commitment evaluates to a claimed value y at a claimed point z — without holding the blob. Its input is fixed-width, exactly 192 bytes: the 32-byte versioned hash, then z and y as 32-byte field elements, then the 48-byte commitment and the 48-byte proof. Its price is the simplest on this page: a flat 50,000, whatever the values — there is no base-plus-term split and no per-word or per-element term, and unlike BLAKE2f above, whose price is read from a field inside its input, this price does not depend on the input at all. The input's length is a validity condition instead: any length other than exactly 192 fails the precompile's own length check, so this calculator refuses other lengths rather than quoting 50,000 for a call that cannot run. On success the precompile returns 64 bytes — 4096 (the field elements per blob) and the BLS modulus, each a 32-byte big-endian value. As with the precompiles above, there is no <a href="https://eips.ethereum.org/EIPS/eip-2929">EIP-2929</a> access term: the precompiles start warm. The prefilled call — one evaluation over a 192-byte input — costs exactly 50,000. Honest scope: this prices the precompile's own charge only — the <code>CALL</code> or <code>STATICCALL</code> that invokes it charges its own terms separately (see the CALL calculator); a versioned hash that does not match the commitment, a z or y that is not a canonical field element (not strictly below the BLS modulus), or a proof that does not verify all fail for non-gas reasons that are not modelled, and the input length is a value <em>you</em> supply, not execution state this page reads. Computed locally; nothing is called and no chain is queried.</p>
       <label for="kzg-len">Input length (bytes, decimal — must be exactly 192: versioned hash 32 + z 32 + y 32 + commitment 48 + proof 48)</label>
@@ -1772,6 +1789,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=102"></script>
+<script src="app.js?v=103"></script>
 </body>
 </html>

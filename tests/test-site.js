@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=102"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=103"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -6253,5 +6253,67 @@ check("modexp calculator: the index prefill is the RSA textbook example (65^17 m
 check("modexp calculator tool section present in index.html", html.includes("mxc-btn") && html.includes("MODEXP precompile calculator"));
 check("modexp calculator controls labelled",
   ["mxc-base", "mxc-exp", "mxc-mod"].every(id => html.includes(`for="${id}"`)));
+
+/* BLAKE2f precompile calculator — the applied counterpart of the
+   BLAKE2f gas tool above (which prices a call from its rounds count
+   alone and does not run the compression). Vectors from the
+   independent pure-Python oracle (oracle-blake2f-calc.py; anchored
+   in-script, before emitting, on EIP-152's published vectors 4-7
+   and on Python hashlib's BLAKE2b-512 digest of "abc", which the
+   first vector — the prefilled compression — must reproduce). */
+const B2C_VECTORS = [
+  [["12", "0x48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b", "0x6162630000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "0x03000000000000000000000000000000", "1"], ["0xba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923", "12"]],
+  [["0", "0x48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b", "0x6162630000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "0x03000000000000000000000000000000", "1"], ["0x08c9bcf367e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d282e6ad7f520e511f6c3e2b8c68059b9442be0454267ce079217e1319cde05b", "0"]],
+  [["12", "0x48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b", "0x6162630000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "0x03000000000000000000000000000000", "0"], ["0x75ab69d3190a562c51aef8d88f1c2775876944407270c42c9844252c26d2875298743e7f6d5ea2f2d3e8d226039cd31b4e426ac4f2d3d666a610c2116fde4735", "12"]],
+  [["1", "0x48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b", "0x6162630000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "0x03000000000000000000000000000000", "1"], ["0xb63a380cb2897d521994a85234ee2c181b5f844d2c624c002677e9703449d2fba551b3a8333bcdf5f2f7e08993d53923de3d64fcc68c034e717b9293fed7a421", "1"]],
+  [["12", "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "0x00000000000000000000000000000000", "0"], ["0xc75a111960503f4db80adc573d73a22f1356849f12c1e1d1ac02e9c8c91d0665cee84a462f685c8a68d709a472b99e3d05e06a695dc2d961c9eba0bd36692eee", "12"]],
+  [["10", "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f", "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f", "0xffffffffffffffff0100000000000000", "1"], ["0x6609e71c1914b1e56285c3214ae8b461813ce8d05624b5ad91a117a7787e4962e561e4e7369cfad51a21711e5ba5fc4ffc134e03f7e86029a4677274e52eb22c", "10"]],
+  [["1200", "0x48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b", "0x6162630000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "0x03000000000000000000000000000000", "1"], ["0xbedc7f4e18165dc34600826ea6857a373d9afa25d7b6f2c7365f5e9e7f7b654ca2486da7248a6a3f1fd2fc4b00233e6144a130296edf049b605d8c52b6463f70", "1200"]],
+  [["2", "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f", "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "0x00000000000000000000000000000000", "0"], ["0x6430ed19fab774c3a6ed4cec5d1dee6ea92014f6eb38363d1fafda1373e2523074ac0c686fb38f8a5eb24cb425b429bfd72d59aef627e45bdd1118f9e775f80f", "2"]],
+];
+check("blake2f calculator reproduces the oracle outputs (Python oracle)",
+  B2C_VECTORS.every(([inp, exp]) => { const r = app.blake2fCalc(...inp); return r !== null &&
+    r.output === exp[0] && r.totalGas === exp[1] && r.rounds === inp[0]; }));
+check("blake2f calculator gas agrees with the hub's BLAKE2f gas tool exactly, on every oracle row",
+  B2C_VECTORS.every(([inp]) => { const r = app.blake2fCalc(...inp); const g = app.blake2fGasCalc(inp[0]);
+    return r !== null && g !== null && r.totalGas === g.totalGas; }));
+check("blake2f calculator: the prefill is EIP-152 vector 5 — BLAKE2b-512's compression of abc",
+  app.blake2fCalc("12",
+    "0x48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b",
+    "0x616263" + "00".repeat(125), "0x03000000000000000000000000000000", "1")?.output ===
+    "0xba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923");
+check("blake2f calculator: zero rounds cancels the state — the output is the IV words modified by the counters and flag alone (EIP-152 vector 4)",
+  app.blake2fCalc("0",
+    "0x48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b",
+    "0x616263" + "00".repeat(125), "0x03000000000000000000000000000000", "1")?.output ===
+    "0x08c9bcf367e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d282e6ad7f520e511f6c3e2b8c68059b9442be0454267ce079217e1319cde05b");
+check("blake2f calculator: the final-block flag matters — the same inputs with f unset land on a different state (vector 6 against vector 5)",
+  (() => { const h = "0x48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b";
+    const m = "0x616263" + "00".repeat(125), t = "0x03000000000000000000000000000000";
+    const on = app.blake2fCalc("12", h, m, t, "1"), off = app.blake2fCalc("12", h, m, t, "0");
+    return on !== null && off !== null && on.output !== off.output &&
+      off.output === "0x75ab69d3190a562c51aef8d88f1c2775876944407270c42c9844252c26d2875298743e7f6d5ea2f2d3e8d226039cd31b4e426ac4f2d3d666a610c2116fde4735" &&
+      on.finalBlock === "true" && off.finalBlock === "false"; })());
+check("blake2f calculator accepts exactly 100,000 rounds (the tool's computation cap)",
+  app.blake2fCalc("100000", "0x" + "00".repeat(64), "0x" + "00".repeat(128), "0x" + "00".repeat(16), "0") !== null);
+check("blake2f calculator refuses rounds over the cap or over uint32, a flag other than 0 or 1, wrong field widths, odd-length or non-hex input and null inputs",
+  app.blake2fCalc("100001", "0x" + "00".repeat(64), "0x" + "00".repeat(128), "0x" + "00".repeat(16), "0") === null &&
+  app.blake2fCalc("4294967295", "0x" + "00".repeat(64), "0x" + "00".repeat(128), "0x" + "00".repeat(16), "0") === null &&
+  app.blake2fCalc("12", "0x" + "00".repeat(64), "0x" + "00".repeat(128), "0x" + "00".repeat(16), "2") === null &&
+  app.blake2fCalc("12", "0x" + "00".repeat(63), "0x" + "00".repeat(128), "0x" + "00".repeat(16), "1") === null &&
+  app.blake2fCalc("12", "0x" + "00".repeat(64), "0x" + "00".repeat(127), "0x" + "00".repeat(16), "1") === null &&
+  app.blake2fCalc("12", "0x" + "00".repeat(64), "0x" + "00".repeat(128), "0x" + "00".repeat(15), "1") === null &&
+  app.blake2fCalc("12", "0x0", "0x" + "00".repeat(128), "0x" + "00".repeat(16), "1") === null &&
+  app.blake2fCalc("12", "0xzz" + "00".repeat(63), "0x" + "00".repeat(128), "0x" + "00".repeat(16), "1") === null &&
+  app.blake2fCalc(null, "0x" + "00".repeat(64), "0x" + "00".repeat(128), "0x" + "00".repeat(16), "1") === null &&
+  app.blake2fCalc("12", "0x" + "00".repeat(64), "0x" + "00".repeat(128), "0x" + "00".repeat(16), null) === null);
+check("blake2f calculator: the index prefill is the EIP-152 abc compression at 12 rounds",
+  (() => { const g = id => { const mm = new RegExp(`id="${id}"[^>]*value="([^"]*)"`).exec(html); return mm && mm[1]; };
+    return g("b2c-rounds") === "12" && g("b2c-f") === "1" &&
+      app.blake2fCalc(g("b2c-rounds"), g("b2c-h"), g("b2c-m"), g("b2c-t"), g("b2c-f"))?.output ===
+        "0xba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923"; })());
+check("blake2f calculator tool section present in index.html", html.includes("b2c-btn") && html.includes("BLAKE2f precompile calculator"));
+check("blake2f calculator controls labelled",
+  ["b2c-rounds", "b2c-h", "b2c-m", "b2c-t", "b2c-f"].every(id => html.includes(`for="${id}"`)));
 console.log(`\n${total - failures}/${total} checks passed`);
 process.exit(failures ? 1 : 0);

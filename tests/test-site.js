@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=114"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=115"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -605,6 +605,101 @@ check("type 4 decoder rejects EIP-7702-invalid transactions (Python oracle vecto
   app.decodeRawTransaction("0x04f90111822105078459682f008506fc23ac00830186a0943535353535353535353535353535353535353535880de0b6b3a764000080f838f7941111111111111111111111111111111111111111e1a00000000000000000000000000000000000000000000000000000000000000001f860f85e82210594111111111111111111111111111111111111111103820100a0ecd286ae19eaf8f55a47fb2e6156cdb85fd63de22fefb8dce806acedcb1ea797a006ad19fe8e587e1c554325d65703dc04ced6ec65f2a9af7dcda81080eab8b2f301a0b243f443c56e2d5861e81c5912b18fc6622f6a5651ba7b9bfa1ad163aeb8f5a7a058385691bbf3831af4d49cb5551080236dbe4993fa01d9160a900616150adde8") === null);
 check("non-blob transactions carry null blob versioned hashes",
   tx155.blobVersionedHashes === null && tx1.blobVersionedHashes === null && tx2.blobVersionedHashes === null && tx4.blobVersionedHashes === null);
+
+/* raw transaction encoder — the construction half of the decoder above.
+   Every signed vector the decoder tests carry is rebuilt here from its
+   field values alone and must come back byte-for-byte (independent
+   pure-Python oracle oracle-tx-encode.py: its own from-spec RLP
+   encoder and Keccak, anchored on the ethereum.org RLP worked
+   examples and on EIP-155's published signing hash before emitting;
+   it reproduced all five decoder vectors byte-for-byte). */
+check("raw transaction encoder controls labelled",
+  ["txe-type", "txe-chainid", "txe-nonce", "txe-gasprice", "txe-maxprio", "txe-maxfee", "txe-gaslimit", "txe-to", "txe-value", "txe-data", "txe-access", "txe-blobfee", "txe-blobhashes", "txe-auth", "txe-yparity", "txe-r", "txe-s"].every(id => html.includes(`for="${id}"`)));
+check("raw transaction encoder tool section present in index.html",
+  html.includes("txe-btn") && html.includes("Raw transaction encoder"));
+const TXE_R155 = "0x28ef61340bd939bc2195fe537567866003e1a15d3c71ff63e1590620aa636276";
+const TXE_S155 = "0x67cbe9d8997f761aecb703304b3800ccf555c9f3dc64214b297fb1966a3b6d83";
+const TXE_155_BASE = { type: "legacy", chainId: "1", nonce: "9", gasPrice: "20000000000", gasLimit: "21000", to: "0x3535353535353535353535353535353535353535", value: "1000000000000000000", data: "0x" };
+const txe155 = app.encodeRawTransaction({ ...TXE_155_BASE, signature: { yParity: "0", r: TXE_R155, s: TXE_S155 } });
+check("encoder rebuilds the EIP-155 published transaction byte-for-byte, v derived as 37 (Python oracle)",
+  txe155 !== null && txe155.signed === true && txe155.v === "37" && txe155.raw === EIP155_TX &&
+  txe155.signingPayload === "0xec098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080018080" &&
+  txe155.signingHash === "0xdaf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53" &&
+  txe155.txHash === "0x33469b22e9f636356c4160a87eb19df52b7412e8eac32a4a55ffe88ea8350788");
+const txe155u = app.encodeRawTransaction({ ...TXE_155_BASE, signature: null });
+check("unsigned EIP-155 legacy has no raw form: signing payload only, and the decoder refuses that payload (v placeholder 0)",
+  txe155u !== null && txe155u.signed === false && txe155u.raw === null &&
+  txe155u.signingPayload === txe155.signingPayload && txe155u.signingHash === txe155.signingHash && txe155u.txHash === null &&
+  app.decodeRawTransaction(txe155u.signingPayload) === null);
+const txePre = app.encodeRawTransaction({ ...TXE_155_BASE, chainId: "", signature: { yParity: "0", r: TXE_R155, s: TXE_S155 } });
+const txePreU = app.encodeRawTransaction({ ...TXE_155_BASE, chainId: "", signature: null });
+check("pre-EIP-155 legacy: v derived as 27, and the unsigned 6-field form IS its own raw encoding (Python oracle)",
+  txePre !== null && txePre.v === "27" && txePre.chainId === null &&
+  txePre.raw === "0xf86c098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a7640000801ba028ef61340bd939bc2195fe537567866003e1a15d3c71ff63e1590620aa636276a067cbe9d8997f761aecb703304b3800ccf555c9f3dc64214b297fb1966a3b6d83" &&
+  txePre.signingHash === "0xf9e36c28c8cb35adba138005c02ab7aa7fbcd891f3139cb2eeed052a51cd2713" &&
+  txePreU !== null && txePreU.raw === "0xe9098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080" && txePreU.raw === txePreU.signingPayload);
+const TXE_AL2 = [{ address: "0x2222222222222222222222222222222222222222", storageKeys: ["0x0000000000000000000000000000000000000000000000000000000000000003"] }];
+const txe2 = app.encodeRawTransaction({ type: "eip1559", chainId: "8453", nonce: "7", maxPriorityFeePerGas: "1500000000", maxFeePerGas: "30000000000", gasLimit: "100000", to: "0x1111111111111111111111111111111111111111", value: "123456789", data: "0xa9059cbb", accessList: TXE_AL2, signature: { yParity: "1", r: "0x" + "11".repeat(32), s: "0x" + "22".repeat(32) } });
+const txe2u = app.encodeRawTransaction({ type: "eip1559", chainId: "8453", nonce: "7", maxPriorityFeePerGas: "1500000000", maxFeePerGas: "30000000000", gasLimit: "100000", to: "0x1111111111111111111111111111111111111111", value: "123456789", data: "0xa9059cbb", accessList: TXE_AL2, signature: null });
+check("encoder rebuilds the type 2 vector byte-for-byte; its unsigned form is its own raw encoding (Python oracle)",
+  txe2 !== null && txe2.raw === TYPE2_TX && txe2.signingHash === tx2.signingHash && txe2.txHash === tx2.txHash &&
+  txe2u !== null && txe2u.raw === txe2u.signingPayload &&
+  txe2u.signingPayload === "0x02f86c822105078459682f008506fc23ac00830186a094111111111111111111111111111111111111111184075bcd1584a9059cbbf838f7942222222222222222222222222222222222222222e1a00000000000000000000000000000000000000000000000000000000000000003");
+const txe1 = app.encodeRawTransaction({ type: "eip2930", chainId: "130", nonce: "0", gasPrice: "20000000000", gasLimit: "500000", to: "", value: "0", data: "0x60006000", accessList: [], signature: { yParity: "0", r: "0x" + "33".repeat(32), s: "0x" + "44".repeat(32) } });
+check("encoder rebuilds the type 1 contract-creation vector byte-for-byte (Python oracle)",
+  txe1 !== null && txe1.raw === TYPE1_TX && txe1.signingHash === tx1.signingHash && txe1.txHash === tx1.txHash);
+const TXE_AL3 = [{ address: "0x1111111111111111111111111111111111111111", storageKeys: ["0x0000000000000000000000000000000000000000000000000000000000000001"] }];
+const TXE_H = ["0x013fa2d9cad26df768c1b09203b0275f0f4d2d7ddf2be8f77fbd65f931c7e2ef", "0x01ef71c1e14b31badcc6d27d0e32ca041bce8fc2558c385a931a1c005ad2efaf"];
+const txe3 = app.encodeRawTransaction({ type: "eip4844", chainId: "1", nonce: "11", maxPriorityFeePerGas: "2000000000", maxFeePerGas: "30000000000", gasLimit: "120000", to: "0x3535353535353535353535353535353535353535", value: "500000000000000000", data: "0x", accessList: TXE_AL3, maxFeePerBlobGas: "2000000000", blobVersionedHashes: TXE_H, signature: { yParity: "1", r: "0x33a036da1cc7d995b6db724a549dbd6293ef2615852d20f39309a0c7f6f5dccb", s: "0x35dfe4f0d8c39acbd7a2e395e9a83e0e296316e2a051b719e093a64545783b8c" } });
+check("encoder rebuilds the type 3 blob vector byte-for-byte (Python oracle)",
+  txe3 !== null && txe3.raw === TYPE3_TX && txe3.signingHash === tx3.signingHash && txe3.txHash === tx3.txHash);
+const TXE_AUTH4 = [
+  { chainId: "8453", address: "0x1111111111111111111111111111111111111111", nonce: "3", yParity: "0", r: "0xecd286ae19eaf8f55a47fb2e6156cdb85fd63de22fefb8dce806acedcb1ea797", s: "0x06ad19fe8e587e1c554325d65703dc04ced6ec65f2a9af7dcda81080eab8b2f3" },
+  { chainId: "0", address: "0x2222222222222222222222222222222222222222", nonce: "0", yParity: "0", r: "0xd43d780f5b5453c2f7764e99b203ce176e125b69bff96662f0d5f95032783801", s: "0x037051652f758859a9ffaffb0e085c18ad35fbdfa23e6d94d318c47a7742c2e1" }];
+const txe4 = app.encodeRawTransaction({ type: "eip7702", chainId: "8453", nonce: "7", maxPriorityFeePerGas: "1500000000", maxFeePerGas: "30000000000", gasLimit: "100000", to: "0x3535353535353535353535353535353535353535", value: "1000000000000000000", data: "0x", accessList: TXE_AL3, authorizationList: TXE_AUTH4, signature: { yParity: "1", r: "0x293fdcc99c6e9c8d94084a09b20f588a0bf2cf57bbe5ee6939da984f0cfc9b50", s: "0x621657f4abc3f655725b5f65e37467cee4c4da6801f85ce6f0392f4c22ab9a97" } });
+check("encoder rebuilds the type 4 set-code vector byte-for-byte (Python oracle)",
+  txe4 !== null && txe4.raw === TYPE4_TX && txe4.signingHash === tx4.signingHash && txe4.txHash === tx4.txHash);
+const txeCreate = app.encodeRawTransaction({ type: "legacy", chainId: "8453", nonce: "42", gasPrice: "1000000007", gasLimit: "300000", to: "", value: "0", data: "0x6080604052348015600e575f5ffd5b50606080601c5f395ff3fe0000000000000000", signature: { yParity: "1", r: "0x" + "aa".repeat(32), s: "0x" + "bb".repeat(32) } });
+check("encoder: Base contract creation derives v 16942 from chain ID 8453 and y-parity 1 (Python oracle)",
+  txeCreate !== null && txeCreate.v === "16942" &&
+  txeCreate.raw === "0xf8742a843b9aca07830493e08080a26080604052348015600e575f5ffd5b50606080601c5f395ff3fe000000000000000082422ea0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" &&
+  txeCreate.signingHash === "0xb73f97e4e69647a9a47cce39c8cd3235abf6fe10351097b26c3bfce9704f6a0f" &&
+  txeCreate.txHash === "0x187f5f5d5ddc2afed9718d847607ea3172aad53405014963a263f5a6949992dd");
+const TXE_AL8 = [{ address: "0x" + "aa".repeat(20), storageKeys: ["0x" + "00".repeat(32), "0x" + "ff".repeat(32)] }, { address: "0x" + "bb".repeat(20), storageKeys: [] }];
+const txe8 = app.encodeRawTransaction({ type: "eip1559", chainId: "130", nonce: "255", maxPriorityFeePerGas: "2", maxFeePerGas: "999999999999", gasLimit: "250000", to: "0x" + "ee".repeat(20), value: "777", data: "0x23b872dd000000000000000000000000cccccccccccccccccccccccccccccccccccccccc000000000000000000000000dddddddddddddddddddddddddddddddddddddddd0000000000000000000000000000000000000000000000000000000000000005", accessList: TXE_AL8, signature: { yParity: "0", r: "0x" + "12".repeat(32), s: "0x" + "34".repeat(32) } });
+check("encoder: two-entry access list with an empty-key entry encodes to the oracle's bytes (Python oracle)",
+  txe8 !== null && txe8.signingHash === "0x5194b2ac7ba6e0283e58c2a038a380a1178a5f784eab78f8cdc46cc7ac10aa18" &&
+  txe8.txHash === "0xe49b9e768fcdb4962842aaea44cab48ad3731bdf76e04232038a85e1f7bf0c7e");
+check("every encoder output round-trips through the hub's own decoder to the same hashes and signature",
+  [txe155, txePre, txe1, txe2, txe3, txe4, txeCreate, txe8].every(e => {
+    const d = app.decodeRawTransaction(e.raw);
+    return d !== null && d.signed === true && d.signingHash === e.signingHash && d.txHash === e.txHash && d.v === e.v;
+  }) &&
+  [txe2u, app.encodeRawTransaction({ type: "eip4844", chainId: "1", nonce: "11", maxPriorityFeePerGas: "2000000000", maxFeePerGas: "30000000000", gasLimit: "120000", to: "0x3535353535353535353535353535353535353535", value: "500000000000000000", data: "0x", accessList: TXE_AL3, maxFeePerBlobGas: "2000000000", blobVersionedHashes: TXE_H, signature: null })].every(e => {
+    const d = app.decodeRawTransaction(e.raw);
+    return d !== null && d.signed === false && d.signingHash === e.signingHash;
+  }));
+check("encoder refuses the decoder's invalid forms and incomplete signatures",
+  app.encodeRawTransaction(null) === null &&
+  app.encodeRawTransaction({ ...TXE_155_BASE, type: "eip9999", signature: null }) === null &&
+  app.encodeRawTransaction({ ...TXE_155_BASE, nonce: "x", signature: null }) === null &&
+  app.encodeRawTransaction({ ...TXE_155_BASE, nonce: "-1", signature: null }) === null &&
+  app.encodeRawTransaction({ ...TXE_155_BASE, value: "115792089237316195423570985008687907853269984665640564039457584007913129639936", signature: null }) === null &&
+  app.encodeRawTransaction({ ...TXE_155_BASE, to: "0x1234", signature: null }) === null &&
+  app.encodeRawTransaction({ ...TXE_155_BASE, data: "0x0", signature: null }) === null &&
+  app.encodeRawTransaction({ ...TXE_155_BASE, signature: { yParity: "2", r: TXE_R155, s: TXE_S155 } }) === null &&
+  app.encodeRawTransaction({ ...TXE_155_BASE, signature: { yParity: "0", r: "", s: TXE_S155 } }) === null &&
+  app.encodeRawTransaction({ type: "eip1559", chainId: "", nonce: "7", maxPriorityFeePerGas: "1", maxFeePerGas: "2", gasLimit: "21000", to: "0x1111111111111111111111111111111111111111", value: "0", data: "0x", accessList: [], signature: null }) === null &&
+  app.encodeRawTransaction({ type: "eip1559", chainId: "1", nonce: "7", maxPriorityFeePerGas: "1", maxFeePerGas: "2", gasLimit: "21000", to: "0x1111111111111111111111111111111111111111", value: "0", data: "0x", accessList: [{ address: "0x1111", storageKeys: [] }], signature: null }) === null &&
+  app.encodeRawTransaction({ type: "eip1559", chainId: "1", nonce: "7", maxPriorityFeePerGas: "1", maxFeePerGas: "2", gasLimit: "21000", to: "0x1111111111111111111111111111111111111111", value: "0", data: "0x", accessList: [{ address: "0x1111111111111111111111111111111111111111", storageKeys: ["0x1234"] }], signature: null }) === null &&
+  app.encodeRawTransaction({ type: "eip4844", chainId: "1", nonce: "11", maxPriorityFeePerGas: "1", maxFeePerGas: "2", gasLimit: "21000", to: "", value: "0", data: "0x", accessList: [], maxFeePerBlobGas: "1", blobVersionedHashes: TXE_H, signature: null }) === null &&
+  app.encodeRawTransaction({ type: "eip4844", chainId: "1", nonce: "11", maxPriorityFeePerGas: "1", maxFeePerGas: "2", gasLimit: "21000", to: "0x1111111111111111111111111111111111111111", value: "0", data: "0x", accessList: [], maxFeePerBlobGas: "1", blobVersionedHashes: [], signature: null }) === null &&
+  app.encodeRawTransaction({ type: "eip4844", chainId: "1", nonce: "11", maxPriorityFeePerGas: "1", maxFeePerGas: "2", gasLimit: "21000", to: "0x1111111111111111111111111111111111111111", value: "0", data: "0x", accessList: [], maxFeePerBlobGas: "1", blobVersionedHashes: ["0x023fa2d9cad26df768c1b09203b0275f0f4d2d7ddf2be8f77fbd65f931c7e2ef"], signature: null }) === null &&
+  app.encodeRawTransaction({ type: "eip7702", chainId: "1", nonce: "7", maxPriorityFeePerGas: "1", maxFeePerGas: "2", gasLimit: "21000", to: "0x1111111111111111111111111111111111111111", value: "0", data: "0x", accessList: [], authorizationList: [], signature: null }) === null &&
+  app.encodeRawTransaction({ type: "eip7702", chainId: "1", nonce: "7", maxPriorityFeePerGas: "1", maxFeePerGas: "2", gasLimit: "21000", to: "0x1111111111111111111111111111111111111111", value: "0", data: "0x", accessList: [], authorizationList: [{ ...TXE_AUTH4[0], nonce: "18446744073709551616" }], signature: null }) === null &&
+  app.encodeRawTransaction({ type: "eip7702", chainId: "1", nonce: "7", maxPriorityFeePerGas: "1", maxFeePerGas: "2", gasLimit: "21000", to: "0x1111111111111111111111111111111111111111", value: "0", data: "0x", accessList: [], authorizationList: [{ ...TXE_AUTH4[0], yParity: "2" }], signature: null }) === null);
+check("the index prefill is the EIP-155 example — it encodes to the published raw transaction",
+  html.includes('id="txe-r"') && html.includes(TXE_R155) && txe155.raw === EIP155_TX);
 check("EIP-7702 authorization digests (Python oracle)",
   app.eip7702AuthorizationDigest("8453", "0x1111111111111111111111111111111111111111", "3") === "0xa220321b87c7e2f32cd61ca94318a803d6b748661985c7e4e77f4d9a67eb048e" &&
   app.eip7702AuthorizationDigest("0", "0x2222222222222222222222222222222222222222", "0") === "0xfb6605641675aed59f0a3f2c102ac202312494431d767f683a450b845ff3a8cc" &&

@@ -2184,6 +2184,198 @@ function decodeRawTransaction(input) {
   } catch (e) { return null; }
 }
 
+/* ---------- Raw transaction encoder (RLP) ----------
+   The construction half of the raw transaction decoder above:
+   given the fields, it builds the exact bytes the decoder reads
+   back — a legacy (incl. EIP-155), EIP-2930 (type 1), EIP-1559
+   (type 2), EIP-4844 (type 3) or EIP-7702 (type 4) transaction —
+   and derives the signing payload and signing hash (what a
+   signer signs) and, when signature fields are supplied, the
+   signed raw transaction and its transaction hash. Integers are
+   encoded as the minimal big-endian byte strings RLP requires
+   (0 is the empty string), so what this builds is canonical by
+   construction, and the encoder refuses exactly what the decoder
+   refuses: a missing or oversized integer, a destination that is
+   neither empty nor 20 bytes, a malformed access list, and the
+   type-specific validity rules — a type 3 transaction needs a
+   destination and a non-empty list of 32-byte blob versioned
+   hashes each starting with 0x01, a type 4 transaction needs a
+   destination and a non-empty authorization list whose nonces
+   are below 2^64 and whose y-parity is 0 or 1. The signature is
+   encoded, NOT produced: this tool never sees a private key and
+   signs nothing — give it a signature made elsewhere (y-parity,
+   r, s) and it assembles the signed transaction; leave the
+   signature blank and it returns the payload to sign. One legacy
+   subtlety is pinned rather than smoothed over: an unsigned
+   EIP-155 transaction has no standalone wire form distinct from
+   its signing payload (the 9-field form ending chainId, 0, 0 is
+   the thing that gets hashed, and only becomes a transaction
+   when v / r / s replace the placeholders), so for that one case
+   the encoder returns the signing payload with raw = null,
+   where every other unsigned form IS its own raw encoding.
+   The legacy v is derived, never typed: chainId × 2 + 35 +
+   y-parity with a chain ID, 27 + y-parity without one. */
+function txeParseUint(str) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  if (!/^\d+$/.test(s)) return null;
+  const v = BigInt(s);
+  return v < (1n << 256n) ? v : null;
+}
+function txeParseAddressBytes(str) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  if (!/^0[xX][0-9a-fA-F]{40}$/.test(s)) return null;
+  return txHexToBytes(s);
+}
+function txeParseHash32Bytes(str) {
+  if (typeof str !== "string") return null;
+  const s = str.trim();
+  if (!/^0[xX][0-9a-fA-F]{64}$/.test(s)) return null;
+  return txHexToBytes(s);
+}
+function txeParseSigInt(str) {
+  if (typeof str !== "string") return null;
+  const bytes = txHexToBytes(str);
+  if (bytes === null) {
+    const s = str.trim();
+    return (s === "0x" || s === "0X") ? 0n : null;
+  }
+  if (bytes.length > 32) return null;
+  return bytesToBigInt(bytes);
+}
+function txeParseYParity(v) {
+  if (v === 0 || v === "0") return 0n;
+  if (v === 1 || v === "1") return 1n;
+  return null;
+}
+function encodeRawTransaction(spec) {
+  try {
+    if (spec === null || typeof spec !== "object") return null;
+    const type = spec.type;
+    if (!["legacy", "eip2930", "eip1559", "eip4844", "eip7702"].includes(type)) return null;
+    const nonce = txeParseUint(spec.nonce);
+    const gasLimit = txeParseUint(spec.gasLimit);
+    const value = txeParseUint(spec.value);
+    if (nonce === null || gasLimit === null || value === null) return null;
+    if (typeof spec.to !== "string") return null;
+    const toBytes = spec.to.trim() === "" ? [] : txeParseAddressBytes(spec.to);
+    if (toBytes === null) return null;
+    let dataBytes;
+    if (typeof spec.data !== "string") return null;
+    if (spec.data.trim() === "" || spec.data.trim() === "0x" || spec.data.trim() === "0X") dataBytes = [];
+    else { dataBytes = txHexToBytes(spec.data); if (dataBytes === null) return null; }
+    const sig = (spec.signature === null || spec.signature === undefined) ? null : spec.signature;
+    let sigParity = null, sigR = null, sigS = null;
+    if (sig !== null) {
+      sigParity = txeParseYParity(sig.yParity);
+      sigR = txeParseSigInt(sig.r);
+      sigS = txeParseSigInt(sig.s);
+      if (sigParity === null || sigR === null || sigS === null) return null;
+    }
+    const intItem = v => ({ bytes: bigIntToMinBytes(v) });
+    const bytesItem = b => ({ bytes: b });
+    let accessItems = null;
+    if (type !== "legacy") {
+      if (!Array.isArray(spec.accessList)) return null;
+      accessItems = { list: spec.accessList.map(entry => {
+        if (entry === null || typeof entry !== "object") throw new Error("bad access entry");
+        const addr = txeParseAddressBytes(entry.address);
+        if (addr === null) throw new Error("bad access address");
+        if (!Array.isArray(entry.storageKeys)) throw new Error("bad storage keys");
+        const keys = entry.storageKeys.map(k => {
+          const kb = txeParseHash32Bytes(k);
+          if (kb === null) throw new Error("bad storage key");
+          return bytesItem(kb);
+        });
+        return { list: [bytesItem(addr), { list: keys }] };
+      }) };
+    }
+    let unsignedItems, typeByte = null, chainIdOut = null;
+    if (type === "legacy") {
+      const gasPrice = txeParseUint(spec.gasPrice);
+      if (gasPrice === null) return null;
+      const chainId = (spec.chainId === null || spec.chainId === undefined ||
+        (typeof spec.chainId === "string" && spec.chainId.trim() === "")) ? null : txeParseUint(spec.chainId);
+      if (spec.chainId !== null && spec.chainId !== undefined &&
+        !(typeof spec.chainId === "string" && spec.chainId.trim() === "") && chainId === null) return null;
+      const base = [intItem(nonce), intItem(gasPrice), intItem(gasLimit),
+        bytesItem(toBytes), intItem(value), bytesItem(dataBytes)];
+      chainIdOut = chainId === null ? null : chainId.toString();
+      if (sig !== null) {
+        const v = chainId === null ? 27n + sigParity : chainId * 2n + 35n + sigParity;
+        const signingItems = chainId === null ? base : [...base, intItem(chainId), intItem(0n), intItem(0n)];
+        const signingPayload = rlpEncodeItem({ list: signingItems });
+        const raw = rlpEncodeItem({ list: [...base, intItem(v), intItem(sigR), intItem(sigS)] });
+        return { type, signed: true, chainId: chainIdOut, v: v.toString(),
+          raw: "0x" + bytesToHex(raw), signingPayload: "0x" + bytesToHex(signingPayload),
+          signingHash: "0x" + keccak256Bytes(signingPayload), txHash: "0x" + keccak256Bytes(raw) };
+      }
+      const signingItems = chainId === null ? base : [...base, intItem(chainId), intItem(0n), intItem(0n)];
+      const signingPayload = rlpEncodeItem({ list: signingItems });
+      return { type, signed: false, chainId: chainIdOut, v: null,
+        raw: chainId === null ? "0x" + bytesToHex(signingPayload) : null,
+        signingPayload: "0x" + bytesToHex(signingPayload),
+        signingHash: "0x" + keccak256Bytes(signingPayload), txHash: null };
+    }
+    typeByte = { eip2930: 1, eip1559: 2, eip4844: 3, eip7702: 4 }[type];
+    const chainId = txeParseUint(spec.chainId);
+    if (chainId === null) return null;
+    chainIdOut = chainId.toString();
+    unsignedItems = [intItem(chainId), intItem(nonce)];
+    if (type === "eip2930") {
+      const gasPrice = txeParseUint(spec.gasPrice);
+      if (gasPrice === null) return null;
+      unsignedItems.push(intItem(gasPrice));
+    } else {
+      const maxPrio = txeParseUint(spec.maxPriorityFeePerGas);
+      const maxFee = txeParseUint(spec.maxFeePerGas);
+      if (maxPrio === null || maxFee === null) return null;
+      unsignedItems.push(intItem(maxPrio), intItem(maxFee));
+    }
+    unsignedItems.push(intItem(gasLimit), bytesItem(toBytes), intItem(value), bytesItem(dataBytes), accessItems);
+    if (type === "eip4844") {
+      if (toBytes.length === 0) return null;
+      const maxFeePerBlobGas = txeParseUint(spec.maxFeePerBlobGas);
+      if (maxFeePerBlobGas === null) return null;
+      if (!Array.isArray(spec.blobVersionedHashes) || spec.blobVersionedHashes.length === 0) return null;
+      const hashes = spec.blobVersionedHashes.map(h => {
+        const hb = txeParseHash32Bytes(h);
+        if (hb === null || hb[0] !== 0x01) throw new Error("bad blob versioned hash");
+        return bytesItem(hb);
+      });
+      unsignedItems.push(intItem(maxFeePerBlobGas), { list: hashes });
+    }
+    if (type === "eip7702") {
+      if (toBytes.length === 0) return null;
+      if (!Array.isArray(spec.authorizationList) || spec.authorizationList.length === 0) return null;
+      const authItems = spec.authorizationList.map(entry => {
+        if (entry === null || typeof entry !== "object") throw new Error("bad authorization entry");
+        const aChainId = txeParseUint(entry.chainId);
+        const aAddr = txeParseAddressBytes(entry.address);
+        const aNonce = txeParseUint(entry.nonce);
+        const aParity = txeParseYParity(entry.yParity);
+        const aR = txeParseSigInt(entry.r);
+        const aS = txeParseSigInt(entry.s);
+        if (aChainId === null || aAddr === null || aNonce === null || aNonce >= (1n << 64n) ||
+          aParity === null || aR === null || aS === null) throw new Error("bad authorization field");
+        return { list: [intItem(aChainId), bytesItem(aAddr), intItem(aNonce), intItem(aParity), intItem(aR), intItem(aS)] };
+      });
+      unsignedItems.push({ list: authItems });
+    }
+    const signingPayload = [typeByte, ...rlpEncodeItem({ list: unsignedItems })];
+    if (sig !== null) {
+      const raw = [typeByte, ...rlpEncodeItem({ list: [...unsignedItems, intItem(sigParity), intItem(sigR), intItem(sigS)] })];
+      return { type, signed: true, chainId: chainIdOut, v: sigParity.toString(),
+        raw: "0x" + bytesToHex(raw), signingPayload: "0x" + bytesToHex(signingPayload),
+        signingHash: "0x" + keccak256Bytes(signingPayload), txHash: "0x" + keccak256Bytes(raw) };
+    }
+    return { type, signed: false, chainId: chainIdOut, v: null,
+      raw: "0x" + bytesToHex(signingPayload), signingPayload: "0x" + bytesToHex(signingPayload),
+      signingHash: "0x" + keccak256Bytes(signingPayload), txHash: null };
+  } catch (e) { return null; }
+}
+
 /* ---------- Signature recovery (ecrecover) ----------
    Given the 32-byte digest that was signed and the signature's v / r / s,
    recover the signer's address exactly as the EVM's ecrecover precompile
@@ -10158,6 +10350,68 @@ if (typeof document !== "undefined") {
       el.textContent = msg;
     });
 
+    /* Raw transaction encoder */
+    const txeBtn = document.getElementById("txe-btn");
+    if (txeBtn) txeBtn.addEventListener("click", () => {
+      const el = document.getElementById("txe-out");
+      const val = id => document.getElementById(id).value;
+      const parseAccess = text => {
+        const out = [];
+        for (const line of text.split("\n")) {
+          const t = line.trim();
+          if (t === "") continue;
+          const colon = t.indexOf(":");
+          const address = (colon === -1 ? t : t.slice(0, colon)).trim();
+          const keys = colon === -1 ? [] : t.slice(colon + 1).split(/[\s,]+/).filter(x => x !== "");
+          out.push({ address, storageKeys: keys });
+        }
+        return out;
+      };
+      const parseAuth = text => {
+        const out = [];
+        for (const line of text.split("\n")) {
+          const t = line.trim();
+          if (t === "") continue;
+          const parts = t.split(",").map(x => x.trim());
+          if (parts.length !== 6) return null;
+          out.push({ chainId: parts[0], address: parts[1], nonce: parts[2], yParity: parts[3], r: parts[4], s: parts[5] });
+        }
+        return out;
+      };
+      const sigFields = [val("txe-yparity"), val("txe-r"), val("txe-s")];
+      const signature = sigFields.every(x => x.trim() === "") ? null
+        : { yParity: sigFields[0].trim(), r: sigFields[1].trim(), s: sigFields[2].trim() };
+      const r = encodeRawTransaction({
+        type: val("txe-type"),
+        chainId: val("txe-chainid"),
+        nonce: val("txe-nonce"),
+        gasPrice: val("txe-gasprice"),
+        maxPriorityFeePerGas: val("txe-maxprio"),
+        maxFeePerGas: val("txe-maxfee"),
+        gasLimit: val("txe-gaslimit"),
+        to: val("txe-to"),
+        value: val("txe-value"),
+        data: val("txe-data"),
+        accessList: parseAccess(val("txe-access")),
+        maxFeePerBlobGas: val("txe-blobfee"),
+        blobVersionedHashes: val("txe-blobhashes").split(/[\s,]+/).filter(x => x !== ""),
+        authorizationList: parseAuth(val("txe-auth")),
+        signature
+      });
+      if (r === null) {
+        el.textContent = "That could not be encoded — check the fields this type reads: every amount is a plain decimal integer below 2^256, the destination is empty (contract creation, legacy / type 1 / type 2 only) or a full 20-byte address, the data is even-length hex, each access-list line is an address optionally followed by ': key, key', and the signature is either all three fields (y-parity 0 or 1, r, s as hex) or all blank. A type 3 transaction additionally needs a destination, a max fee per blob gas, and at least one 32-byte blob versioned hash starting with 0x01. A type 4 transaction additionally needs a destination and at least one authorization line 'chainId, address, nonce, yParity, r, s' with a nonce below 2^64.";
+        return;
+      }
+      const typeName = { legacy: "legacy", eip2930: "EIP-2930 (type 1)", eip1559: "EIP-1559 (type 2)", eip4844: "EIP-4844 (type 3)", eip7702: "EIP-7702 (type 4)" }[r.type];
+      if (r.signed) {
+        el.textContent = `Signed ${typeName} transaction · v ${r.v} · Raw transaction (${(r.raw.length - 2) / 2} bytes): ${r.raw} · Signing hash: ${r.signingHash} · Transaction hash: ${r.txHash}. Encoded locally from the fields alone — the signature was assembled, not produced: no key was used and nothing was signed here. Check it in the decoder above, which reads exactly these bytes. The same encoding applies on Ethereum, Base, Unichain and Robinhood Chain.`;
+      } else if (r.raw !== null) {
+        el.textContent = `Unsigned ${typeName} transaction · Raw unsigned encoding (${(r.raw.length - 2) / 2} bytes): ${r.raw} · Signing payload: ${r.signingPayload} · Signing hash (what the signer signs): ${r.signingHash}. Sign that hash with the sender's key elsewhere, then fill in y-parity, r and s to assemble the signed transaction. Encoded locally — no key was used, nothing was signed, and no chain was queried.`;
+      } else {
+        el.textContent = `Unsigned legacy (EIP-155) transaction · Signing payload (${(r.signingPayload.length - 2) / 2} bytes): ${r.signingPayload} · Signing hash (what the signer signs): ${r.signingHash}. An unsigned EIP-155 transaction has no standalone raw form: this payload — the fields followed by chain ID ${r.chainId}, 0, 0 — is exactly what gets hashed, and it becomes a transaction only when v, r and s replace the placeholders, so sign the hash elsewhere, then fill in y-parity, r and s. Encoded locally — no key was used, nothing was signed, and no chain was queried.`;
+      }
+    });
+
     /* Signature recovery (ecrecover) */
     const recBtn = document.getElementById("rec-btn");
     if (recBtn) recBtn.addEventListener("click", () => {
@@ -12154,5 +12408,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, encodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

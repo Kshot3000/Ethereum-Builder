@@ -1769,6 +1769,49 @@ dave</textarea>
     </div>
 
     <div class="tool">
+      <h3>Raw transaction encoder (RLP — legacy, EIP-2930, EIP-1559, EIP-4844 &amp; EIP-7702)</h3>
+      <p>The construction half of the decoder above: give it the fields and it builds the exact bytes — the signing payload and its hash (what a signer actually signs), and, when you also supply a signature made elsewhere, the signed raw transaction and its transaction hash. Each type reads only its own fields: legacy and <a href="https://eips.ethereum.org/EIPS/eip-2930">EIP-2930</a> read the gas price, the typed transactions from <a href="https://eips.ethereum.org/EIPS/eip-1559">EIP-1559</a> on read the two fee caps, type 3 (<a href="https://eips.ethereum.org/EIPS/eip-4844">EIP-4844</a>) also reads the max fee per blob gas and the blob versioned hashes (one per line), and type 4 (<a href="https://eips.ethereum.org/EIPS/eip-7702">EIP-7702</a>) also reads the authorization list (one line per tuple: <code>chainId, address, nonce, yParity, r, s</code>). The access list is one line per entry — an address, optionally followed by a colon and its storage keys. The prefilled example is again <a href="https://eips.ethereum.org/EIPS/eip-155">EIP-155</a>'s published transaction, so the encoder's output can be checked byte for byte against the EIP: the signed raw transaction is the decoder's prefilled hex, and the signing hash is the EIP's published <code>0xdaf5…8e53</code>. The legacy <code>v</code> is derived, never typed — chain ID × 2 + 35 + y-parity with a chain ID (37 for the prefill), 27 + y-parity with the chain ID blank (a pre-EIP-155 transaction). Encoding is canonical by construction — integers go in as minimal big-endian byte strings, so there is no non-canonical form to produce — and the encoder refuses what the decoder refuses, plus the types' own validity rules: type 3 and type 4 transactions need a destination (neither can create a contract), type 3 needs at least one 32-byte versioned hash starting with <code>0x01</code>, and type 4 needs at least one authorization with a nonce below 2<sup>64</sup> and y-parity 0 or 1. Leave the three signature fields blank and you get the unsigned form instead — for typed transactions and pre-EIP-155 legacy that unsigned form <em>is</em> its own raw encoding (the decoder above reads it back), but an unsigned EIP-155 legacy transaction has no standalone raw form: its 9-field signing payload, ending in the chain ID and two empty placeholders, is exactly what gets hashed and only becomes a transaction when <code>v</code>, <code>r</code> and <code>s</code> replace the placeholders, so that one case returns the payload alone. Honest scope: the signature is <em>assembled, not produced</em> — this tool never sees a private key and signs nothing; sign the signing hash with your own wallet or signer elsewhere. Works identically for Ethereum, Base, Unichain, and Robinhood Chain transactions — same RLP, same EVM. Encoded locally — nothing is sent and no chain is queried.</p>
+      <label for="txe-type">Transaction type</label>
+      <select id="txe-type"><option value="legacy" selected>Legacy (incl. EIP-155)</option><option value="eip2930">EIP-2930 (type 1)</option><option value="eip1559">EIP-1559 (type 2)</option><option value="eip4844">EIP-4844 (type 3, blob)</option><option value="eip7702">EIP-7702 (type 4, set code)</option></select>
+      <label for="txe-chainid">Chain ID (decimal; blank only for a pre-EIP-155 legacy transaction)</label>
+      <input id="txe-chainid" type="text" inputmode="numeric" spellcheck="false" value="1">
+      <label for="txe-nonce">Nonce (decimal)</label>
+      <input id="txe-nonce" type="text" inputmode="numeric" spellcheck="false" value="9">
+      <label for="txe-gasprice">Gas price in wei (legacy and type 1)</label>
+      <input id="txe-gasprice" type="text" inputmode="numeric" spellcheck="false" value="20000000000">
+      <label for="txe-maxprio">Max priority fee per gas in wei (types 2, 3 and 4)</label>
+      <input id="txe-maxprio" type="text" inputmode="numeric" spellcheck="false" value="1500000000">
+      <label for="txe-maxfee">Max fee per gas in wei (types 2, 3 and 4)</label>
+      <input id="txe-maxfee" type="text" inputmode="numeric" spellcheck="false" value="30000000000">
+      <label for="txe-gaslimit">Gas limit (decimal)</label>
+      <input id="txe-gaslimit" type="text" inputmode="numeric" spellcheck="false" value="21000">
+      <label for="txe-to">Destination address (blank for contract creation — legacy, type 1 and type 2 only)</label>
+      <input id="txe-to" type="text" spellcheck="false" value="0x3535353535353535353535353535353535353535">
+      <label for="txe-value">Value in wei (decimal)</label>
+      <input id="txe-value" type="text" inputmode="numeric" spellcheck="false" value="1000000000000000000">
+      <label for="txe-data">Data / initcode (hex)</label>
+      <textarea id="txe-data" rows="2" spellcheck="false">0x</textarea>
+      <label for="txe-access">Access list (types 1–4; one entry per line: address, optionally followed by “: key, key”)</label>
+      <textarea id="txe-access" rows="2" spellcheck="false">0x2222222222222222222222222222222222222222: 0x0000000000000000000000000000000000000000000000000000000000000003</textarea>
+      <label for="txe-blobfee">Max fee per blob gas in wei (type 3)</label>
+      <input id="txe-blobfee" type="text" inputmode="numeric" spellcheck="false" value="2000000000">
+      <label for="txe-blobhashes">Blob versioned hashes (type 3; one 32-byte hash per line, each starting 0x01)</label>
+      <textarea id="txe-blobhashes" rows="2" spellcheck="false">0x013fa2d9cad26df768c1b09203b0275f0f4d2d7ddf2be8f77fbd65f931c7e2ef
+0x01ef71c1e14b31badcc6d27d0e32ca041bce8fc2558c385a931a1c005ad2efaf</textarea>
+      <label for="txe-auth">Authorization list (type 4; one line per tuple: chainId, address, nonce, yParity, r, s)</label>
+      <textarea id="txe-auth" rows="3" spellcheck="false">8453, 0x1111111111111111111111111111111111111111, 3, 0, 0xecd286ae19eaf8f55a47fb2e6156cdb85fd63de22fefb8dce806acedcb1ea797, 0x06ad19fe8e587e1c554325d65703dc04ced6ec65f2a9af7dcda81080eab8b2f3
+0, 0x2222222222222222222222222222222222222222, 0, 0, 0xd43d780f5b5453c2f7764e99b203ce176e125b69bff96662f0d5f95032783801, 0x037051652f758859a9ffaffb0e085c18ad35fbdfa23e6d94d318c47a7742c2e1</textarea>
+      <label for="txe-yparity">Signature y-parity (0 or 1; leave all three signature fields blank for the unsigned form)</label>
+      <input id="txe-yparity" type="text" inputmode="numeric" spellcheck="false" value="0">
+      <label for="txe-r">Signature r (hex)</label>
+      <input id="txe-r" type="text" spellcheck="false" value="0x28ef61340bd939bc2195fe537567866003e1a15d3c71ff63e1590620aa636276">
+      <label for="txe-s">Signature s (hex)</label>
+      <input id="txe-s" type="text" spellcheck="false" value="0x67cbe9d8997f761aecb703304b3800ccf555c9f3dc64214b297fb1966a3b6d83">
+      <button id="txe-btn" type="button">Encode transaction</button>
+      <p id="txe-out" class="out" aria-live="polite"></p>
+    </div>
+
+    <div class="tool">
       <h3>Signature recovery (ecrecover) calculator</h3>
       <p>Every Ethereum signature names its signer — given the 32-byte digest that was signed and the signature's <code>v</code>, <code>r</code> and <code>s</code>, the signer's address is recoverable with the same secp256k1 math the EVM's <code>ecrecover</code> precompile runs, no private key involved. That is how a contract checks who authorised an action, and how you check which account a signature in a bug report really came from. The prefilled example is again <a href="https://eips.ethereum.org/EIPS/eip-155">EIP-155</a>'s published transaction: its signing hash with v 37 (chain ID 1, parity 0) and its published r and s recover the account of the private key the EIP prints, <code>0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F</code>. Paste any digest and signature — from the transaction decoder above, a typed-data digest, or a signed message — in any <code>v</code> form: 0/1, 27/28, or an EIP-155 value of 35 or more. Strict on purpose: <code>r</code> and <code>s</code> must be in range and <code>s</code> must sit in the lower half of the curve order — the canonical EIP-2 form every client enforces — so the malleable high-<code>s</code> twin of a signature is refused rather than recovered. Recovers an address from a signature only: nothing is signed, no key is used or asked for, and no chain is queried.</p>
       <label for="rec-hash">Digest that was signed (32-byte hex)</label>
@@ -1938,6 +1981,6 @@ dave</textarea>
   <p>Teams: Ethereum <a href="https://github.com/ethereum">@ethereum</a> · Base <a href="https://github.com/base">@base</a> · Uniswap <a href="https://github.com/Uniswap">@Uniswap</a> · Robinhood <a href="https://github.com/robinhood">@robinhood</a></p>
   <p>Independent project — not affiliated with the Ethereum Foundation, Base, Uniswap, or Robinhood. Not financial advice.</p>
 </footer>
-<script src="app.js?v=114"></script>
+<script src="app.js?v=115"></script>
 </body>
 </html>

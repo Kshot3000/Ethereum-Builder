@@ -3530,6 +3530,101 @@ function aaveAccountCalc(collateralStr, debtStr, ltvStr, thresholdStr) {
   };
 }
 
+/* Aave V3 interest accrual — MathUtils' two interest
+   factors and the reserve-index updates built on them
+   (aave-v3-core, BUSL-1.1; formulas paraphrased, not
+   copied). A reserve's indexes only move when the reserve
+   is touched, and ReserveLogic moves them by multiplying
+   the stored index by an interest factor for the elapsed
+   time:
+     liquidity index      = rayMul(linearFactor, index)
+       (ReserveLogic.getNormalizedIncome / _updateIndexes,
+        from calculateLinearInterest(currentLiquidityRate));
+     variable borrow index = rayMul(compoundedFactor, index)
+       (getNormalizedDebt, from calculateCompoundedInterest
+        (currentVariableBorrowRate)).
+   The linear factor is plain truncating arithmetic:
+   RAY + rate × exp ÷ SECONDS_PER_YEAR (31,536,000 — 365
+   days, leap years ignored), with the rate × exp product
+   CHECKED, so it reverts past the uint256 maximum. The
+   compounded factor is NOT an exponentiation: it is the
+   three-term binomial approximation (1+x)^n ≈ 1 + nx +
+   n(n−1)/2·x² + n(n−1)(n−2)/6·x³ with x the per-second
+   rate, which the source notes slightly underpays
+   suppliers and undercharges borrowers in exchange for
+   the gas saving. Its two traps live in the unchecked
+   block: basePowerTwo is rayMul(rate, rate) — half-up,
+   with rayMul's own revert bound — computed BEFORE the
+   terms it feeds, so a rate past about 2^128 refuses even
+   at exp = 1, where the second and third terms carry an
+   expMinusOne factor of 0 and would vanish; and the
+   second/third terms' leading multiplications
+   (exp × expMinusOne × basePower) are CHECKED, so a huge
+   elapsed time refuses there even when rate × exp fits.
+   expMinusTwo is clamped to 0 at exp ≤ 2, which is what
+   keeps the third term at 0 for a two-second accrual.
+   Zero elapsed time returns RAY from both functions
+   before the rate is ever read, so any rate at all —
+   even the uint256 maximum — accrues nothing over no
+   time. rayMul itself rounds half up ((a × b + RAY/2) ÷
+   RAY) and reverts when the first operand exceeds
+   (2^256 − 1 − RAY/2) ÷ the second (a zero second operand
+   never reverts and yields 0 — a zero index stays zero).
+   Rates are rays (1e27 = 100% per year, so 5% is
+   50000000000000000000000000) and indexes are rays that
+   start at 1e27. The rates and the stored index are chain
+   state this page does not read; all three are values the
+   user supplies. Nothing is queried on chain. */
+const AAVE_RAY = 10n ** 27n;
+const AAVE_HALF_RAY = 5n * 10n ** 26n;
+const AAVE_SECONDS_PER_YEAR = 31536000n;
+function aaveRayMul(a, b) {
+  if (b !== 0n && a > (ERC4626_MAX_UINT256 - AAVE_HALF_RAY) / b) return null;
+  return (a * b + AAVE_HALF_RAY) / AAVE_RAY;
+}
+function aaveInterestCalc(rateStr, elapsedStr, indexStr) {
+  const rate = v2ParseUint(rateStr);
+  const exp = v2ParseUint(elapsedStr);
+  const index = v2ParseUint(indexStr);
+  if (rate === null || exp === null || index === null) return null;
+  let linearFactor;
+  let compoundedFactor;
+  if (exp === 0n) {
+    linearFactor = AAVE_RAY;
+    compoundedFactor = AAVE_RAY;
+  } else {
+    const product = rate * exp;
+    if (product > ERC4626_MAX_UINT256) return null;
+    linearFactor = AAVE_RAY + product / AAVE_SECONDS_PER_YEAR;
+    if (linearFactor > ERC4626_MAX_UINT256) return null;
+    const expMinusOne = exp - 1n;
+    const expMinusTwo = exp > 2n ? exp - 2n : 0n;
+    const bp2raw = aaveRayMul(rate, rate);
+    if (bp2raw === null) return null;
+    const basePowerTwo = bp2raw / (AAVE_SECONDS_PER_YEAR * AAVE_SECONDS_PER_YEAR);
+    const bp3raw = aaveRayMul(basePowerTwo, rate);
+    if (bp3raw === null) return null;
+    const basePowerThree = bp3raw / AAVE_SECONDS_PER_YEAR;
+    const stProduct = exp * expMinusOne * basePowerTwo;
+    if (stProduct > ERC4626_MAX_UINT256) return null;
+    const secondTerm = stProduct / 2n;
+    const ttProduct = exp * expMinusOne * expMinusTwo * basePowerThree;
+    if (ttProduct > ERC4626_MAX_UINT256) return null;
+    const thirdTerm = ttProduct / 6n;
+    compoundedFactor = linearFactor + secondTerm + thirdTerm;
+    if (compoundedFactor > ERC4626_MAX_UINT256) return null;
+  }
+  const newLiquidityIndex = aaveRayMul(linearFactor, index);
+  const newVariableBorrowIndex = aaveRayMul(compoundedFactor, index);
+  if (newLiquidityIndex === null || newVariableBorrowIndex === null) return null;
+  return {
+    linearFactor: linearFactor.toString(),
+    compoundedFactor: compoundedFactor.toString(),
+    newLiquidityIndex: newLiquidityIndex.toString(),
+    newVariableBorrowIndex: newVariableBorrowIndex.toString()
+  };
+}
+
 /* ModExp precompile gas — the pricing of the EVM's modular
    exponentiation precompile at address 0x05, under both
    schedules that have priced it (EIP-2565, in force from
@@ -11004,6 +11099,21 @@ if (typeof document !== "undefined") {
       el.textContent = `getUserAccountData: total collateral ${r.totalCollateralBase} base units · total debt ${r.totalDebtBase} · available borrows ${r.availableBorrowsBase} base units · average LTV ${r.ltv} bps · average liquidation threshold ${r.currentLiquidationThreshold} bps · health factor ${hf}. ${r.liquidatable === "true" ? "The health factor is below 1, so the account can be liquidated." : "The account is not liquidatable at these totals."} Computed locally with Aave V3's GenericLogic / PercentageMath / WadRayMath formulas on the totals you gave — a real account's totals and weighted averages are chain state this page does not read, and the per-reserve walk and eMode categories are not modelled. Not financial advice.`;
     });
 
+    /* Aave V3 interest accrual */
+    const aaveintBtn = document.getElementById("aaveint-btn");
+    if (aaveintBtn) aaveintBtn.addEventListener("click", () => {
+      const r = aaveInterestCalc(
+        document.getElementById("aaveint-rate").value,
+        document.getElementById("aaveint-elapsed").value,
+        document.getElementById("aaveint-index").value);
+      const el = document.getElementById("aaveint-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the rate and the current index are whole numbers in ray (up to 78 digits) and the elapsed time is a whole number of seconds, and no intermediate exceeds the uint256 maximum, as MathUtils and WadRayMath revert there — including rayMul(rate, rate) inside the compounded factor, which is computed even for a one-second accrual, and the checked exp × (exp − 1) × basePowerTwo product, which a very long elapsed time overflows.";
+        return;
+      }
+      el.textContent = `MathUtils accrual: linear factor ${r.linearFactor} · compounded factor ${r.compoundedFactor} (both in ray) — applied to the index you gave, the liquidity index becomes ${r.newLiquidityIndex} and the variable borrow index becomes ${r.newVariableBorrowIndex}. ${r.compoundedFactor === r.linearFactor ? "The two factors are equal here — over no time, over one second, or at a zero rate there is nothing for the compounding terms to add." : "The compounded factor is the larger here: its binomial terms add interest on interest — and still slightly understate true compounding, by the approximation's design."} Computed locally with Aave V3's MathUtils / WadRayMath formulas on the values you gave — a real reserve's rates, last-update timestamp and stored index are chain state this page does not read. Not financial advice.`;
+    });
+
     /* ModExp precompile gas */
     const mxgBtn = document.getElementById("mxg-btn");
     if (mxgBtn) mxgBtn.addEventListener("click", () => {
@@ -12511,5 +12621,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, aaveAccountCalc, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, encodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, aaveAccountCalc, aaveInterestCalc, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, encodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

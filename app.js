@@ -5172,10 +5172,11 @@ function blake2fCalc(roundsStr, hHex, mHex, tHex, fStr) {
    calculator above). A versioned hash that does not match
    the commitment, a z or y that is not a canonical field
    element (not strictly below the BLS modulus), or a proof
-   that does not verify all fail for non-gas reasons and are
-   not modelled — the calculator takes the input length
-   directly, as the other precompile tools take their priced
-   or validity quantity. */
+   that does not verify all fail for non-gas reasons — the
+   applied calculator (kzgPointEvalCalc, with the BLS tools
+   below) runs exactly those checks; this gas calculator
+   takes the input length directly, as the other precompile
+   tools take their priced or validity quantity. */
 const KZG_INPUT_BYTES = 192n;
 const KZG_GAS = 50000n;
 function kzgGasCalc(inputLenStr) {
@@ -6072,8 +6073,9 @@ function blsMapG2Calc(inputHex) {
    calculator above still prices beyond it; a client fails
    the call itself on a length that is not a multiple of
    384, where this page refuses it as malformed, as on every
-   tool. What remains gas-only on this page after this tool
-   is the KZG point evaluation (0x0a) alone. Verified
+   tool. Nothing on this page remains gas-only after this
+   tool: the KZG point evaluation (0x0a) is run by its own
+   applied calculator (tool 113). Verified
    against an independent oracle (oracle-bls-pairing.py) in
    two parts asserted to agree on every row: py_ecc, the
    Ethereum Foundation's bls12_381 library, with EIP-2537's
@@ -6375,6 +6377,139 @@ function blsPairingCalc(inputHex) {
     succeeded: "true",
     output: "0x" + (ok ? "0".repeat(63) + "1" : "0".repeat(64)),
     outputBytes: "32", totalGas: gas.totalGas
+  };
+}
+
+/* KZG point evaluation precompile — APPLIED. The gas
+   calculator above (kzgGasCalc) quotes the flat 50,000 for a
+   192-byte input without reading a byte of it; this tool is
+   the applied half of the pair — it takes the precompile's
+   own input (EIP-4844, address 0x0a) and runs the check:
+     input = versioned hash (32) | z (32) | y (32) |
+             commitment (48) | proof (48)
+   and on success returns the precompile's own 64-byte
+   output as two 32-byte words: 4096
+   (FIELD_ELEMENTS_PER_BLOB) and the BLS modulus.
+   The checks, in the EIP's order:
+     - the versioned hash must equal 0x01 || SHA-256 of the
+       commitment with its first byte replaced (the hub's
+       blobVersionedHash construction, recomputed here from
+       the input's own commitment bytes);
+     - z and y must be canonical field elements, strictly
+       below the BLS modulus (the scalar-field order q — the
+       same constant as the BLS tools' subgroup order);
+     - the commitment and the proof are compressed G1 points
+       in the ZCash encoding the consensus layer uses — flag
+       bits in the first byte (0x80 compressed, which must be
+       set; 0x40 point at infinity, whose remaining bytes
+       must then be zero with the sign bit clear; 0x20 the
+       sign of y, read as y lying in the upper half of the
+       field) over a 381-bit x, recovered by the (p + 1) / 4
+       root since p % 4 == 3, exactly as py_ecc's
+       point_compression does it;
+     - BOTH points must lie in the prime-order subgroup
+       (q * P == infinity by the full multiplication) — the
+       validity condition EIP-4844's verification leans on
+       and c-kzg's validate_kzg_g1 enforces; an on-curve
+       point outside the subgroup fails the call;
+     - the pairing equation itself,
+         e(commitment - y*G, G2) == e([tau]G2 - z*G2, proof),
+       decided here as the two-pair product
+         e(C - y*G, G2) * e(proof, z*G2 - [tau]G2) == 1
+       by the hub's own blsPairingCalc, so the applied KZG
+       tool and the applied pairing tool cannot disagree
+       about what a pairing is. [tau]G2 is SetupG2[1] of the
+       official KZG trusted setup (the mainnet setup c-kzg
+       ships), decompressed from its 96-byte encoding and
+       asserted tau-consistent in the oracle:
+       e([tau]G2, G) == e(G2, [tau]G1).
+   Failure is a FAILED CALL, not a 0 word — unlike the
+   pairing precompiles, whose "does not hold" is a successful
+   return of 0, EIP-4844 errors the call on any failed check,
+   so every non-success below returns succeeded=false with no
+   output at the scheduled 50,000 from kzgGasCalc fed "192",
+   cross-checked exactly in tests on every row (a failing
+   precompile call burns all the gas supplied to it, so that
+   is the charge a successful call pays). A length other than
+   exactly 192 is refused as malformed (null), mirroring the
+   gas calculator, which likewise refuses other lengths
+   rather than pricing a call that cannot run. Verified
+   against an independent oracle (oracle-kzg-point-eval.py):
+   py_ecc for decompression, subgroup and pairing, anchored
+   on the trusted setup itself (SRS generators, tau
+   consistency, the empty-blob versioned hash) before
+   reproducing all 122 official verify_kzg_proof cases from
+   c-kzg-4844's consensus test vectors (54 verify, 48 fail
+   the pairing, 20 invalid), plus self-generated proofs built
+   from the SRS for polynomials of degree 0-2. Computes
+   locally; no chain is queried. */
+const KZG_G1_GENERATOR = [3685416753713387016781088315183077757961620795782546409894578378688607592378376318836054947676345821548104185464507n, 1339506544944476473020471379941921221584933875938349620426543736416511423956333506472724655353366534992391756441569n];
+const KZG_G2_GENERATOR = [[352701069587466618187139116011060144890029952792775240219908644239793785735715026873347600343865175952761926303160n, 3059144344244213709971259814753781636986470325476647558659373206291635324768958432433509563104347017837885763365758n], [1985150602287291935568054521177171638300868978215655730859378665066344726373823718423869104263333984641494340347905n, 927553665492332455747201965776037880757740193453592970025027978793976877002675564980949289727957565575433344219582n]];
+const KZG_TAU_G2 = [[3749701713850085193403383609513386037494151572263731328608276629425322978272408394373143740944003571525027436289778n, 3347537128081568434923729147580015899756771550835613107520576615563260658656019591232316627827007503930666726825842n], [194392958648403190675529552496435226424111592982833162118538452666741235889530674000225873281133418439621742897817n, 3447898402727835650716129438012169492682148398295533958400255525306573911008434577489634554212211450783070687991119n]];
+function kzgDecompressG1(bytes) {
+  /* ZCash compressed G1: undefined = invalid encoding,
+     null = the point at infinity, [x, y] = the point */
+  const b0 = bytes[0];
+  if ((b0 & 0x80) === 0) return undefined; /* not compressed */
+  const isInf = (b0 & 0x40) !== 0;
+  const sign = (b0 & 0x20) !== 0;
+  const xb = bytes.slice();
+  xb[0] &= 0x1f;
+  const x = bytesToBigInt(xb);
+  if (isInf) {
+    if (x !== 0n || sign) return undefined;
+    return null;
+  }
+  if (x >= BLS_G1_P) return undefined;
+  const y2 = blsG1Mod(x * x * x + 4n);
+  let y = secpModPow(y2, (BLS_G1_P + 1n) / 4n, BLS_G1_P);
+  if (blsG1Mod(y * y) !== y2) return undefined;
+  /* sign of y: the upper half of the field, as py_ecc's
+     decompress_G1 chooses it ((y * 2) / p == a_flag) */
+  if (y !== 0n && (y * 2n / BLS_G1_P === 1n) !== sign) y = BLS_G1_P - y;
+  return [x, y];
+}
+function kzgPointEvalCalc(inputHex) {
+  const bytes = parseHexBytes(inputHex);
+  if (bytes === null || bytes.length !== 192) return null;
+  const gas = kzgGasCalc("192");
+  const failed = {
+    precompile: "kzg-point-evaluation", address: gas.address,
+    succeeded: "false", output: "0x", outputBytes: "0",
+    totalGas: gas.totalGas
+  };
+  const commitment = bytes.slice(96, 144);
+  const digest = sha256Bytes(commitment.slice());
+  digest[0] = 0x01; /* VERSIONED_HASH_VERSION_KZG */
+  for (let i = 0; i < 32; i++) if (digest[i] !== bytes[i]) return failed;
+  const z = bytesToBigInt(bytes.slice(32, 64));
+  const y = bytesToBigInt(bytes.slice(64, 96));
+  if (z >= BLS_G1_Q || y >= BLS_G1_Q) return failed;
+  const C = kzgDecompressG1(commitment);
+  const proof = kzgDecompressG1(bytes.slice(144, 192));
+  if (C === undefined || proof === undefined) return failed;
+  if (C !== null && blsG1Mul(BLS_G1_Q, C) !== null) return failed;
+  if (proof !== null && blsG1Mul(BLS_G1_Q, proof) !== null) return failed;
+  const negG1 = p => (p === null ? null : [p[0], blsG1Mod(-p[1])]);
+  const negG2 = p => (p === null ? null
+    : [p[0], [blsG2Mod(-p[1][0]), blsG2Mod(-p[1][1])]]);
+  const lhs = blsG1Add(C, negG1(blsG1Mul(y, KZG_G1_GENERATOR)));
+  const rhs = blsG2Add(blsG2Mul(z, KZG_G2_GENERATOR), negG2(KZG_TAU_G2));
+  const enc64 = v => v.toString(16).padStart(128, "0");
+  const encG1 = p => (p === null ? "00".repeat(128)
+    : enc64(p[0]) + enc64(p[1]));
+  const encG2 = p => (p === null ? "00".repeat(256)
+    : enc64(p[0][0]) + enc64(p[0][1]) + enc64(p[1][0]) + enc64(p[1][1]));
+  const pr = blsPairingCalc("0x" + encG1(lhs) + encG2(KZG_G2_GENERATOR)
+    + encG1(proof) + encG2(rhs));
+  if (pr === null || pr.succeeded !== "true") return failed;
+  if (!pr.output.endsWith("1")) return failed;
+  return {
+    precompile: "kzg-point-evaluation", address: gas.address,
+    succeeded: "true",
+    output: "0x" + (4096n).toString(16).padStart(64, "0")
+      + BLS_G1_Q.toString(16).padStart(64, "0"),
+    outputBytes: "64", totalGas: gas.totalGas
   };
 }
 
@@ -10926,6 +11061,21 @@ if (typeof document !== "undefined") {
       el.textContent = `KZG point evaluation precompile (${r.address}) gas: ${r.totalGas} total — a flat charge for verifying one point evaluation over its fixed ${r.inputBytes}-byte input, returning ${r.outputBytes} bytes (${r.fieldElementsPerBlob} field elements per blob and the BLS modulus). This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`;
     });
 
+    /* KZG point evaluation precompile (applied) */
+    const kzgeBtn = document.getElementById("kzge-btn");
+    if (kzgeBtn) kzgeBtn.addEventListener("click", () => {
+      const r = kzgPointEvalCalc(
+        document.getElementById("kzge-input").value);
+      const el = document.getElementById("kzge-out");
+      if (r === null) {
+        el.textContent = "Check the input: the point evaluation input is hex bytes of exactly 192 bytes — the 32-byte versioned hash, then z and y as 32-byte field elements, then the 48-byte commitment and the 48-byte proof.";
+        return;
+      }
+      el.textContent = r.succeeded === "true"
+        ? `KZG point evaluation precompile (${r.address}) result: ${r.output} — the 64-byte return, 4096 (the field elements per blob) and the BLS modulus as two 32-byte words: the commitment does evaluate to the claimed y at the claimed z. Gas: ${r.totalGas} — the flat charge from the gas calculator above. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`
+        : `KZG point evaluation precompile (${r.address}): the call FAILS — the versioned hash does not match the commitment, z or y is not a canonical field element (not strictly below the BLS modulus), a commitment or proof encoding is invalid or a point lies outside the prime-order subgroup, or the proof does not verify: no output, and a failing precompile call burns all the gas supplied to it, so the caller's cost is whatever it forwarded (the scheduled charge is ${r.totalGas}). Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* BLS12-381 precompile gas */
     const blsBtn = document.getElementById("bls-btn");
     if (blsBtn) blsBtn.addEventListener("click", () => {
@@ -12004,5 +12154,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

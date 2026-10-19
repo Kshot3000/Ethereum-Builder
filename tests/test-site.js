@@ -47,7 +47,7 @@ check("all tool controls labelled",
     .every(id => html.includes(`for="${id}"`)));
 check("all tool controls labelled (merkle)",
   ["mrk-leaves", "mrk-index"].every(id => html.includes(`for="${id}"`)));
-check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=115"));
+check("cache keys current", html.includes("styles.css?v=3") && html.includes("app.js?v=116"));
 check("filters present", ["all", "l1", "base", "unichain", "robinhood", "kyle"].every(f => html.includes(`data-filter="${f}"`)));
 
 /* catalogue links (all verified HTTP 200 at launch) */
@@ -2050,6 +2050,78 @@ check("compound exit-market refuses malformed inputs, a non-boolean membership f
   app.compoundExitMarket("50000000", "0", "750000000000000000", "20000000000000000", "0", true) === null &&
   (() => { const M = (2n ** 256n - 1n).toString(); return app.compoundExitMarket("1", "0", M, "2000000000000000000", "1000000000000000000", true) === null; })());
 check("compound exit-market tool section present in index.html", html.includes("cxqa-btn") && html.includes("Compound exit market calculator"));
+
+/* Aave V3 account data — expected values produced by an independent
+   pure-Python transcription of Aave V3's GenericLogic account math
+   over PercentageMath.percentMul and WadRayMath.wadDiv
+   (hidden_files/oracle-aave-account.py), anchored in-script on the
+   half-up boundaries (percentMul(1, 5000) == 1, percentMul(1, 4999) == 0;
+   wadDiv(1, 2e18) == 1) and on the docs-shaped account ($1000 collateral,
+   80.00% threshold, $600 debt -> health factor 1333333333333333333,
+   $150 available). Vectors are [collateral, debt, ltv, threshold] ->
+   [availableBorrowsBase, healthFactor, liquidatable]. */
+check("aave account controls labelled in index.html",
+  ["aave-collateral", "aave-debt", "aave-ltv", "aave-threshold"]
+    .every(id => html.includes(`for="${id}"`)));
+check("aave account matches the Python oracle (docs prefill, debt-free max, zero-collateral, HF boundary, half-up traps, 2^150 scale, random rows)",
+  (() => { const V = [
+    [["100000000000", "60000000000", "7500", "8000"], ["15000000000", "1333333333333333333", "false"]],
+    [["0", "0", "0", "0"], ["0", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "false"]],
+    [["5", "0", "8000", "8500"], ["4", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "false"]],
+    [["0", "7", "8000", "8500"], ["0", "0", "true"]],
+    [["10000", "10000", "10000", "10000"], ["0", "1000000000000000000", "false"]],
+    [["10000", "10001", "10000", "10000"], ["0", "999900009999000100", "true"]],
+    [["10000", "9999", "10000", "10000"], ["1", "1000100010001000100", "false"]],
+    [["1", "3", "5000", "5000"], ["0", "333333333333333333", "true"]],
+    [["1", "3", "4999", "4999"], ["0", "0", "true"]],
+    [["3", "2", "1", "6667"], ["0", "1000000000000000000", "false"]],
+    [["123456789", "987654321", "8250", "8600"], ["0", "107499999486156250", "true"]],
+    [["100000000000000000000", "99999999999999999999", "9300", "9500"], ["0", "950000000000000000", "true"]],
+    [["1427247692705959881058285969449495136382758969", "713623846352979940529142984724747568191380101", "7500", "8000"], ["356811923176489970264571492362373784095689126", "1600000000000000000", "false"]],
+    [["777777777777", "333333333333", "0", "0"], ["0", "0", "true"]],
+    [["555", "0", "10000", "10000"], ["555", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "false"]],
+    [["555", "556", "10000", "10000"], ["0", "998201438848920863", "true"]],
+    [["46365034785240", "8975540825234", "7492", "8230"], ["25761143235868", "4251378760483569788", "false"]],
+    [["76707911106598", "16268439274370", "3617", "917"], ["11476812172886", "432378013025308978", "true"]],
+    [["38369594795462", "81029952974199", "3042", "8842"], ["0", "418689564449711694", "true"]],
+    [["33715704154179", "15610661067970", "1244", "9644"], ["0", "2082898664234357392", "false"]],
+    [["85410673980816", "70560074246705", "1030", "1579"], ["0", "191132812224907524", "true"]],
+    [["68284340402507", "78297585726941", "1676", "2801"], ["0", "244278844221896406", "true"]],
+    [["12759426865452", "82049446874616", "700", "9307"], ["0", "144732219850587228", "true"]],
+    [["4534723764993", "77078931376804", "1886", "4823"], ["0", "28374774180045019", "true"]],
+    [["79457312926805", "11132803945997", "7531", "8487"], ["48706498419180", "6057361811821595882", "false"]],
+    [["69112352641619", "73063538372603", "3237", "490"], ["0", "46350140642912728", "true"]],
+    [["69891776972633", "95320666400811", "3273", "3236"], ["0", "237272565145973129", "true"]],
+    [["18824935790584", "16610888046401", "5009", "6628"], ["0", "751143912784504435", "true"]],
+    [["28273324089347", "52669217832328", "6125", "7315"], ["0", "392675977023197239", "true"]],
+    [["10722768143739", "26547839567939", "8290", "1309"], ["0", "52870982078334410", "true"]],
+    [["50528937950604", "96729402196909", "3567", "6719"], ["0", "350983182340972733", "true"]],
+    [["56223310313405", "83983648683636", "7462", "7303"], ["0", "488903306363258944", "true"]],
+    [["36123044542204", "53496618129072", "7692", "5246"], ["0", "354230787469942937", "true"]],
+    [["3049760761784", "5940956130797", "8415", "9401"], ["0", "482595735270708218", "true"]],
+    [["45121010966493", "18845142036152", "4431", "6276"], ["1147977923101", "1502665590328087397", "false"]],
+    [["70334578293876", "75448706718658", "6489", "8749"], ["0", "815596783902123470", "true"]],
+    [["57315270656566", "71027497316907", "3835", "5698"], ["0", "459797155380514998", "true"]],
+    [["77069352038899", "31535566756640", "2537", "2266"], ["0", "553784725252729743", "true"]],
+    [["60022609542328", "20350425297946", "2747", "513"], ["0", "151306905110812813", "true"]],
+    [["83549516067269", "84671193891806", "6498", "2707"], ["0", "267113913951775887", "true"]],
+  ]; return V.every(([inp, exp]) => { const r = app.aaveAccountCalc(...inp);
+    return r !== null && r.availableBorrowsBase === exp[0] && r.healthFactor === exp[1] && r.liquidatable === exp[2]
+      && r.totalCollateralBase === inp[0] && r.totalDebtBase === inp[1] && r.ltv === inp[2] && r.currentLiquidationThreshold === inp[3]; }); })());
+check("aave account: prefilled page values reproduce the docs-shaped account ($150 available, HF 1333333333333333333, not liquidatable)",
+  (() => { const g = (id) => { const m = new RegExp(`id="${id}"[^>]*value="([^"]+)"`).exec(html); return m && m[1]; };
+    const r = app.aaveAccountCalc(g("aave-collateral"), g("aave-debt"), g("aave-ltv"), g("aave-threshold"));
+    return r !== null && r.availableBorrowsBase === "15000000000" && r.healthFactor === "1333333333333333333" && r.liquidatable === "false"; })());
+check("aave account refuses percentMul/wadDiv overflows, percentages above 10000, malformed inputs",
+  app.aaveAccountCalc("11579208923731619542357098500868790785326998466564056403945758400791312964", "1", "0", "10000") === null &&
+  app.aaveAccountCalc("11579208923731619542357098500868790785326998466564056403945758400791312963", "1", "0", "10000") === null &&
+  app.aaveAccountCalc("100", "1", "10001", "8000") === null &&
+  app.aaveAccountCalc("100", "1", "8000", "10001") === null &&
+  app.aaveAccountCalc("100", "1.5", "8000", "8000") === null &&
+  app.aaveAccountCalc("100", "1", "-3", "8000") === null &&
+  app.aaveAccountCalc("100", "", "8000", "8000") === null &&
+  app.aaveAccountCalc(null, "1", "8000", "8000") === null);
+check("aave account tool section present in index.html", html.includes("aave-btn") && html.includes("Aave V3 account data calculator"));
 
 /* ModExp precompile gas — expected values produced by an
    independent pure-Python transcription of the pricing

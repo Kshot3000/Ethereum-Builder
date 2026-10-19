@@ -3446,6 +3446,90 @@ function compoundExitMarket(balanceStr, owedStr, factorStr, rateStr, priceStr, i
     : { allowed: true, verdict: "allowed", liquidity: liq.liquidity, shortfall: liq.shortfall };
 }
 
+/* Aave V3 account data — Pool.getUserAccountData's aggregate
+   math (aave-v3-core, BUSL-1.1; formulas paraphrased, not
+   copied), over the account totals the Pool itself works
+   with. getUserAccountData returns six values; four are the
+   aggregates GenericLogic.calculateUserAccountData produces
+   from the reserves (total collateral and total debt in the
+   oracle's base currency — USD at 8 decimals on the mainnet
+   market — and the collateral-weighted average LTV and
+   liquidation threshold, each in basis points with two
+   decimals of precision, 10000 = 100.00%), and the other two
+   are derived from them by exactly the functions below:
+     availableBorrowsBase = percentMul(collateral, ltv) − debt,
+       clamped to 0 when the debt exceeds it
+       (GenericLogic.calculateAvailableBorrows);
+     healthFactor = uint256 max                        if debt is 0
+                  = wadDiv(percentMul(collateral, avgLiquidationThreshold),
+                           debt)                      otherwise
+       (GenericLogic.calculateUserAccountData), returned
+       scaled by 1e18 — a health factor of exactly 1e18 is
+       the liquidation boundary: below it the account can be
+       liquidated, at or above it it cannot.
+   The two traps are the roundings, because neither helper
+   truncates: PercentageMath.percentMul adds half the factor
+   before dividing — (value × pct + 5000) ÷ 10000, rounded
+   half up — so one base unit of collateral at exactly 50.00%
+   contributes a full unit, where a truncating formula (the
+   Compound tools' style) would contribute none; and
+   WadRayMath.wadDiv adds half the divisor —
+   (a × 1e18 + b ÷ 2) ÷ b, also half up. Together they are
+   why the prefilled account's health factor is exactly
+   1333333333333333333 and not a ...332 or ...334 neighbour.
+   Overflow mirrors the libraries' own revert conditions:
+   percentMul reverts when pct is non-zero and the value
+   exceeds (2^256 − 1 − 5000) ÷ pct; wadDiv reverts when its
+   numerator exceeds (2^256 − 1 − debt ÷ 2) ÷ 1e18 — both are
+   refused here, as are an LTV or a liquidation threshold
+   above 10000, which the weighted averages the Pool computes
+   can never exceed (each reserve's own value is at most
+   10000). The per-reserve walk that produces the four totals
+   from balances, prices and configurations (including eMode
+   categories) is chain state this page does not read; the
+   totals and averages are values the user supplies. Nothing
+   is queried on chain. */
+const AAVE_PERCENTAGE_FACTOR = 10000n;
+const AAVE_HALF_PERCENTAGE = 5000n;
+const AAVE_WAD = 10n ** 18n;
+function aavePercentMul(value, pct) {
+  if (pct !== 0n && value > (ERC4626_MAX_UINT256 - AAVE_HALF_PERCENTAGE) / pct) return null;
+  return (value * pct + AAVE_HALF_PERCENTAGE) / AAVE_PERCENTAGE_FACTOR;
+}
+function aaveWadDiv(a, b) {
+  if (b === 0n) return null;
+  if (a > (ERC4626_MAX_UINT256 - b / 2n) / AAVE_WAD) return null;
+  return (a * AAVE_WAD + b / 2n) / b;
+}
+function aaveAccountCalc(collateralStr, debtStr, ltvStr, thresholdStr) {
+  const collateral = v2ParseUint(collateralStr);
+  const debt = v2ParseUint(debtStr);
+  const ltv = v2ParseUint(ltvStr);
+  const threshold = v2ParseUint(thresholdStr);
+  if (collateral === null || debt === null || ltv === null || threshold === null) return null;
+  if (ltv > AAVE_PERCENTAGE_FACTOR || threshold > AAVE_PERCENTAGE_FACTOR) return null;
+  const borrowPower = aavePercentMul(collateral, ltv);
+  const liquidationPower = aavePercentMul(collateral, threshold);
+  if (borrowPower === null || liquidationPower === null) return null;
+  let healthFactor;
+  if (debt === 0n) {
+    healthFactor = ERC4626_MAX_UINT256;
+  } else {
+    healthFactor = aaveWadDiv(liquidationPower, debt);
+    if (healthFactor === null) return null;
+  }
+  const available = borrowPower < debt ? 0n : borrowPower - debt;
+  return {
+    totalCollateralBase: collateral.toString(),
+    totalDebtBase: debt.toString(),
+    availableBorrowsBase: available.toString(),
+    currentLiquidationThreshold: threshold.toString(),
+    ltv: ltv.toString(),
+    healthFactor: healthFactor.toString(),
+    liquidatable: debt > 0n && healthFactor < AAVE_WAD ? "true" : "false"
+  };
+}
+
 /* ModExp precompile gas — the pricing of the EVM's modular
    exponentiation precompile at address 0x05, under both
    schedules that have priced it (EIP-2565, in force from
@@ -10901,6 +10985,25 @@ if (typeof document !== "undefined") {
       el.textContent = `exitMarket: ${r.allowed ? "ALLOWED" : "NOT ALLOWED"} — ${detail}. Computed locally with the Comptroller's check on the values you gave — a real account's balances, factor, rate, price and membership are chain state this page does not read, and the market-listing check and the snapshot read are separate. Not financial advice.`;
     });
 
+    /* Aave V3 account data */
+    const aaveBtn = document.getElementById("aave-btn");
+    if (aaveBtn) aaveBtn.addEventListener("click", () => {
+      const r = aaveAccountCalc(
+        document.getElementById("aave-collateral").value,
+        document.getElementById("aave-debt").value,
+        document.getElementById("aave-ltv").value,
+        document.getElementById("aave-threshold").value);
+      const el = document.getElementById("aave-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: total collateral and total debt are whole numbers in the oracle base currency's base units (up to 78 digits), the average LTV and average liquidation threshold are whole numbers from 0 to 10000 (basis points), and no intermediate exceeds the uint256 maximum, as the Aave libraries revert there.";
+        return;
+      }
+      const hf = r.totalDebtBase === "0"
+        ? "the uint256 maximum — the account has no debt, so there is no health factor to cross (front ends display this as ∞)"
+        : `${r.healthFactor} (scaled by 1e18)`;
+      el.textContent = `getUserAccountData: total collateral ${r.totalCollateralBase} base units · total debt ${r.totalDebtBase} · available borrows ${r.availableBorrowsBase} base units · average LTV ${r.ltv} bps · average liquidation threshold ${r.currentLiquidationThreshold} bps · health factor ${hf}. ${r.liquidatable === "true" ? "The health factor is below 1, so the account can be liquidated." : "The account is not liquidatable at these totals."} Computed locally with Aave V3's GenericLogic / PercentageMath / WadRayMath formulas on the totals you gave — a real account's totals and weighted averages are chain state this page does not read, and the per-reserve walk and eMode categories are not modelled. Not financial advice.`;
+    });
+
     /* ModExp precompile gas */
     const mxgBtn = document.getElementById("mxg-btn");
     if (mxgBtn) mxgBtn.addEventListener("click", () => {
@@ -12408,5 +12511,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, encodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, aaveAccountCalc, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, encodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

@@ -5311,8 +5311,8 @@ function blsGasCalc(nameStr, pairsStr) {
    12,000 (the EIP-2537 discount at k = 1 is 1000, so there is
    no separate MUL precompile); a multi-pair MSM is a sum of
    such multiplications under Pippenger's discount and stays
-   gas-only here, like the pairing check (the
-   field-to-curve maps are run by their own tools below;
+   gas-only here (the pairing check is run by its own
+   tool below; the field-to-curve maps are run by their own tools below;
    G2 arithmetic is run by the G2 tool below). The curve is
    y^2 = x^3 + 4 over the field of prime order
    p = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787:
@@ -5453,8 +5453,8 @@ function blsG1Calc(opStr, x1Hex, y1Hex, aHex, bHex) {
    22,500 (the EIP-2537 G2 discount at k = 1 is 1000, so there
    is no separate MUL precompile); a multi-pair MSM is a sum of
    such multiplications under Pippenger's discount and stays
-   gas-only here, like the pairing check (the Fp2-to-G2
-   field-to-curve map is run by its own tool below). The
+   gas-only here (the pairing check and the Fp2-to-G2
+   field-to-curve map are run by their own tools below). The
    arithmetic lives in the quadratic
    extension field Fp2 = Fp[u] / (u^2 + 1): an element is the
    pair (c0, c1) read as c0 + c1*u, with multiplication
@@ -5640,9 +5640,8 @@ function blsG2Calc(opStr, x1aHex, x1bHex, y1aHex, y1bHex, aHex, bHex, cHex, dHex
    official testdata runs to k = 4,877), a client fails the call
    itself on a bad length where this page refuses it as
    malformed, and the gas tool above still prices any count.
-   What remains gas-only in the BLS family after this tool is the
-   pairing check (0x0f) alone — Fp12 / Miller-loop machinery
-   of a different order; the field-to-curve maps (0x10 and
+   The pairing check (0x0f) — Fp12 / Miller-loop machinery
+   of a different order — and the field-to-curve maps (0x10 and
    0x11) are run by the tools below. Verified in the tests against an independent
    pure-Python oracle (oracle-bls-msm.py) carrying affine AND
    Jacobian implementations for both curves, anchored in-script
@@ -5718,9 +5717,10 @@ function blsMsmCalc(opStr, inputHex) {
    The applied half of the G1 map pair: blsGasCalc quotes
    MAP_FP_TO_G1's flat 5,500 at 0x10 from the operation name
    alone and never reads the field element, while the pairing
-   check (0x0f) stays gas-only (Fp12 / Miller-loop machinery
-   of a different order); the Fp2-to-G2 map (0x11) is run by
-   the tool further below. This tool takes the
+   check (0x0f) is run by the tool further below (Fp12 /
+   Miller-loop machinery of a different order); the
+   Fp2-to-G2 map (0x11) is run by the tool further below
+   as well. This tool takes the
    precompile's own input — exactly one 64-byte field element:
    16 zero top bytes carrying a 48-byte value — and runs the
    construction in the EIP-2537 field-to-curve document:
@@ -5837,8 +5837,9 @@ function blsMapG1Calc(inputHex) {
    The applied half of the G2 map pair, closing the BLS map
    family: blsGasCalc quotes MAP_FP2_TO_G2's flat 23,800 at
    0x11 from the operation name alone and never reads the
-   element, while the pairing check (0x0f) stays gas-only
-   (Fp12 / Miller-loop machinery of a different order). This
+   element, while the pairing check (0x0f) is run by the
+   tool below (Fp12 / Miller-loop machinery of a different
+   order). This
    tool takes the precompile's own input — exactly one Fp2
    element, 128 bytes: two 64-byte field elements (16 zero top
    bytes carrying a 48-byte value each), read (c0, c1) as
@@ -5897,9 +5898,9 @@ function blsMapG1Calc(inputHex) {
    length, where this page refuses it as malformed, exactly
    as the official fail testdata splits the two cases.
    Prefill is u = 1 + 0u, mapping to the point whose x.c0
-   is 0x1770d4f6...729976 at 23,800. What remains gas-only
-   in the BLS family after this tool is the pairing check
-   (0x0f) alone. Verified in the tests against an
+   is 0x1770d4f6...729976 at 23,800. The pairing check
+   (0x0f) is run by the tool below, closing the family.
+   Verified in the tests against an
    independent pure-Python oracle (oracle-bls-map-g2.py)
    anchored in-script BEFORE emitting vectors on
    go-ethereum's official precompile testdata — all 105
@@ -6002,6 +6003,378 @@ function blsMapG2Calc(inputHex) {
       ? "0x" + "00".repeat(256)
       : "0x" + result[0][0].toString(16).padStart(128, "0") + result[0][1].toString(16).padStart(128, "0") + result[1][0].toString(16).padStart(128, "0") + result[1][1].toString(16).padStart(128, "0"),
     outputBytes: "256", totalGas: gas.totalGas
+  };
+}
+
+/* ---------- BLS12-381 pairing check (EIP-2537, applied) ----------
+   The applied half of the last BLS precompile: blsGasCalc
+   quotes the pairing check's 37,700 + 32,600 per pair from
+   the pair count alone and never reads a point; the G1/G2,
+   MSM and map tools above run their arithmetic and leave
+   this one out, because its arithmetic is of a different
+   order — Fp12 extension-field work and a Miller loop. This
+   tool runs it. It takes the precompile's own input — k
+   repetitions of (G1 point, G2 point), 384 bytes per pair in
+   the EIP-2537 encoding (the G1 point's two 64-byte field
+   elements, then the G2 point's four) — and decides the
+   statement EIP-2537 defines: the product of the pairings
+   e(ai, bi) is the identity, returning the 32-byte word
+   holding 1 when it holds and 0 when it does not.
+   Validation is the family's strictest, and both subgroup
+   checks are the deliberate contrast with the ADD tools
+   above: EVERY point must be in the prime-order subgroup —
+   a field element at or above p fails (which also catches
+   nonzero top bytes, since those make the value at least
+   2^384), a non-infinity point off its curve fails, and an
+   on-curve point with q * P != infinity fails, for G1
+   exactly as for G2 (checked here by the full
+   multiplications, no scalar reduction). Any bad pair fails
+   the WHOLE call at the scheduled charge cross-checked
+   against blsGasCalc exactly on every row (a failing BLS
+   call burns all gas supplied to it, so the scheduled
+   charge is what a successful call pays). A pair with an
+   infinity in either position contributes the identity.
+   Two further traps are pinned. The first is the empty
+   input: unlike the alt_bn128 pairing check above, whose
+   empty product succeeds and returns 1, EIP-2537 makes an
+   empty pairing input FAIL — returned here as a failed call
+   at the 37,700 base (the gas tool above refuses a count of
+   0 as its own input rule, so that one row prices from the
+   EIP's formula directly). The second is the Fp2 word
+   order: a G2 element is written c0 first, then c1 — the
+   opposite of EIP-197's imaginary-first order for
+   alt_bn128 — and the official rows pin it, since the
+   generator only lies on the twist read this way.
+   The arithmetic mirrors the alt_bn128 pairing tool's
+   shape on the BLS tower: Fp12 is the degree-12 polynomial
+   extension with w^12 = 2 w^6 - 2; the twist point is
+   carried into Fp12 by the field isomorphism (c0 + c1 i
+   maps to (c0 - c1) + c1 w^6), held projectively as
+   (embed(x) * w, embed(y), w^3), whose affine point
+   (embed(x) / w^2, embed(y) / w^3) lies on y^2 = x^3 + 4
+   itself. The Miller loop runs the ate loop count
+   15132376222941642752 (the curve's |x| parameter) in its
+   plain binary encoding — the loop starts from R = Q, the
+   encoding's top bit (bit 63) being 1 and implicit, and
+   consumes bits 62..0; there are no signed digits and no
+   Frobenius correction steps for this curve (the steps in
+   many specifications are, in py_ecc's own note on its
+   pairing code, lines that "technically do nothing" here).
+   Line functions are tracked as numerator / denominator
+   pairs so exactly one Fp12 inversion — by the polynomial
+   extended Euclidean algorithm — is needed, and the final
+   exponentiation splits into the Frobenius easy part
+   f^((p^6 - 1)(p^2 + 1)) and the hard part
+   f^((p^4 - p^2 + 1) / q) by square-and-multiply, exactly
+   as the alt_bn128 tool splits its own. Pairs are capped
+   at 16 as a stated page computation cap — the precompile
+   accepts any count a caller's gas can pay for and the gas
+   calculator above still prices beyond it; a client fails
+   the call itself on a length that is not a multiple of
+   384, where this page refuses it as malformed, as on every
+   tool. What remains gas-only on this page after this tool
+   is the KZG point evaluation (0x0a) alone. Verified
+   against an independent oracle (oracle-bls-pairing.py) in
+   two parts asserted to agree on every row: py_ecc, the
+   Ethereum Foundation's bls12_381 library, with EIP-2537's
+   subgroup checks added explicitly, and a pure-Python
+   prototype of this exact algorithm — both reproducing all
+   106 rows of go-ethereum's official blsPairing testdata
+   (results and EIP-2537 prices) and classifying all 9
+   fail-blsPairing rows, with the anchors asserted in-script
+   before emitting (Euclid inverse == Fermat inverse,
+   Frobenius == x^p and x^(p^6), the twisted generator on
+   the Fp12 curve, fast final exponentiation == the naive
+   (p^12 - 1) / q power, and bilinearity e(2G, 3G2) ==
+   e(G, 6G2) != 1). Computes locally; no chain is queried,
+   nothing is called. */
+const BLS_PAIRING_MAX_PAIRS = 16;
+const BLS_ATE_PSEUDO = [
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1
+];
+/* Fp12 helpers: an element is 12 coefficients [c0..c11] of
+   1, w, ..., w^11 with w^12 = 2 w^6 - 2 */
+function blsPrF12Zero() { return [0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n]; }
+function blsPrF12One() { const o = blsPrF12Zero(); o[0] = 1n; return o; }
+function blsPrF12Add(a, b) { return a.map((v, i) => blsG1Mod(v + b[i])); }
+function blsPrF12Sub(a, b) { return a.map((v, i) => blsG1Mod(v - b[i])); }
+function blsPrF12Smul(a, s) { return a.map((v) => blsG1Mod(v * s)); }
+function blsPrF12Eq(a, b) { return a.every((v, i) => blsG1Mod(v - b[i]) === 0n); }
+function blsPrF12IsZero(a) { return a.every((v) => blsG1Mod(v) === 0n); }
+function blsPrF12Mul(a, b) {
+  const t = new Array(23).fill(0n);
+  for (let i = 0; i < 12; i++) {
+    if (a[i] === 0n) continue;
+    for (let j = 0; j < 12; j++) {
+      if (b[j] === 0n) continue;
+      t[i + j] = blsG1Mod(t[i + j] + a[i] * b[j]);
+    }
+  }
+  for (let k = 22; k >= 12; k--) {
+    const c = blsG1Mod(t[k]);
+    if (c === 0n) continue;
+    t[k - 6] = blsG1Mod(t[k - 6] + 2n * c);
+    t[k - 12] = blsG1Mod(t[k - 12] - 2n * c);
+  }
+  return t.slice(0, 12);
+}
+function blsPrF12Pow(a, e) {
+  let result = blsPrF12One(), base = a, exp = e;
+  while (exp > 0n) {
+    if (exp & 1n) result = blsPrF12Mul(result, base);
+    base = blsPrF12Mul(base, base);
+    exp >>= 1n;
+  }
+  return result;
+}
+/* Polynomial helpers over Fp (coefficient lists, low to high)
+   for the Fp12 inverse: the modulus is w^12 - 2 w^6 + 2 */
+const BLS_PR_MOD12 = [2n, 0n, 0n, 0n, 0n, 0n, BLS_G1_P - 2n, 0n, 0n, 0n, 0n, 0n, 1n];
+function blsPrPolyTrim(a) {
+  const out = a.map((v) => blsG1Mod(v));
+  while (out.length > 1 && out[out.length - 1] === 0n) out.pop();
+  return out;
+}
+function blsPrPolyDivmod(aIn, bIn) {
+  let a = blsPrPolyTrim(aIn.slice());
+  const b = blsPrPolyTrim(bIn.slice());
+  if (a.length < b.length) return [[0n], a];
+  const q = new Array(a.length - b.length + 1).fill(0n);
+  const invLead = secpModPow(b[b.length - 1], BLS_G1_P - 2n, BLS_G1_P);
+  while (a.length >= b.length && !(a.length === 1 && a[0] === 0n)) {
+    const d = a.length - b.length;
+    const c = blsG1Mod(a[a.length - 1] * invLead);
+    q[d] = c;
+    for (let j = 0; j < b.length; j++) a[d + j] = blsG1Mod(a[d + j] - c * b[j]);
+    a = blsPrPolyTrim(a);
+  }
+  return [blsPrPolyTrim(q), a];
+}
+function blsPrPolyMod(a) {
+  const t = blsPrPolyTrim(a.slice());
+  if (t.length < 13) {
+    const out = t.slice();
+    while (out.length < 12) out.push(0n);
+    return out;
+  }
+  const r = blsPrPolyDivmod(t, BLS_PR_MOD12)[1];
+  const out = r.slice();
+  while (out.length < 12) out.push(0n);
+  return out;
+}
+function blsPrPolyMulMod(a, b) {
+  const t = new Array(a.length + b.length - 1).fill(0n);
+  for (let i = 0; i < a.length; i++) {
+    if (blsG1Mod(a[i]) === 0n) continue;
+    for (let j = 0; j < b.length; j++) {
+      t[i + j] = blsG1Mod(t[i + j] + a[i] * b[j]);
+    }
+  }
+  return blsPrPolyMod(t);
+}
+function blsPrF12Inv(a) {
+  let oldR = BLS_PR_MOD12.slice(), r = blsPrPolyTrim(a.slice());
+  let oldS = [0n], s = [1n];
+  while (r.length > 1) {
+    const dm = blsPrPolyDivmod(oldR, r);
+    oldR = r; r = dm[1];
+    const qs = blsPrPolyMulMod(dm[0], s);
+    const newS = [];
+    for (let i = 0; i < 12; i++) {
+      newS.push(blsG1Mod((i < oldS.length ? oldS[i] : 0n) - (i < qs.length ? qs[i] : 0n)));
+    }
+    oldS = s; s = blsPrPolyMod(newS);
+  }
+  const invC = secpModPow(r[0], BLS_G1_P - 2n, BLS_G1_P);
+  return blsPrPolyMod(s).map((v) => blsG1Mod(v * invC));
+}
+/* Frobenius: (sum ci w^i)^p = sum ci (w^p)^i, the ci being in
+   Fp and so fixed. Powers of w^p are computed once, lazily. */
+let BLS_PR_WPOW = null;
+function blsPrF12FrobInit() {
+  if (BLS_PR_WPOW !== null) return;
+  const W = blsPrF12Zero(); W[1] = 1n;
+  const WP = blsPrF12Pow(W, BLS_G1_P);
+  BLS_PR_WPOW = [blsPrF12One()];
+  for (let i = 0; i < 11; i++) BLS_PR_WPOW.push(blsPrF12Mul(BLS_PR_WPOW[i], WP));
+}
+function blsPrF12Frob(a) {
+  blsPrF12FrobInit();
+  let out = blsPrF12Zero();
+  for (let i = 0; i < 12; i++) {
+    if (a[i] !== 0n) out = blsPrF12Add(out, blsPrF12Smul(BLS_PR_WPOW[i], a[i]));
+  }
+  return out;
+}
+function blsPrF12FrobPow(a, k) {
+  let wk = blsPrF12Zero(); wk[1] = 1n;
+  for (let j = 0; j < k; j++) wk = blsPrF12Frob(wk);
+  const powers = [blsPrF12One()];
+  for (let i = 0; i < 11; i++) powers.push(blsPrF12Mul(powers[i], wk));
+  let out = blsPrF12Zero();
+  for (let i = 0; i < 12; i++) {
+    if (a[i] !== 0n) out = blsPrF12Add(out, blsPrF12Smul(powers[i], a[i]));
+  }
+  return out;
+}
+/* Projective point arithmetic over Fp12 (the add-2007 /
+   dbl formulas for a = 0, in homogeneous (x/z, y/z) form);
+   a point is [x, y, z] of Fp12 elements, z = 0 is infinity. */
+function blsPrP12Double(pt) {
+  const [x, y, z] = pt;
+  const W = blsPrF12Smul(blsPrF12Mul(x, x), 3n);
+  const S = blsPrF12Mul(y, z);
+  const B = blsPrF12Mul(blsPrF12Mul(x, y), S);
+  const H = blsPrF12Sub(blsPrF12Mul(W, W), blsPrF12Smul(B, 8n));
+  const S2 = blsPrF12Mul(S, S);
+  const nx = blsPrF12Smul(blsPrF12Mul(H, S), 2n);
+  const ny = blsPrF12Sub(
+    blsPrF12Mul(W, blsPrF12Sub(blsPrF12Smul(B, 4n), H)),
+    blsPrF12Smul(blsPrF12Mul(blsPrF12Mul(y, y), S2), 8n));
+  const nz = blsPrF12Smul(blsPrF12Mul(S, S2), 8n);
+  return [nx, ny, nz];
+}
+function blsPrP12Add(p1, p2) {
+  if (blsPrF12IsZero(p1[2])) return p2;
+  if (blsPrF12IsZero(p2[2])) return p1;
+  const [x1, y1, z1] = p1, [x2, y2, z2] = p2;
+  const U1 = blsPrF12Mul(y2, z1), U2 = blsPrF12Mul(y1, z2);
+  const V1 = blsPrF12Mul(x2, z1), V2 = blsPrF12Mul(x1, z2);
+  if (blsPrF12Eq(V1, V2)) {
+    if (blsPrF12Eq(U1, U2)) return blsPrP12Double(p1);
+    return [blsPrF12One(), blsPrF12One(), blsPrF12Zero()];
+  }
+  const U = blsPrF12Sub(U1, U2), V = blsPrF12Sub(V1, V2);
+  const Vsq = blsPrF12Mul(V, V);
+  const VsqV2 = blsPrF12Mul(Vsq, V2);
+  const Vcube = blsPrF12Mul(V, Vsq);
+  const W = blsPrF12Mul(z1, z2);
+  const A = blsPrF12Sub(blsPrF12Sub(blsPrF12Mul(blsPrF12Mul(U, U), W), Vcube), blsPrF12Smul(VsqV2, 2n));
+  const nx = blsPrF12Mul(V, A);
+  const ny = blsPrF12Sub(blsPrF12Mul(U, blsPrF12Sub(VsqV2, A)), blsPrF12Mul(Vcube, U2));
+  const nz = blsPrF12Mul(Vcube, W);
+  return [nx, ny, nz];
+}
+/* The twist isomorphism into Fp12: c0 + c1 i is carried to
+   (c0 - c1) + c1 w^6, then the point is held projectively as
+   (embed(x) * w, embed(y), w^3), whose affine coordinates
+   (embed(x) / w^2, embed(y) / w^3) satisfy y^2 = x^3 + 4 */
+function blsPrTwistToF12(x, y) {
+  const embed = (c) => {
+    const e = blsPrF12Zero();
+    e[0] = blsG1Mod(c[0] - c[1]);
+    e[6] = blsG1Mod(c[1]);
+    return e;
+  };
+  const ex = embed(x), ey = embed(y);
+  const X = blsPrF12Zero(); X[1] = ex[0]; X[7] = ex[6];
+  const Z = blsPrF12Zero(); Z[3] = 1n;
+  return [X, ey, Z];
+}
+/* The line through P1 and P2 evaluated at T, returned as a
+   (numerator, denominator) pair so the loop needs no
+   inversions until the very end */
+function blsPrLinefunc(P1, P2, T) {
+  const [x1, y1, z1] = P1, [x2, y2, z2] = P2, [xt, yt, zt] = T;
+  const mn = blsPrF12Sub(blsPrF12Mul(y2, z1), blsPrF12Mul(y1, z2));
+  const md = blsPrF12Sub(blsPrF12Mul(x2, z1), blsPrF12Mul(x1, z2));
+  if (!blsPrF12IsZero(md)) {
+    const num = blsPrF12Sub(
+      blsPrF12Mul(mn, blsPrF12Sub(blsPrF12Mul(xt, z1), blsPrF12Mul(x1, zt))),
+      blsPrF12Mul(md, blsPrF12Sub(blsPrF12Mul(yt, z1), blsPrF12Mul(y1, zt))));
+    return [num, blsPrF12Mul(blsPrF12Mul(md, zt), z1)];
+  }
+  if (blsPrF12IsZero(mn)) {
+    const mn2 = blsPrF12Smul(blsPrF12Mul(x1, x1), 3n);
+    const md2 = blsPrF12Smul(blsPrF12Mul(y1, z1), 2n);
+    const num = blsPrF12Sub(
+      blsPrF12Mul(mn2, blsPrF12Sub(blsPrF12Mul(xt, z1), blsPrF12Mul(x1, zt))),
+      blsPrF12Mul(md2, blsPrF12Sub(blsPrF12Mul(yt, z1), blsPrF12Mul(y1, zt))));
+    return [num, blsPrF12Mul(blsPrF12Mul(md2, zt), z1)];
+  }
+  return [blsPrF12Sub(blsPrF12Mul(xt, z1), blsPrF12Mul(x1, zt)), blsPrF12Mul(z1, zt)];
+}
+function blsPrMillerRaw(Q12, P12) {
+  let R = Q12;
+  let fNum = blsPrF12One(), fDen = blsPrF12One();
+  for (let idx = 62; idx >= 0; idx--) {
+    const v = BLS_ATE_PSEUDO[idx];
+    const ld = blsPrLinefunc(R, R, P12);
+    fNum = blsPrF12Mul(blsPrF12Mul(fNum, fNum), ld[0]);
+    fDen = blsPrF12Mul(blsPrF12Mul(fDen, fDen), ld[1]);
+    R = blsPrP12Double(R);
+    if (v === 1) {
+      const la = blsPrLinefunc(R, Q12, P12);
+      fNum = blsPrF12Mul(fNum, la[0]);
+      fDen = blsPrF12Mul(fDen, la[1]);
+      R = blsPrP12Add(R, Q12);
+    }
+  }
+  return blsPrF12Mul(fNum, blsPrF12Inv(fDen));
+}
+function blsPrFinalExp(f) {
+  const f1 = blsPrF12Mul(blsPrF12FrobPow(f, 6), blsPrF12Inv(f)); /* f^(p^6 - 1) */
+  const f2 = blsPrF12Mul(blsPrF12FrobPow(f1, 2), f1); /* ^(p^2 + 1) */
+  return blsPrF12Pow(f2, (BLS_G1_P ** 4n - BLS_G1_P ** 2n + 1n) / BLS_G1_Q);
+}
+function blsPairingCalc(inputHex) {
+  const bytes = parseHexBytes(inputHex);
+  if (bytes === null) return null;
+  if (bytes.length % 384 !== 0) return null;
+  const pairs = bytes.length / 384;
+  if (pairs > BLS_PAIRING_MAX_PAIRS) return null;
+  if (pairs === 0) {
+    /* EIP-2537: an empty pairing input FAILS (unlike
+       alt_bn128's empty product) at the 37,700 base */
+    return {
+      precompile: "pairing", address: "0x000000000000000000000000000000000000000f",
+      pairs: "0", succeeded: "false", output: "0x", outputBytes: "0",
+      totalGas: "37700"
+    };
+  }
+  const gas = blsGasCalc("pairing", String(pairs));
+  if (gas === null) return null;
+  const failed = {
+    precompile: "pairing", address: gas.address, pairs: String(pairs),
+    succeeded: "false", output: "0x", outputBytes: "0", totalGas: gas.totalGas
+  };
+  const parsed = [];
+  for (let i = 0; i < pairs; i++) {
+    const off = i * 384;
+    const fe = [];
+    for (let j = 0; j < 6; j++) fe.push(bytesToBigInt(bytes.slice(off + 64 * j, off + 64 * j + 64)));
+    const gx = fe[0], gy = fe[1];
+    if (!blsG1ValidPoint(gx, gy)) return failed;
+    let p12 = null;
+    if (!(gx === 0n && gy === 0n)) {
+      if (blsG1Mul(BLS_G1_Q, [gx, gy]) !== null) return failed; /* EIP-2537 subgroup check */
+      const ex = blsPrF12Zero(); ex[0] = gx;
+      const ey = blsPrF12Zero(); ey[0] = gy;
+      p12 = [ex, ey, blsPrF12One()];
+    }
+    const x = [fe[2], fe[3]], y = [fe[4], fe[5]];
+    if (!blsG2ValidPoint(x, y)) return failed;
+    let q12 = null;
+    if (!(x[0] === 0n && x[1] === 0n && y[0] === 0n && y[1] === 0n)) {
+      if (blsG2Mul(BLS_G2_Q, [x, y]) !== null) return failed; /* EIP-2537 subgroup check */
+      q12 = blsPrTwistToF12(x, y);
+    }
+    parsed.push([p12, q12]);
+  }
+  let acc = blsPrF12One();
+  for (const [p12, q12] of parsed) {
+    if (p12 === null || q12 === null) continue;
+    acc = blsPrF12Mul(acc, blsPrMillerRaw(q12, p12));
+  }
+  const ok = blsPrF12Eq(blsPrFinalExp(acc), blsPrF12One());
+  return {
+    precompile: "pairing", address: gas.address, pairs: String(pairs),
+    succeeded: "true",
+    output: "0x" + (ok ? "0".repeat(63) + "1" : "0".repeat(64)),
+    outputBytes: "32", totalGas: gas.totalGas
   };
 }
 
@@ -10666,6 +11039,21 @@ if (typeof document !== "undefined") {
         : `${r.precompile} precompile (${r.address}): the call FAILS — a component of the Fp2 element is at or above the field prime (nonzero top bytes included, since those make the component at least 2^384): no output, and a failing BLS precompile call burns all the gas supplied to it, so the caller's cost is whatever it forwarded (the scheduled charge is ${r.totalGas}). Computed locally from the value you gave — nothing is called and no chain is queried.`;
     });
 
+    /* BLS12-381 pairing check (applied) */
+    const blspBtn = document.getElementById("blsp-btn");
+    if (blspBtn) blspBtn.addEventListener("click", () => {
+      const r = blsPairingCalc(
+        document.getElementById("blsp-input").value);
+      const el = document.getElementById("blsp-out");
+      if (r === null) {
+        el.textContent = "Check the input: the pairing input is hex bytes whose length is a multiple of 384 (one G1 point and one G2 point per pair), at most 16 pairs on this page — the gas calculator above prices any count.";
+        return;
+      }
+      el.textContent = r.succeeded === "true"
+        ? `pairing precompile (${r.address}) result: ${r.output} — the 32-byte word holding ${r.output.endsWith("1") ? "1: the product of the pairings is the identity, so the check passes" : "0: the product of the pairings is not the identity, so the check does not pass"}, over ${r.pairs} pair(s). Gas: ${r.totalGas} — 37,700 base + 32,600 per pair, from the gas calculator above. This is the precompile's own charge only — the CALL or STATICCALL that invokes it charges its own terms separately, and the precompiles start warm, so no EIP-2929 cold term applies. Computed locally from the values you gave — nothing is called and no chain is queried.`
+        : `pairing precompile (${r.address}): the call FAILS — ${r.pairs === "0" ? "the input is empty, which EIP-2537 makes an error (unlike the alt_bn128 pairing check above, whose empty product returns 1)" : `a G1 or G2 point off its curve, outside the prime-order subgroup, or with a field element at or above the field prime, in one of the ${r.pairs} pair(s)`}: no output, and a failing BLS precompile call burns all the gas supplied to it, so the caller's cost is whatever it forwarded (the scheduled charge is ${r.totalGas}). Computed locally from the values you gave — nothing is called and no chain is queried.`;
+    });
+
     /* secp256r1 (P256VERIFY) precompile gas */
     const p256Btn = document.getElementById("p256-btn");
     if (p256Btn) p256Btn.addEventListener("click", () => {
@@ -11616,5 +12004,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

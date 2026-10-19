@@ -3769,6 +3769,80 @@ function aaveLiquidationCalc(healthFactorStr, totalDebtStr, debtToCoverStr, coll
   };
 }
 
+/* Aave V3 scaled balances — the ray conversions between
+   an underlying amount and the scaled balance that
+   represents it (aave-v3-core, BUSL-1.1; formulas
+   paraphrased, not copied). Neither aTokens nor variable
+   debt tokens store underlying balances: they store
+   SCALED balances, and the underlying a scaled balance
+   represents moves with the reserve's index:
+     balanceOf(scaled)   = rayMul(scaled, index)
+       (AToken / VariableDebtToken balanceOf, over the
+        reserve's normalised income / debt index);
+     amountScaled        = rayDiv(amount, index)
+       (ScaledBalanceTokenBase._mintScaled on supply or
+        borrow, _burnScaled on withdraw, repay or
+        liquidation — the same conversion both ways).
+   Both helpers are WadRayMath's and both round HALF UP:
+   rayMul is (a × b + RAY/2) ÷ RAY and rayDiv is
+   (a × RAY + b/2) ÷ b. The traps:
+     - the round trip is NOT the identity: converting an
+       amount to scaled and back returns the amount plus a
+       small difference from the two half-up roundings
+       (the oracle rows span −2 to +1), and a dust amount
+       at a high index scales to ZERO — _mintScaled and
+       _burnScaled require a non-zero scaled amount
+       (INVALID_MINT_AMOUNT / INVALID_BURN_AMOUNT), so
+       such a supply or repay reverts on chain;
+     - a zero index divides by zero in rayDiv and is
+       refused, even for a zero amount, while rayMul by a
+       zero index would return 0 without reverting — the
+       conversion direction is what refuses;
+     - the scaled amount minted or burned is cast to
+       uint128 (SafeCast.toUint128 in _mintScaled /
+       _burnScaled), so a scaled result above 2^128 − 1 is
+       refused: an amount of exactly 2^128 at index RAY
+       refuses, while at index 2·RAY it fits at exactly
+       2^127 (both pinned);
+     - rayMul and rayDiv carry their own revert bounds
+       (rayMul past (2^256 − 1 − RAY/2) ÷ b, rayDiv past
+       (2^256 − 1 − b/2) ÷ RAY), refused here as the
+       library reverts there.
+   The previous-index balance-increase bookkeeping inside
+   _mintScaled / _burnScaled (which needs the user's
+   stored previous index) and the index updates
+   themselves (the interest tool's ground) are out of
+   scope. The scaled balance, the amount and the index
+   are chain state this page does not read; all three are
+   values the user supplies. Nothing is queried on
+   chain. */
+const AAVE_UINT128_MAX = 2n ** 128n - 1n;
+function aaveRayDiv(a, b) {
+  if (b === 0n) return null;
+  if (a > (ERC4626_MAX_UINT256 - b / 2n) / AAVE_RAY) return null;
+  return (a * AAVE_RAY + b / 2n) / b;
+}
+function aaveScaledCalc(scaledStr, amountStr, indexStr) {
+  const scaled = v2ParseUint(scaledStr);
+  const amount = v2ParseUint(amountStr);
+  const index = v2ParseUint(indexStr);
+  if (scaled === null || amount === null || index === null) return null;
+  const balance = aaveRayMul(scaled, index);
+  if (balance === null) return null;
+  const scaledFromAmount = aaveRayDiv(amount, index);
+  if (scaledFromAmount === null) return null;
+  if (scaledFromAmount > AAVE_UINT128_MAX) return null;
+  const roundTripAmount = aaveRayMul(scaledFromAmount, index);
+  if (roundTripAmount === null) return null;
+  return {
+    balance: balance.toString(),
+    scaledFromAmount: scaledFromAmount.toString(),
+    roundTripAmount: roundTripAmount.toString(),
+    roundTripDifference: (roundTripAmount - amount).toString(),
+    amountScaledZero: scaledFromAmount === 0n ? "true" : "false"
+  };
+}
+
 /* ModExp precompile gas — the pricing of the EVM's modular
    exponentiation precompile at address 0x05, under both
    schedules that have priced it (EIP-2565, in force from
@@ -11284,6 +11358,25 @@ if (typeof document !== "undefined") {
       el.textContent = `Liquidation: close factor ${r.closeFactor} basis points caps the cover at ${r.maxLiquidatableDebt} of debt (debt-asset base units); this call covers ${r.debtCovered} and seizes ${r.collateralSeized} of collateral (collateral-asset base units)${r.cappedByCollateral === "true" ? " — the whole collateral balance, which is less than the bonus-priced amount, so the debt covered was recomputed backward from the balance and is below the close-factor cap" : ""}. ${r.protocolFee === "0" ? "The liquidation protocol fee is zero here, so the liquidator receives the full seized amount" : `The protocol takes ${r.protocolFee} of the bonus part as its liquidation fee, so the liquidator receives ${r.collateralToLiquidator}`}. Computed locally with Aave V3's LiquidationLogic / PercentageMath formulas on the values you gave — a real account's health factor, balances, prices and reserve configuration are chain state this page does not read. Not financial advice.`;
     });
 
+    /* Aave V3 scaled balances */
+    const aavescBtn = document.getElementById("aavesc-btn");
+    if (aavescBtn) aavescBtn.addEventListener("click", () => {
+      const amountVal = document.getElementById("aavesc-amount").value;
+      const r = aaveScaledCalc(
+        document.getElementById("aavesc-scaled").value,
+        amountVal,
+        document.getElementById("aavesc-index").value);
+      const el = document.getElementById("aavesc-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: the scaled balance, the amount and the index are whole numbers (the index in ray, 10^27 = 1.0), the index is not zero, the scaled amount the conversion produces does not exceed the uint128 maximum the token contracts cast to, and neither rayMul nor rayDiv exceeds its uint256 bound, as WadRayMath and SafeCast revert there.";
+        return;
+      }
+      const zeroNote = r.amountScaledZero === "true" && amountVal !== "0"
+        ? " The amount you gave scales to zero at this index, so on chain the mint or burn would revert (INVALID_MINT_AMOUNT / INVALID_BURN_AMOUNT) — nothing would be supplied, borrowed, withdrawn or repaid."
+        : "";
+      el.textContent = `Scaled balance: the scaled balance represents ${r.balance} of underlying at this index (rayMul, half up). Supplying, borrowing, withdrawing or repaying ${amountVal} of underlying converts to ${r.scaledFromAmount} scaled (rayDiv, half up), which converts back to ${r.roundTripAmount} — a round-trip difference of ${r.roundTripDifference} from the two half-up roundings.${zeroNote} Computed locally with Aave V3's WadRayMath / ScaledBalanceTokenBase formulas on the values you gave — a real balance's scaled amount and its reserve's index are chain state this page does not read. Not financial advice.`;
+    });
+
     /* ModExp precompile gas */
     const mxgBtn = document.getElementById("mxg-btn");
     if (mxgBtn) mxgBtn.addEventListener("click", () => {
@@ -12791,5 +12884,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, aaveAccountCalc, aaveInterestCalc, aaveLiquidationCalc, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, encodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, aaveAccountCalc, aaveInterestCalc, aaveLiquidationCalc, aaveScaledCalc, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, encodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

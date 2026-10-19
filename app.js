@@ -3843,6 +3843,181 @@ function aaveScaledCalc(scaledStr, amountStr, indexStr) {
   };
 }
 
+/* Aave V3 interest rate strategy — the two-slope rate
+   model of DefaultReserveInterestRateStrategy
+   .calculateInterestRates (aave-v3-core, BUSL-1.1;
+   formulas paraphrased, not copied). This is where the
+   rates the interest tool accrues come from: on every
+   reserve interaction the Pool asks the reserve's strategy
+   for three rates from the reserve's debt and liquidity
+   state, and this calculator runs that derivation over the
+   values the caller supplies — including the strategy's
+   nine configuration parameters, which on chain are the
+   strategy contract's immutables. The available liquidity
+   input is the strategy's own figure already formed: the
+   aToken's underlying balance plus liquidity added minus
+   liquidity taken in the triggering interaction.
+     totalDebt        = totalStableDebt + totalVariableDebt
+     borrowUsageRatio = rayDiv(totalDebt,
+                        availableLiquidity + totalDebt)
+     supplyUsageRatio = rayDiv(totalDebt,
+                        availableLiquidity + totalDebt + unbacked)
+     stableRatio      = rayDiv(totalStableDebt, totalDebt)
+   Below or AT the optimal usage ratio the variable rate is
+   base + rayDiv(rayMul(slope1, borrowUsage), optimal) —
+   the comparison is STRICT, so usage of exactly the
+   optimal ratio takes this branch and slope2 never engages
+   there. Above it, both rates jump by the full slope1 and
+   rise along slope2 scaled by the excess ratio
+   rayDiv(borrowUsage − optimal, RAY − optimal). The stable
+   rate starts from getBaseStableBorrowRate() =
+   variableSlope1 + baseStableRateOffset (not from the
+   stable slope), follows the same kink on stableSlope1/2,
+   and adds rayMul(stableRateExcessOffset, excessStable)
+   when the stable share of debt passes the optimal stable
+   ratio. The liquidity (supply) rate is NOT a slope value:
+   it is the overall borrow rate — the debt-weighted
+   average in _getOverallBorrowRate, where variable debt is
+   weighted at the CURRENT variable rate but stable debt at
+   the reserve's stored AVERAGE stable rate, not the
+   current stable rate this same call computes — multiplied
+   by the SUPPLY usage ratio (which the unbacked amount
+   dilutes, where the borrow usage ratio is untouched by
+   it) and percentMul'd by (10000 − reserveFactor), the
+   protocol's retained share. WadRayMath rounds half up and
+   PercentageMath.percentMul does too; wadToRay inside the
+   overall rate is a checked ×10^9. Traps pinned:
+     - zero total debt short-circuits the ratios and the
+       overall rate to 0, but the slope math STILL runs at
+       usage 0 over the configuration: a zero optimal usage
+       ratio therefore refuses even for an empty reserve,
+       because the below-branch divides rayDiv by the
+       optimal ratio (rayDiv by zero reverts), while the
+       same zero optimal WITH debt takes the excess branch
+       and prices normally;
+     - an optimal usage ratio of exactly RAY can never be
+       exceeded (usage cannot pass RAY, its rayDiv rounding
+       included), so MAX_EXCESS_USAGE_RATIO = 0 is never a
+       divisor on chain or here;
+     - the constructor guards are applied first: optimal
+       usage or optimal stable ratio above RAY refuses, as
+       does a reserve factor above 10000 (the percentMul
+       factor 10000 − reserveFactor would underflow);
+     - every checked addition and each helper's own bound
+       (rayMul / rayDiv / percentMul / wadToRay) refuses
+       where the source reverts.
+   The reserve state, the average stable rate and the nine
+   strategy parameters are chain state this page does not
+   read; all are values the user supplies. Nothing is
+   queried on chain. */
+function aaveWadToRay(a) {
+  if (a > ERC4626_MAX_UINT256 / 1000000000n) return null;
+  return a * 1000000000n;
+}
+function aaveRateCalc(availableLiquidityStr, unbackedStr, totalStableDebtStr, totalVariableDebtStr, averageStableBorrowRateStr, reserveFactorStr, optimalUsageRatioStr, baseVariableBorrowRateStr, variableRateSlope1Str, variableRateSlope2Str, stableRateSlope1Str, stableRateSlope2Str, baseStableRateOffsetStr, stableRateExcessOffsetStr, optimalStableToTotalDebtRatioStr) {
+  const availableLiquidity = v2ParseUint(availableLiquidityStr);
+  const unbacked = v2ParseUint(unbackedStr);
+  const totalStableDebt = v2ParseUint(totalStableDebtStr);
+  const totalVariableDebt = v2ParseUint(totalVariableDebtStr);
+  const averageStableBorrowRate = v2ParseUint(averageStableBorrowRateStr);
+  const reserveFactor = v2ParseUint(reserveFactorStr);
+  const optimalUsageRatio = v2ParseUint(optimalUsageRatioStr);
+  const baseVariableBorrowRate = v2ParseUint(baseVariableBorrowRateStr);
+  const variableRateSlope1 = v2ParseUint(variableRateSlope1Str);
+  const variableRateSlope2 = v2ParseUint(variableRateSlope2Str);
+  const stableRateSlope1 = v2ParseUint(stableRateSlope1Str);
+  const stableRateSlope2 = v2ParseUint(stableRateSlope2Str);
+  const baseStableRateOffset = v2ParseUint(baseStableRateOffsetStr);
+  const stableRateExcessOffset = v2ParseUint(stableRateExcessOffsetStr);
+  const optimalStableToTotalDebtRatio = v2ParseUint(optimalStableToTotalDebtRatioStr);
+  if (availableLiquidity === null || unbacked === null || totalStableDebt === null || totalVariableDebt === null || averageStableBorrowRate === null || reserveFactor === null || optimalUsageRatio === null || baseVariableBorrowRate === null || variableRateSlope1 === null || variableRateSlope2 === null || stableRateSlope1 === null || stableRateSlope2 === null || baseStableRateOffset === null || stableRateExcessOffset === null || optimalStableToTotalDebtRatio === null) return null;
+  if (optimalUsageRatio > AAVE_RAY || optimalStableToTotalDebtRatio > AAVE_RAY) return null;
+  if (reserveFactor > AAVE_PERCENTAGE_FACTOR) return null;
+  const maxExcessUsageRatio = AAVE_RAY - optimalUsageRatio;
+  const maxExcessStableToTotalDebtRatio = AAVE_RAY - optimalStableToTotalDebtRatio;
+  const totalDebt = totalStableDebt + totalVariableDebt;
+  if (totalDebt > ERC4626_MAX_UINT256) return null;
+  let currentVariableBorrowRate = baseVariableBorrowRate;
+  let currentStableBorrowRate = variableRateSlope1 + baseStableRateOffset;
+  if (currentStableBorrowRate > ERC4626_MAX_UINT256) return null;
+  let borrowUsageRatio = 0n;
+  let supplyUsageRatio = 0n;
+  let stableToTotalDebtRatio = 0n;
+  if (totalDebt !== 0n) {
+    stableToTotalDebtRatio = aaveRayDiv(totalStableDebt, totalDebt);
+    if (stableToTotalDebtRatio === null) return null;
+    const availableLiquidityPlusDebt = availableLiquidity + totalDebt;
+    if (availableLiquidityPlusDebt > ERC4626_MAX_UINT256) return null;
+    borrowUsageRatio = aaveRayDiv(totalDebt, availableLiquidityPlusDebt);
+    if (borrowUsageRatio === null) return null;
+    const supplyDenominator = availableLiquidityPlusDebt + unbacked;
+    if (supplyDenominator > ERC4626_MAX_UINT256) return null;
+    supplyUsageRatio = aaveRayDiv(totalDebt, supplyDenominator);
+    if (supplyUsageRatio === null) return null;
+  }
+  if (borrowUsageRatio > optimalUsageRatio) {
+    const excessBorrowUsageRatio = aaveRayDiv(borrowUsageRatio - optimalUsageRatio, maxExcessUsageRatio);
+    if (excessBorrowUsageRatio === null) return null;
+    const stableSlope2Part = aaveRayMul(stableRateSlope2, excessBorrowUsageRatio);
+    if (stableSlope2Part === null) return null;
+    currentStableBorrowRate += stableRateSlope1 + stableSlope2Part;
+    if (currentStableBorrowRate > ERC4626_MAX_UINT256) return null;
+    const variableSlope2Part = aaveRayMul(variableRateSlope2, excessBorrowUsageRatio);
+    if (variableSlope2Part === null) return null;
+    currentVariableBorrowRate += variableRateSlope1 + variableSlope2Part;
+    if (currentVariableBorrowRate > ERC4626_MAX_UINT256) return null;
+  } else {
+    const stablePartRaw = aaveRayMul(stableRateSlope1, borrowUsageRatio);
+    if (stablePartRaw === null) return null;
+    const stablePart = aaveRayDiv(stablePartRaw, optimalUsageRatio);
+    if (stablePart === null) return null;
+    currentStableBorrowRate += stablePart;
+    if (currentStableBorrowRate > ERC4626_MAX_UINT256) return null;
+    const variablePartRaw = aaveRayMul(variableRateSlope1, borrowUsageRatio);
+    if (variablePartRaw === null) return null;
+    const variablePart = aaveRayDiv(variablePartRaw, optimalUsageRatio);
+    if (variablePart === null) return null;
+    currentVariableBorrowRate += variablePart;
+    if (currentVariableBorrowRate > ERC4626_MAX_UINT256) return null;
+  }
+  if (stableToTotalDebtRatio > optimalStableToTotalDebtRatio) {
+    const excessStableDebtRatio = aaveRayDiv(stableToTotalDebtRatio - optimalStableToTotalDebtRatio, maxExcessStableToTotalDebtRatio);
+    if (excessStableDebtRatio === null) return null;
+    const excessPart = aaveRayMul(stableRateExcessOffset, excessStableDebtRatio);
+    if (excessPart === null) return null;
+    currentStableBorrowRate += excessPart;
+    if (currentStableBorrowRate > ERC4626_MAX_UINT256) return null;
+  }
+  let overallBorrowRate = 0n;
+  if (totalDebt !== 0n) {
+    const variableDebtRay = aaveWadToRay(totalVariableDebt);
+    const stableDebtRay = aaveWadToRay(totalStableDebt);
+    const totalDebtRay = aaveWadToRay(totalDebt);
+    if (variableDebtRay === null || stableDebtRay === null || totalDebtRay === null) return null;
+    const weightedVariableRate = aaveRayMul(variableDebtRay, currentVariableBorrowRate);
+    if (weightedVariableRate === null) return null;
+    const weightedStableRate = aaveRayMul(stableDebtRay, averageStableBorrowRate);
+    if (weightedStableRate === null) return null;
+    const weightedSum = weightedVariableRate + weightedStableRate;
+    if (weightedSum > ERC4626_MAX_UINT256) return null;
+    overallBorrowRate = aaveRayDiv(weightedSum, totalDebtRay);
+    if (overallBorrowRate === null) return null;
+  }
+  const overallTimesUsage = aaveRayMul(overallBorrowRate, supplyUsageRatio);
+  if (overallTimesUsage === null) return null;
+  const currentLiquidityRate = aavePercentMul(overallTimesUsage, AAVE_PERCENTAGE_FACTOR - reserveFactor);
+  if (currentLiquidityRate === null) return null;
+  return {
+    liquidityRate: currentLiquidityRate.toString(),
+    stableBorrowRate: currentStableBorrowRate.toString(),
+    variableBorrowRate: currentVariableBorrowRate.toString(),
+    borrowUsageRatio: borrowUsageRatio.toString(),
+    supplyUsageRatio: supplyUsageRatio.toString(),
+    stableToTotalDebtRatio: stableToTotalDebtRatio.toString(),
+    overallBorrowRate: overallBorrowRate.toString()
+  };
+}
+
 /* ModExp precompile gas — the pricing of the EVM's modular
    exponentiation precompile at address 0x05, under both
    schedules that have priced it (EIP-2565, in force from
@@ -11377,6 +11552,33 @@ if (typeof document !== "undefined") {
       el.textContent = `Scaled balance: the scaled balance represents ${r.balance} of underlying at this index (rayMul, half up). Supplying, borrowing, withdrawing or repaying ${amountVal} of underlying converts to ${r.scaledFromAmount} scaled (rayDiv, half up), which converts back to ${r.roundTripAmount} — a round-trip difference of ${r.roundTripDifference} from the two half-up roundings.${zeroNote} Computed locally with Aave V3's WadRayMath / ScaledBalanceTokenBase formulas on the values you gave — a real balance's scaled amount and its reserve's index are chain state this page does not read. Not financial advice.`;
     });
 
+    /* Aave V3 interest rate strategy */
+    const aaverateBtn = document.getElementById("aaverate-btn");
+    if (aaverateBtn) aaverateBtn.addEventListener("click", () => {
+      const r = aaveRateCalc(
+        document.getElementById("aaverate-avail").value,
+        document.getElementById("aaverate-unbacked").value,
+        document.getElementById("aaverate-stable-debt").value,
+        document.getElementById("aaverate-variable-debt").value,
+        document.getElementById("aaverate-avg-stable").value,
+        document.getElementById("aaverate-reserve-factor").value,
+        document.getElementById("aaverate-optimal-usage").value,
+        document.getElementById("aaverate-base-variable").value,
+        document.getElementById("aaverate-var-slope1").value,
+        document.getElementById("aaverate-var-slope2").value,
+        document.getElementById("aaverate-stable-slope1").value,
+        document.getElementById("aaverate-stable-slope2").value,
+        document.getElementById("aaverate-base-stable-offset").value,
+        document.getElementById("aaverate-stable-excess-offset").value,
+        document.getElementById("aaverate-optimal-stable-ratio").value);
+      const el = document.getElementById("aaverate-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: every value is a whole number (rates and ratios in ray, 10^27 = 1.0 = 100% per year; the reserve factor in basis points, at most 10000), neither optimal ratio exceeds 10^27, and no intermediate exceeds the uint256 maximum, as the strategy's constructor guards, WadRayMath, PercentageMath and the checked additions revert there. Note a zero optimal usage ratio refuses exactly when the on-chain call would divide by it: at zero debt (the below-optimal branch at usage 0), while with debt it prices along the excess branch.";
+        return;
+      }
+      el.textContent = `Interest rates (all in ray, 10^27 = 100% per year): liquidity (supply) rate ${r.liquidityRate}, stable borrow rate ${r.stableBorrowRate}, variable borrow rate ${r.variableBorrowRate}. Usage: borrow usage ratio ${r.borrowUsageRatio}, supply usage ratio ${r.supplyUsageRatio} (the unbacked amount dilutes only the supply ratio), stable share of total debt ${r.stableToTotalDebtRatio}; the overall borrow rate behind the liquidity rate is ${r.overallBorrowRate} — variable debt weighted at the current variable rate, stable debt at the stored average stable rate you gave, not the current stable rate above. Computed locally with Aave V3's DefaultReserveInterestRateStrategy formulas on the values you gave — a real reserve's debt, liquidity, average stable rate and strategy parameters are chain state this page does not read. Not financial advice.`;
+    });
+
     /* ModExp precompile gas */
     const mxgBtn = document.getElementById("mxg-btn");
     if (mxgBtn) mxgBtn.addEventListener("click", () => {
@@ -12884,5 +13086,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, aaveAccountCalc, aaveInterestCalc, aaveLiquidationCalc, aaveScaledCalc, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, encodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, aaveAccountCalc, aaveInterestCalc, aaveLiquidationCalc, aaveScaledCalc, aaveRateCalc, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, encodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }

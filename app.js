@@ -3625,6 +3625,150 @@ function aaveInterestCalc(rateStr, elapsedStr, indexStr) {
   };
 }
 
+/* Aave V3 liquidation — LiquidationLogic's debt and
+   collateral math (aave-v3-core, BUSL-1.1; formulas
+   paraphrased, not copied), over the position values the
+   caller supplies. A liquidation call (Pool.liquidationCall)
+   first derives the account's health factor exactly as the
+   account tool above does; ValidationLogic reverts unless
+   it is below 1e18, and that gate is applied here FIRST —
+   at or above it the position is not liquidatable and every
+   amount is zero, whatever the other inputs are (a debt-free
+   account's health factor is the uint256 maximum). Below
+   the gate, _calculateDebt picks the close factor by a
+   STRICT comparison against CLOSE_FACTOR_HF_THRESHOLD
+   (0.95e18): above it the liquidator may cover at most
+   DEFAULT_LIQUIDATION_CLOSE_FACTOR (5000 = 50.00%) of the
+   debt in this reserve, at or below it
+   MAX_LIQUIDATION_CLOSE_FACTOR (10000 = 100.00%); the
+   requested cover is clamped to percentMul(totalDebt,
+   closeFactor). _calculateAvailableCollateralToLiquidate
+   then prices the seized collateral in the oracle's base
+   currency (8 decimals on the mainnet market):
+     baseCollateral = debtPrice × debtToCover × 10^collDec
+                      ÷ (collateralPrice × 10^debtDec)
+     maxCollateral  = percentMul(baseCollateral, bonus)
+   with truncating division. If that exceeds the user's
+   collateral balance, the whole balance is seized instead
+   and the debt actually covered is recomputed BACKWARD —
+   percentDiv((collateralPrice × balance × 10^debtDec) ÷
+   (debtPrice × 10^collDec), bonus) — so a capped
+   liquidation covers less debt than the close factor
+   allowed. Finally, when the reserve's liquidation protocol
+   fee percentage is non-zero, the protocol takes
+   percentMul(bonusCollateral, feePct) of the BONUS part
+   only — bonusCollateral = seized − percentDiv(seized,
+   bonus) — and the liquidator receives the rest.
+   PercentageMath rounds half up in both directions:
+   percentMul is (value × pct + 5000) ÷ 10000 and percentDiv
+   is (value × 10000 + pct ÷ 2) ÷ pct, each with its own
+   revert bound (percentDiv also reverts at a zero
+   percentage). The products debtPrice × cover × 10^collDec
+   and collateralPrice × balance × 10^debtDec are checked
+   Solidity multiplications, refused here past the uint256
+   maximum, as are the percent helpers' own bounds. A
+   liquidation bonus below 10000 (100.00%) is refused: the
+   reserve configuration always stores at least that (10000
+   itself means no bonus at all, only repayment value), and
+   below it the fee branch's bonus subtraction would
+   underflow. A protocol fee percentage above 10000, a zero
+   price on either asset (the source divides by both), and
+   decimals above 77 (whose 10^decimals unit exceeds the
+   uint256 range the protocol's sane configurations stay
+   inside) are likewise refused. The health factor, debt,
+   balances, prices, bonus and fee percentage are chain
+   state this page does not read — including which reserves
+   the account actually uses, eMode categories, and whether
+   this collateral backs this debt at all; all are values
+   the user supplies. Nothing is queried on chain. */
+const AAVE_LIQUIDATION_HF_THRESHOLD = 95n * 10n ** 16n;
+const AAVE_DEFAULT_CLOSE_FACTOR = 5000n;
+const AAVE_MAX_CLOSE_FACTOR = 10000n;
+function aavePercentDiv(value, pct) {
+  if (pct === 0n || value > (ERC4626_MAX_UINT256 - pct / 2n) / AAVE_PERCENTAGE_FACTOR) return null;
+  return (value * AAVE_PERCENTAGE_FACTOR + pct / 2n) / pct;
+}
+function aaveLiquidationCalc(healthFactorStr, totalDebtStr, debtToCoverStr, collateralBalanceStr, collateralPriceStr, debtPriceStr, collateralDecimalsStr, debtDecimalsStr, liquidationBonusStr, protocolFeePctStr) {
+  const healthFactor = v2ParseUint(healthFactorStr);
+  const totalDebt = v2ParseUint(totalDebtStr);
+  const debtToCover = v2ParseUint(debtToCoverStr);
+  const collateralBalance = v2ParseUint(collateralBalanceStr);
+  const collateralPrice = v2ParseUint(collateralPriceStr);
+  const debtPrice = v2ParseUint(debtPriceStr);
+  const collateralDecimals = v2ParseUint(collateralDecimalsStr);
+  const debtDecimals = v2ParseUint(debtDecimalsStr);
+  const liquidationBonus = v2ParseUint(liquidationBonusStr);
+  const protocolFeePct = v2ParseUint(protocolFeePctStr);
+  if (healthFactor === null || totalDebt === null || debtToCover === null || collateralBalance === null || collateralPrice === null || debtPrice === null || collateralDecimals === null || debtDecimals === null || liquidationBonus === null || protocolFeePct === null) return null;
+  if (healthFactor >= AAVE_WAD) {
+    return {
+      liquidatable: "false",
+      closeFactor: "0",
+      maxLiquidatableDebt: "0",
+      debtCovered: "0",
+      collateralSeized: "0",
+      protocolFee: "0",
+      collateralToLiquidator: "0",
+      cappedByCollateral: "false"
+    };
+  }
+  if (liquidationBonus < AAVE_PERCENTAGE_FACTOR || protocolFeePct > AAVE_PERCENTAGE_FACTOR) return null;
+  if (collateralDecimals > 77n || debtDecimals > 77n) return null;
+  if (collateralPrice === 0n || debtPrice === 0n) return null;
+  const closeFactor = healthFactor > AAVE_LIQUIDATION_HF_THRESHOLD ? AAVE_DEFAULT_CLOSE_FACTOR : AAVE_MAX_CLOSE_FACTOR;
+  const maxLiquidatableDebt = aavePercentMul(totalDebt, closeFactor);
+  if (maxLiquidatableDebt === null) return null;
+  const actualDebt = debtToCover < maxLiquidatableDebt ? debtToCover : maxLiquidatableDebt;
+  const collateralUnit = 10n ** collateralDecimals;
+  const debtUnit = 10n ** debtDecimals;
+  let numerator = debtPrice * actualDebt;
+  if (numerator > ERC4626_MAX_UINT256) return null;
+  numerator *= collateralUnit;
+  if (numerator > ERC4626_MAX_UINT256) return null;
+  const denominator = collateralPrice * debtUnit;
+  if (denominator > ERC4626_MAX_UINT256) return null;
+  const baseCollateral = numerator / denominator;
+  const maxCollateral = aavePercentMul(baseCollateral, liquidationBonus);
+  if (maxCollateral === null) return null;
+  let collateralAmount;
+  let debtCovered;
+  let cappedByCollateral;
+  if (maxCollateral > collateralBalance) {
+    collateralAmount = collateralBalance;
+    cappedByCollateral = "true";
+    let capNumerator = collateralPrice * collateralAmount;
+    if (capNumerator > ERC4626_MAX_UINT256) return null;
+    capNumerator *= debtUnit;
+    if (capNumerator > ERC4626_MAX_UINT256) return null;
+    const capDenominator = debtPrice * collateralUnit;
+    if (capDenominator > ERC4626_MAX_UINT256) return null;
+    debtCovered = aavePercentDiv(capNumerator / capDenominator, liquidationBonus);
+    if (debtCovered === null) return null;
+  } else {
+    collateralAmount = maxCollateral;
+    cappedByCollateral = "false";
+    debtCovered = actualDebt;
+  }
+  let protocolFee = 0n;
+  if (protocolFeePct !== 0n) {
+    const baseCollateralAmount = aavePercentDiv(collateralAmount, liquidationBonus);
+    if (baseCollateralAmount === null) return null;
+    const bonusCollateral = collateralAmount - baseCollateralAmount;
+    protocolFee = aavePercentMul(bonusCollateral, protocolFeePct);
+    if (protocolFee === null) return null;
+  }
+  return {
+    liquidatable: "true",
+    closeFactor: closeFactor.toString(),
+    maxLiquidatableDebt: maxLiquidatableDebt.toString(),
+    debtCovered: debtCovered.toString(),
+    collateralSeized: collateralAmount.toString(),
+    protocolFee: protocolFee.toString(),
+    collateralToLiquidator: (collateralAmount - protocolFee).toString(),
+    cappedByCollateral: cappedByCollateral
+  };
+}
+
 /* ModExp precompile gas — the pricing of the EVM's modular
    exponentiation precompile at address 0x05, under both
    schedules that have priced it (EIP-2565, in force from
@@ -11114,6 +11258,32 @@ if (typeof document !== "undefined") {
       el.textContent = `MathUtils accrual: linear factor ${r.linearFactor} · compounded factor ${r.compoundedFactor} (both in ray) — applied to the index you gave, the liquidity index becomes ${r.newLiquidityIndex} and the variable borrow index becomes ${r.newVariableBorrowIndex}. ${r.compoundedFactor === r.linearFactor ? "The two factors are equal here — over no time, over one second, or at a zero rate there is nothing for the compounding terms to add." : "The compounded factor is the larger here: its binomial terms add interest on interest — and still slightly understate true compounding, by the approximation's design."} Computed locally with Aave V3's MathUtils / WadRayMath formulas on the values you gave — a real reserve's rates, last-update timestamp and stored index are chain state this page does not read. Not financial advice.`;
     });
 
+    /* Aave V3 liquidation */
+    const aaveliqBtn = document.getElementById("aaveliq-btn");
+    if (aaveliqBtn) aaveliqBtn.addEventListener("click", () => {
+      const r = aaveLiquidationCalc(
+        document.getElementById("aaveliq-hf").value,
+        document.getElementById("aaveliq-debt").value,
+        document.getElementById("aaveliq-cover").value,
+        document.getElementById("aaveliq-balance").value,
+        document.getElementById("aaveliq-collateral-price").value,
+        document.getElementById("aaveliq-debt-price").value,
+        document.getElementById("aaveliq-collateral-decimals").value,
+        document.getElementById("aaveliq-debt-decimals").value,
+        document.getElementById("aaveliq-bonus").value,
+        document.getElementById("aaveliq-fee").value);
+      const el = document.getElementById("aaveliq-out");
+      if (r === null) {
+        el.textContent = "Check the inputs: every value is a whole number (the health factor at 10^18 scale, prices in the oracle's base currency, percentages in basis points), the liquidation bonus is at least 10000 and the protocol fee percentage at most 10000, neither price is zero, the decimals are at most 77, and no intermediate exceeds the uint256 maximum, as LiquidationLogic's checked products and PercentageMath's percentMul / percentDiv revert there.";
+        return;
+      }
+      if (r.liquidatable === "false") {
+        el.textContent = "Not liquidatable: the health factor you gave is not below 1000000000000000000 (1.0), so ValidationLogic would revert a liquidation call against this account and no debt can be covered and no collateral seized — every amount is zero, whatever the other values are. Computed locally with Aave V3's LiquidationLogic formulas on the values you gave — a real account's health factor, balances, prices and reserve configuration are chain state this page does not read. Not financial advice.";
+        return;
+      }
+      el.textContent = `Liquidation: close factor ${r.closeFactor} basis points caps the cover at ${r.maxLiquidatableDebt} of debt (debt-asset base units); this call covers ${r.debtCovered} and seizes ${r.collateralSeized} of collateral (collateral-asset base units)${r.cappedByCollateral === "true" ? " — the whole collateral balance, which is less than the bonus-priced amount, so the debt covered was recomputed backward from the balance and is below the close-factor cap" : ""}. ${r.protocolFee === "0" ? "The liquidation protocol fee is zero here, so the liquidator receives the full seized amount" : `The protocol takes ${r.protocolFee} of the bonus part as its liquidation fee, so the liquidator receives ${r.collateralToLiquidator}`}. Computed locally with Aave V3's LiquidationLogic / PercentageMath formulas on the values you gave — a real account's health factor, balances, prices and reserve configuration are chain state this page does not read. Not financial advice.`;
+    });
+
     /* ModExp precompile gas */
     const mxgBtn = document.getElementById("mxg-btn");
     if (mxgBtn) mxgBtn.addEventListener("click", () => {
@@ -12621,5 +12791,5 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, aaveAccountCalc, aaveInterestCalc, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, encodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
+  module.exports = { parseScaled, formatScaled, convertUnit, keccak256, keccak256Bytes, parseHexBytes, toChecksumAddress, inspectAddress, gasEstimate, normalizeSignature, functionSelector, eventTopic, create2Address, uniswapPoolAddress, uniswapV2Quote, uniswapV2Mint, uniswapV2Burn, V2_MINIMUM_LIQUIDITY, erc4626Convert, compoundCToken, compoundAccrue, compoundSnapshot, compoundRateModel, compoundSeizeTokens, compoundLiquidity, compoundLiquidateAllowed, compoundBorrowAllowed, compoundRedeemAllowed, compoundTransferAllowed, compoundExitMarket, aaveAccountCalc, aaveInterestCalc, aaveLiquidationCalc, modexpGas, modexpCalc, sstoreGas, memoryGas, callGasCalc, createGasCalc, logGasCalc, sha3GasCalc, copyGasCalc, mcopyGasCalc, extCodeCopyGasCalc, accountAccessGasCalc, sloadGasCalc, transientGasCalc, otherCallGasCalc, selfdestructGasCalc, precompileGasCalc, origPrecompileCalc, ripemd160Bytes, bn128GasCalc, bn128Calc, bn128PairingCalc, blake2fGasCalc, blake2fCalc, kzgGasCalc, blsGasCalc, blsG1Calc, blsG2Calc, blsMsmCalc, blsMapG1Calc, blsMapG2Calc, blsPairingCalc, kzgPointEvalCalc, p256GasCalc, p256VerifyCalc, clzCalc, expCalc, signExtendCalc, shiftCalc, modMathCalc, byteCalc, divCalc, cmpCalc, bitCalc, arithCalc, pushCalc, stackCalc, jumpdestCalc, disasmCalc, memCalc, cdCalc, rdCalc, codeCalc, envCalc, blockhashCalc, execCalc, extcodeCalc, extcopyCalc, jumpCalc, storageCalc, tstorageCalc, callCalc, sha3Calc, createCalc, selfdestructCalc, logCalc, haltCalc, mcopyCalc, permitDigest, EIP2612_PERMIT_TYPEHASH, uniswapV3Tick, uniswapV3Liquidity, uniswapV3SwapStep, V3_MIN_TICK, V3_MAX_TICK, V3_MIN_SQRT, V3_MAX_SQRT, UNISWAP_V2_FACTORY, UNISWAP_V3_FACTORY, UNISWAP_V2_INIT_CODE_HASH, UNISWAP_V3_INIT_CODE_HASH, rlpEncodeBytes, createAddress, utf8Bytes, labelhash, namehash, eip712DomainSeparator, EIP712_DOMAIN_TYPEHASH, eip712HashPerson, eip712MailDigest, EIP712_PERSON_TYPEHASH, EIP712_MAIL_TYPEHASH, erc1967Slot, erc7201Slot, ERC1967_LABELS, abiEncodeCall, abiDecodeCall, abiParseType, abiCanonicalType, merkleLeafHash, merkleRoot, merkleProof, merkleVerify, rlpEncodeInput, rlpDecodeInput, rlpRenderValue, decodeRawTransaction, encodeRawTransaction, recoverAddress, eip191Digest, personalDigestCalc, verifyPersonalSignature, verify712MailSignature, verifyPermitSignature, recoverTransactionSender, eip7702AuthorizationDigest, authorizationDigestCalc, verify7702Authorization, fakeExponential, blobFeeCalc, BLOB_SCHEDULES, nextBaseFee, sha256Bytes, blobVersionedHash, intrinsicGas, UNIT_DECIMALS };
 }
